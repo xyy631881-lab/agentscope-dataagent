@@ -1,0 +1,34 @@
+# 构建输出
+/target/
+
+# 前端依赖
+/frontend/node_modules/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
+/logs/
+
+# Java
+*.class
+
+# Maven
+.mvn/wrapper/maven-wrapper.jar
+
+# 工作区记忆 (个人开发笔记，不提交)
+.workbuddy/
+
+# 临时文件
+*.tmp
+/tmp/

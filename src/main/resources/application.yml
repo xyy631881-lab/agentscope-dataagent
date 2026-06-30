@@ -1,0 +1,149 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: agentscope-dataagent
+  webflux:
+    static-path-pattern: /**
+  resources:
+    static-locations:
+      - classpath:/static/
+
+  # --------------------------------------------------------------------------
+  # 用户和 Agent 元数据通过 Spring Data JPA 持久化。默认后端是嵌入式 H2 数据库，
+  # 写入 `${user.home}/.agentscope-dataagent/db.*` — 刻意不放在
+  # `dataagent.workspace` 下，以免工作区卷意外包含目录表。
+  #
+  # 生产环境切换到 MySQL / PostgreSQL：激活 `jdbc` Spring Profile
+  # (`--spring.profiles.active=jdbc` 或 `SPRING_PROFILES_ACTIVE=jdbc`)，
+  # `application-jdbc.yml` 会设置 MySQL 风格的 DataSource 默认值。
+  # 你也可以直接通过 `DATAAGENT_DB_*` 环境变量覆盖单个设置，无需激活 Profile。
+  # --------------------------------------------------------------------------
+  datasource:
+    url: ${DATAAGENT_DB_URL:jdbc:h2:file:${DATAAGENT_DB_PATH:${user.home}/.agentscope-dataagent/db};AUTO_SERVER=TRUE;MODE=MYSQL;DB_CLOSE_DELAY=-1}
+    driver-class-name: ${DATAAGENT_DB_DRIVER:org.h2.Driver}
+    username: ${DATAAGENT_DB_USER:sa}
+    password: ${DATAAGENT_DB_PASSWORD:}
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      # 'update' 适合开发/单节点。生产环境使用 MySQL/PostgreSQL 时，
+      # 应使用 Flyway/Liquibase 管理 schema 并切换到 `validate`。
+      ddl-auto: ${DATAAGENT_JPA_DDL_AUTO:update}
+    # 在 Hibernate 创建 schema 之后运行 SQL 初始化脚本。确保
+    # `data-h2.sql` 能找到 `dataagent_user` 表并执行 MERGE。
+    defer-datasource-initialization: true
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  # --------------------------------------------------------------------------
+  # `data-${platform}.sql` 数据初始化。设置 platform=h2 使 Spring 只运行
+  # `data-h2.sql`；脚本种子了两个演示账号（bob / alice，密码与用户名相同），
+  # 方便新克隆的项目无需先调用 admin API 即可使用。脚本是幂等的（MERGE INTO）。
+  #
+  # `mode=always` 是有意为之：在 Spring Boot 4 中，`mode=embedded` 只将
+  # `jdbc:h2:mem:` URL 视为嵌入式，会跳过默认的 `jdbc:h2:file:` DataSource 的种子脚本。
+  # `application-jdbc.yml` 明确覆盖为 `never`，以使 MySQL/PostgreSQL 部署不会运行
+  # 仅 H2 可用的脚本。
+  # --------------------------------------------------------------------------
+  sql:
+    init:
+      mode: ${DATAAGENT_SQL_INIT_MODE:always}
+      platform: ${DATAAGENT_SQL_INIT_PLATFORM:h2}
+      continue-on-error: false
+
+# --------------------------------------------------------------------------
+# agentscope-dataagent 配置
+#
+# 属性前缀为 `dataagent.*`。环境变量使用 `DATAAGENT_*`。
+# --------------------------------------------------------------------------
+dataagent:
+  # JWT 签名密钥（至少 32 字符）。生产环境必须覆盖。
+  jwt:
+    secret: ${DATAAGENT_JWT_SECRET:dataagent-default-dev-secret-change-in-production-32chars}
+
+  # 工作目录。如果为空，默认使用 JVM 当前工作目录。
+  # .agentscope/agentscope.json 从此目录读取（或自动生成）。
+  workspace: ${DATAAGENT_WORKSPACE:}
+
+  # ---- 工作区存储拓扑（多租户文件系统） ----
+  # DataAgent 在每个 HarnessAgent 上运行 CompositeFilesystem：
+  # `${dataagent.workspace}/.agentscope/workspace` 上的只读 LocalFilesystem
+  #（模板、AGENTS.md、磁盘上的默认 skills/subagents/knowledge）
+  # 与 per-(owner, agent) 的 RemoteFilesystem 路由（memory/、MEMORY.md、
+  # sessions/、tasks/、skills/、subagents/）融合。
+  # Skill/subagent 路由使用 OverlayFilesystem，以下层磁盘上的共享内容作为
+  # 基础——这是未来能力市场贡献流程的基础。 
+  workspace-store:
+    local:
+      max-file-size-mb: 10
+
+  # ---- DashScope 模型（当没有 Model Spring Bean 时使用） ----
+  # 设置 DASHSCOPE_API_KEY 环境变量或在下文覆盖 api-key。
+  dashscope:
+    api-key: ${DASHSCOPE_API_KEY:}
+    model-name: ${DATAAGENT_MODEL_NAME:qwen-max}
+    stream: true
+
+  # ---- Agent 默认配置（用于自动生成 agentscope.json 时）----
+  agent:
+    name: ${DATAAGENT_AGENT_NAME:data-agent}
+    sys-prompt: >
+      你是一个基于 AgentScope 构建的数据助手（Data Agent）。
+      你帮助用户探索、分析、可视化数据并生成报告。
+      优先使用已注册的 Skill 和子 Agent，而非临时推理；
+      始终标注你使用的数据来源。
+
+  # ---- 通道（侧通道适配器）----
+  # ChatUI 始终开启，提供主要的 Web UX。钉钉和通用 Webhook 通道通过
+  # agentscope.json 可选启用。其他 IM 通道（飞书/企业微信/GitHub/GitLab）
+  # 在 v1 中故意不打包。 
+  channels:
+    chatui:
+      enabled: true
+
+  # ---- 分布式 Session 后端（可选，高可用必需）----
+  # 启用后，RedisSession 自动注入 SandboxDistributedOptions，
+  # 使多个 DataAgent 副本共享 Session + Sandbox 状态。
+  # 禁用时回退到本地文件存储。 
+  session:
+    redis:
+      enabled: false
+      host: localhost
+      port: 6379
+      password:
+      database: 0
+      key-prefix: "dataagent:session:"
+
+  # ---- 能力市场 + 管理员审批 ----
+  # `${dataagent.workspace}/.agentscope/shared/` 下的磁盘共享工作区
+  # 是每个 per-(owner, agent) OverlayFilesystem 的下层。
+  # 用户可以从自己的工作区提名文件作为贡献；管理员通过贡献 API 审批或拒绝。
+  # 批准的贡献写入 `shared/` 并立即对所有租户可见。 
+  marketplace:
+    enabled: true
+    # POST /api/me/contributions 接受的最大 payload 大小（字节）。
+    max-contribution-bytes: 1048576
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      # show-details: never — 公开的 /actuator/health 端点仅返回
+      # 状态（UP/DOWN）。组件级健康状态在 /api/admin/runtime/* 下对管理员
+      # 可见，不会泄漏依赖主机名。
+      show-details: never
+
+logging:
+  level:
+    root: INFO
+    io.agentscope: INFO
+    org.springframework.security: WARN
+    org.springframework.web: WARN

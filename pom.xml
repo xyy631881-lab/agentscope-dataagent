@@ -1,0 +1,289 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ~ Copyright 2024-2026 the original author or authors.
+  ~
+  ~ Licensed under the Apache License, Version 2.0 (the "License");
+  ~ you may not use this file except in compliance with the License.
+  ~ You may obtain a copy of the License at
+  ~
+  ~     http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing, software
+  ~ distributed under the License is distributed on an "AS IS" BASIS,
+  ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  ~ See the License for the specific language governing permissions and
+  ~ limitations under the License.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.5</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>io.agentscope.examples</groupId>
+    <artifactId>agentscope-dataagent</artifactId>
+    <version>2.0.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>AgentScope Java - DataAgent（独立学习版）</name>
+    <description>
+        多租户 DataAgent 产品：基于 HarnessAgent 构建的 Spring Boot 后端 + React SPA。 支持每用户工作空间隔离、分布式部署、侧通道适配器（ChatUI、钉钉、通用 Webhook） 以及管理员审批的能力市场。
+    </description>
+
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <agentscope.version>2.0.0-SNAPSHOT</agentscope.version>
+        <revision>2.0.0-SNAPSHOT</revision>
+        <spring.boot.version>3.3.5</spring.boot.version>
+        <!-- agentscope 内部模块版本 -->
+        <agentscope-harness.version>${agentscope.version}</agentscope-harness.version>
+        <agentscope-extensions-channel-dingtalk.version>${agentscope.version}</agentscope-extensions-channel-dingtalk.version>
+        <agentscope-extensions-skill-git-repository.version>${agentscope.version}</agentscope-extensions-skill-git-repository.version>
+        <agentscope-extensions-nacos-skill.version>${agentscope.version}</agentscope-extensions-nacos-skill.version>
+        <agentscope-extensions-redis.version>${agentscope.version}</agentscope-extensions-redis.version>
+        <!-- 第三方依赖版本 -->
+        <nacos-client.version>3.2.1-2026.03.30</nacos-client.version>
+        <sqlite-jdbc.version>3.47.2.0</sqlite-jdbc.version>
+        <h2.version>2.4.240</h2.version>
+        <jjwt.version>0.12.6</jjwt.version>
+    </properties>
+
+    <!-- 添加 Sonatype 快照仓库以解析 agentscope 2.0.0-SNAPSHOT 依赖 -->
+    <repositories>
+        <repository>
+            <id>sonatype-snapshots</id>
+            <url>https://oss.sonatype.org/content/repositories/snapshots/</url>
+            <snapshots>
+                <enabled>true</enabled>
+                <updatePolicy>daily</updatePolicy>
+            </snapshots>
+        </repository>
+    </repositories>
+
+    <!-- 注意：不依赖 agentscope-dependencies-bom（该 BOM 未发布到公共仓库），
+         所有 agentscope 依赖版本在此直接指定 -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring.boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-harness</artifactId>
+            <version>${agentscope-harness.version}</version>
+        </dependency>
+
+        <!-- IM 通道实现：钉钉 -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-channel-dingtalk</artifactId>
+            <version>${agentscope-extensions-channel-dingtalk.version}</version>
+        </dependency>
+
+        <!-- Git Skill 仓库：GitDataAgentMarketplace 委托 clone/fetch 给 GitSkillRepository -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-skill-git-repository</artifactId>
+            <version>${agentscope-extensions-skill-git-repository.version}</version>
+        </dependency>
+
+        <!-- Nacos Skill 仓库：ZIP 布局工具用于 fallback 路径 -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-nacos-skill</artifactId>
+            <version>${agentscope-extensions-nacos-skill.version}</version>
+        </dependency>
+
+        <!-- Nacos maintainer client: required for paged skill listing (SkillMaintainerService) -->
+        <dependency>
+            <groupId>com.alibaba.nacos</groupId>
+            <artifactId>nacos-maintainer-client</artifactId>
+            <version>${nacos-client.version}</version>
+        </dependency>
+
+        <!--
+          Optional: Redis-backed Session for multi-instance / distributed sandbox mode.
+          Marked optional=true so single-node deployments do not pull Redis client jars,
+          and so that downstream apps can replace it with Lettuce/Redisson if desired.
+          Activated at runtime by dataagent.session.redis.enabled=true.
+        -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-redis</artifactId>
+            <version>${agentscope-extensions-redis.version}</version>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- YAML parsing for subagent config -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
+        </dependency>
+
+        <!-- SQLite for FTS5 memory indexing (transitive use via harness extensions) -->
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>3.47.2.0</version>
+        </dependency>
+
+        <!-- Spring Boot WebFlux (reactive HTTP + SSE) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+
+        <!--
+          Persistence store. Default DataSource is embedded H2 in file mode at
+          ${user.home}/.agentscope-dataagent/db; the `jdbc` Spring profile flips
+          defaults over to MySQL. MySQL and PostgreSQL JDBC drivers are bundled
+          at runtime scope so the same artifact can be pointed at either RDBMS
+          without a rebuild.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.4.240</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Spring Security -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- JWT (JJWT) -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>0.12.6</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>0.12.6</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>0.12.6</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Jackson (JSON) - provided by Spring Boot -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- Actuator (health, info) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Logging -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-logging</artifactId>
+        </dependency>
+
+        <!-- Test -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.projectreactor</groupId>
+            <artifactId>reactor-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Spring Boot fat JAR (classifier=exec keeps the thin JAR available as a library) -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>${spring.boot.version}</version>
+                <configuration>
+                    <mainClass>io.agentscope.dataagent.web.DataAgentApp</mainClass>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                        <configuration>
+                            <classifier>exec</classifier>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Frontend build: npm run build -> src/main/resources/static -->
+            <!-- 如遇到 frontend-maven-plugin 执行失败，可跳过前端构建：
+                 mvn compile -DskipFrontend -->
+            <plugin>
+                <groupId>com.github.eirslett</groupId>
+                <artifactId>frontend-maven-plugin</artifactId>
+                <version>1.15.1</version>
+                <configuration>
+                    <workingDirectory>frontend</workingDirectory>
+                    <installDirectory>target</installDirectory>
+                    <nodeVersion>v20.19.2</nodeVersion>
+                    <npmVersion>10.9.2</npmVersion>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>install-node-npm</id>
+                        <phase>none</phase>
+                    </execution>
+                    <execution>
+                        <id>npm-install</id>
+                        <phase>none</phase>
+                    </execution>
+                    <execution>
+                        <id>npm-build</id>
+                        <phase>none</phase>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
