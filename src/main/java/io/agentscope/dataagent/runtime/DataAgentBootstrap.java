@@ -29,6 +29,7 @@ import io.agentscope.dataagent.web.workspace.UserSandboxRegistry;
 import io.agentscope.dataagent.runtime.outbound.OutboundTool;
 import io.agentscope.dataagent.runtime.session.AgentManagerConfig;
 import io.agentscope.dataagent.runtime.session.SessionAgentManager;
+import io.agentscope.dataagent.runtime.session.SessionMaintenanceConfig;
 import io.agentscope.dataagent.runtime.session.SessionStore;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.gateway.ChannelManager;

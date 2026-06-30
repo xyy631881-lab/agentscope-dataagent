@@ -33,7 +33,7 @@ import io.agentscope.dataagent.web.toolbus.ToolEventBus;
 import io.agentscope.dataagent.web.toolbus.ToolNotificationMiddleware;
 import io.agentscope.dataagent.web.workspace.UserSandboxRegistry;
 import io.agentscope.harness.agent.IsolationScope;
-import io.agentscope.harness.agent.SubagentDeclaration;
+import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.gateway.channel.ChannelConfig;
 import io.agentscope.harness.agent.gateway.channel.DmScope;
 import io.agentscope.harness.agent.gateway.channel.chatui.ChatUiChannel;
@@ -75,7 +75,6 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>每个 {@link io.agentscope.harness.agent.HarnessAgent} 针对由 {@link UserSandboxRegistry}
  * 拥有的每个 {@code (userId, agentId)} 实时 Docker Sandbox 运行：
- * {@link io.agentscope.dataagent.runtime.gateway.HarnessGateway} 在每次调用时将该 sandbox
  * 作为 {@link io.agentscope.harness.agent.sandbox.SandboxContext#getExternalSandbox() external sandbox}
  * 附加到 {@link io.agentscope.core.agent.RuntimeContext}，以便 harness 走 Priority-1 获取路径，
  * Agent 通过浏览器 workspace 控制器使用的完全相同的容器读/写。
@@ -184,7 +183,6 @@ public class DataAgentConfig {
      * （每个用户隔离范围），与 {@link UserSandboxRegistry} 使用的共享同一个
      * {@link SandboxClient}。每个轮次的实际容器由网关通过
      * {@link io.agentscope.harness.agent.sandbox.SandboxContext#getExternalSandbox()} 提供——
-     * 参见 {@link io.agentscope.dataagent.runtime.gateway.HarnessGateway#setUserSandboxRegistry}。
      *
      * <p><strong>2.0 升级特性（2026-06-29）:</strong>
      * <ul>
@@ -289,7 +287,7 @@ public class DataAgentConfig {
                                     .model("dashscope:qwen-max")
                                     .maxIters(5)
                                     .exposeToUser(false)
-                                    .workspaceMode(WorkspaceMode.SANDBOX)
+                                    .workspaceMode(WorkspaceMode.ISOLATED)
                                     .build());
 
                     // 研究报告子代理: agent_spawn agent_id="report-writer" task="... "
@@ -301,7 +299,7 @@ public class DataAgentConfig {
                                     .model("dashscope:qwen-max")
                                     .maxIters(8)
                                     .exposeToUser(true)  // 用户可看到子代理的思考过程
-                                    .workspaceMode(WorkspaceMode.SANDBOX)
+                                    .workspaceMode(WorkspaceMode.ISOLATED)
                                     .build());
 
                     // ---- #9 权限系统: 对敏感工具启用用户确认 ----
@@ -309,42 +307,49 @@ public class DataAgentConfig {
                     PermissionContextState permCtx =
                             PermissionContextState.builder()
                                     .addAllowRule(
+                                            "default",
                                             new PermissionRule(
                                                     "list_data_sources",
                                                     null,
                                                     PermissionBehavior.ALLOW,
                                                     "default"))
                                     .addAllowRule(
+                                            "default",
                                             new PermissionRule(
                                                     "describe_table",
                                                     null,
                                                     PermissionBehavior.ALLOW,
                                                     "default"))
                                     .addAllowRule(
+                                            "default",
                                             new PermissionRule(
                                                     "render_chart",
                                                     null,
                                                     PermissionBehavior.ALLOW,
                                                     "default"))
                                     .addAllowRule(
+                                            "default",
                                             new PermissionRule(
                                                     "outbound_send",
                                                     null,
                                                     PermissionBehavior.ALLOW,
                                                     "default"))
                                     .addAllowRule(
+                                            "default",
                                             new PermissionRule(
                                                     "agent_spawn",
                                                     null,
                                                     PermissionBehavior.ALLOW,
                                                     "default"))
                                     .addAllowRule(
+                                            "default",
                                             new PermissionRule(
                                                     "agent_send",
                                                     null,
                                                     PermissionBehavior.ALLOW,
                                                     "default"))
                                     .addAllowRule(
+                                            "default",
                                             new PermissionRule(
                                                     "agent_list",
                                                     null,
@@ -352,6 +357,7 @@ public class DataAgentConfig {
                                                     "default"))
                                     // SQL 执行需要用户确认
                                     .addAskRule(
+                                            "sql_execution",
                                             new PermissionRule(
                                                     "run_sql_preview",
                                                     null,
@@ -359,12 +365,14 @@ public class DataAgentConfig {
                                                     "sql_execution"))
                                     // 内存写入操作自动允许（2.0 内置工具）
                                     .addAllowRule(
+                                            "default",
                                             new PermissionRule(
                                                     "memory_search",
                                                     null,
                                                     PermissionBehavior.ALLOW,
                                                     "default"))
                                     .addAllowRule(
+                                            "default",
                                             new PermissionRule(
                                                     "memory_get",
                                                     null,
