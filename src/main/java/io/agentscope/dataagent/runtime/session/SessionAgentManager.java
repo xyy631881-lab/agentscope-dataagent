@@ -96,22 +96,6 @@ public class SessionAgentManager {
     }
 
     // -----------------------------------------------------------------
-    //  访问器
-    // -----------------------------------------------------------------
-
-    public WorkspaceManager getWorkspaceManager() {
-        return workspaceManager;
-    }
-
-    public AgentManagerConfig getConfig() {
-        return config;
-    }
-
-    public SessionStore getSessionStore() {
-        return sessionStore;
-    }
-
-    // -----------------------------------------------------------------
     //  AgentStateStore 注册表
     // -----------------------------------------------------------------
 

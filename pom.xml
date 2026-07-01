@@ -131,6 +131,18 @@
             <optional>true</optional>
         </dependency>
 
+        <!--
+          Optional: Spring Boot Redis starter.
+          提供 RedisProperties / LettuceConnectionFactory 自动配置，让 application-redis.yml
+          里的 spring.data.redis.* 直接生效，省掉手写连接参数的代码。
+          optional=true：不开 redis profile 时不引入，保持单机部署零依赖。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
+
         <!-- YAML parsing for subagent config -->
         <dependency>
             <groupId>com.fasterxml.jackson.dataformat</groupId>

@@ -34,4 +34,10 @@ public interface SandboxLifecycleRepository extends JpaRepository<SandboxLifecyc
 
     /** 查找所有心跳超时的活跃沙箱（可能已变成孤儿）。 */
     List<SandboxLifecycleRecord> findByStatusAndLastHeartbeatBefore(Status status, LocalDateTime cutoff);
+
+    /** 查找指定状态的所有记录。 */
+    List<SandboxLifecycleRecord> findByStatus(Status status);
+
+    /** 查找状态在给定集合内的所有记录（启动时清理多种状态用）。 */
+    List<SandboxLifecycleRecord> findByStatusIn(List<Status> statuses);
 }

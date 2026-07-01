@@ -20,6 +20,7 @@ import io.agentscope.dataagent.web.persistence.jpa.SandboxLifecycleRecord.Status
 import io.agentscope.dataagent.web.persistence.jpa.SandboxLifecycleRepository;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -43,6 +44,9 @@ public class SandboxReaperService {
     /** 默认 TTL：30 分钟无心跳即视为孤儿。 */
     private static final int DEFAULT_TTL_MINUTES = 30;
 
+    /** 单条 docker 命令最长等待时间（秒），超时强制销毁进程避免卡死调度线程。 */
+    private static final long DOCKER_CMD_TIMEOUT_SEC = 60;
+
     private final SandboxLifecycleRepository lifecycleRepo;
 
     public SandboxReaperService(SandboxLifecycleRepository lifecycleRepo) {
@@ -50,10 +54,20 @@ public class SandboxReaperService {
     }
 
     /**
-     * 每分钟执行一次回收扫描。
-     *
-     * <p>查找所有 {@code ACTIVE} 状态且 {@code last_heartbeat} 超过 TTL 的记录，
-     * 执行 {@code docker stop --time=30 && docker rm} 后标记为 {@code REAPED}。
+     每分钟执行一次回收扫描。
+         每 60 秒自动执行一次（@Scheduled(fixedRate = 60_000)）
+         算出一个截止时间 = 当前时间 - 30分钟（DEFAULT_TTL_MINUTES）
+         从数据库查出所有 状态为 ACTIVE 且 最后心跳时间早于截止时间 的容器记录
+         如果没有超时的，直接返回，啥也不干
+         如果有超时的，逐个处理：
+         先执行 docker stop --time 30 <容器ID>：给容器 30 秒时间优雅停止
+         再执行 docker rm <容器ID>：删除容器
+         把数据库记录状态改为 REAPED（已回收）
+         记录日志（成功/部分失败/异常）
+     覆盖的场景：
+         进程被 kill -9 强杀，来不及关闭容器
+         容器内的 sidecar 故障，心跳停止
+         多副本部署时某副本崩溃，它管理的容器没人管了
      */
     @Scheduled(fixedRate = 60_000)
     public void reapStaleSandboxes() {
@@ -69,15 +83,10 @@ public class SandboxReaperService {
         for (SandboxLifecycleRecord record : stale) {
             String containerId = record.getContainerId();
             try {
-                // 优雅停止（最长等 30 秒）
-                Process stopProc = Runtime.getRuntime().exec(
-                        new String[]{"docker", "stop", "--time", "30", containerId});
-                int stopCode = stopProc.waitFor();
-
+                // 优雅停止（docker stop 内部最长 30 秒，这里再给 60 秒兜底）
+                int stopCode = runDockerCmd(List.of("docker", "stop", "--time", "30", containerId));
                 // 删除容器
-                Process rmProc = Runtime.getRuntime().exec(
-                        new String[]{"docker", "rm", containerId});
-                int rmCode = rmProc.waitFor();
+                int rmCode = runDockerCmd(List.of("docker", "rm", containerId));
 
                 record.setStatus(Status.REAPED);
                 lifecycleRepo.save(record);
@@ -99,19 +108,26 @@ public class SandboxReaperService {
 
     /**
      * 应用启动时清除所有孤儿容器（DB 中有记录但已无心跳的）。
-     * 由 {@code DataAgentApp} 的 {@code @PostConstruct} 调用。
+         从数据库查出所有状态为 ACTIVE 或 CREATING 的记录
+         过滤出那些 最后心跳为空（从来没收到心跳）或 最后心跳早于1分钟前 的记录
+         对每个孤儿容器执行 docker rm -f <容器ID>：强制删除（-f 表示即使容器还在运行也直接删）
+         把数据库记录状态改为 REAPED
+         统计清理数量，打印日志
      */
     public void cleanupOnStartup() {
+        // ACTIVE 且 1 分钟前还没心跳的，肯定是上次进程崩溃留下的孤儿
+        // （正常活跃容器心跳间隔远小于 1 分钟）
         LocalDateTime cutoff = LocalDateTime.now().minusMinutes(1);
         List<SandboxLifecycleRecord> orphans = lifecycleRepo
-                .findByStatusAndLastHeartbeatBefore(Status.ACTIVE, cutoff);
+                .findByStatusIn(List.of(Status.ACTIVE, Status.CREATING)).stream()
+                .filter(r -> r.getLastHeartbeat() == null
+                        || r.getLastHeartbeat().isBefore(cutoff))
+                .toList();
 
         int count = 0;
         for (SandboxLifecycleRecord record : orphans) {
             try {
-                Runtime.getRuntime().exec(
-                        new String[]{"docker", "rm", "-f", record.getContainerId()})
-                        .waitFor();
+                runDockerCmd(List.of("docker", "rm", "-f", record.getContainerId()));
                 record.setStatus(Status.REAPED);
                 lifecycleRepo.save(record);
                 count++;
@@ -123,45 +139,66 @@ public class SandboxReaperService {
         if (count > 0) {
             log.info("[sandbox-reaper] 启动时已清理 {} 个孤儿容器", count);
         }
-
-        // 也清理 DB 中状态为 CREATING 但从未收到心跳的记录
-        List<SandboxLifecycleRecord> stuck = lifecycleRepo
-                .findByStatusAndLastHeartbeatBefore(Status.CREATING, cutoff);
-        for (SandboxLifecycleRecord record : stuck) {
-            try {
-                Runtime.getRuntime().exec(
-                        new String[]{"docker", "rm", "-f", record.getContainerId()})
-                        .waitFor();
-            } catch (Exception ignored) {
-                // 可能容器已被手动删除
-            }
-            record.setStatus(Status.REAPED);
-            lifecycleRepo.save(record);
-        }
     }
 
     /**
      * 应用关闭时优雅关闭所有活跃沙箱。
-     * 由 {@code DataAgentApp} 的 {@code @PreDestroy} 调用。
+         从数据库查出所有状态为 ACTIVE 的容器记录
+         逐个执行：
+         docker stop --time 30 <容器ID>：优雅停止（给 30 秒时间清理）
+         docker rm <容器ID>：删除容器
+         把数据库记录状态改为 CLOSED（正常关闭）
+         失败了只打 warn 日志，不抛异常，尽量多关几个
      */
     public void shutdownAll() {
-        List<SandboxLifecycleRecord> active = lifecycleRepo
-                .findByStatusAndLastHeartbeatBefore(Status.ACTIVE, LocalDateTime.now().plusYears(1));
+        List<SandboxLifecycleRecord> active = lifecycleRepo.findByStatus(Status.ACTIVE);
 
         for (SandboxLifecycleRecord record : active) {
             try {
-                Process stopProc = Runtime.getRuntime().exec(
-                        new String[]{"docker", "stop", "--time", "30", record.getContainerId()});
-                stopProc.waitFor();
-                Runtime.getRuntime().exec(
-                        new String[]{"docker", "rm", record.getContainerId()})
-                        .waitFor();
+                runDockerCmd(List.of("docker", "stop", "--time", "30", record.getContainerId()));
+                runDockerCmd(List.of("docker", "rm", record.getContainerId()));
                 record.setStatus(Status.CLOSED);
                 lifecycleRepo.save(record);
             } catch (Exception e) {
                 log.warn("[sandbox-reaper] 关闭容器失败: containerId={}, error={}",
                         record.getContainerId(), e.getMessage());
             }
+        }
+    }
+
+    // ---- 内部工具方法 ----
+
+    /**
+     * 执行一条 docker 命令，解决两个老问题：
+     * 用 ProcessBuilder 启动一个子进程执行传入的命令
+     *
+     * 关键优化 1：把 stdout 重定向到 DISCARD（丢弃），stderr 合并到 stdout 一起丢弃
+     * 这解决了经典死锁问题——如果子进程输出太多内容填满了管道缓冲区，没人读的话 waitFor() 就会永远阻塞
+     * 关键优化 2：waitFor 加了 60 秒超时（DOCKER_CMD_TIMEOUT_SEC），
+     * 超时后调用 destroyForcibly() 强制杀掉子进程，防止定时调度线程被永久卡住
+     * 如果被中断（InterruptedException），先强制杀进程，再恢复中断标志位，然后抛出异常
+     *
+     * 通俗理解：这是清洁工的"工具箱"，用来执行 docker 命令。之前有两个老 bug：
+     * 死锁 bug：原来用 Runtime.exec 执行命令但不读输出，如果 docker 命令输出太多，管道满了就卡死了。现在直接把输出丢掉，管道永远不会满。
+     * 卡死 bug：原来 waitFor() 没有超时，万一 docker 命令卡住了，整个定时任务线程就废了。现在加了 60 秒超时，超时就强杀子进程。
+     */
+    private int runDockerCmd(List<String> cmd) throws InterruptedException, java.io.IOException {
+        ProcessBuilder pb = new ProcessBuilder(cmd)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)  // 丢弃 stdout，防管道满死锁
+                .redirectErrorStream(true);                        // stderr 合并到 stdout 一起丢
+        Process proc = pb.start();
+        try {
+            if (!proc.waitFor(DOCKER_CMD_TIMEOUT_SEC, TimeUnit.SECONDS)) {
+                log.warn("[sandbox-reaper] docker 命令超时（{}秒），强制终止: {}",
+                        DOCKER_CMD_TIMEOUT_SEC, String.join(" ", cmd));
+                proc.destroyForcibly();
+                return -1;
+            }
+            return proc.exitValue();
+        } catch (InterruptedException e) {
+            proc.destroyForcibly();
+            Thread.currentThread().interrupt();  // 恢复中断标志
+            throw e;
         }
     }
 }

@@ -28,7 +28,6 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -152,36 +151,6 @@ public final class SessionStore {
         }
     }
 
-    /** 仅更新给定 key 的 {@code lastActivityMs}，无需完全替换条目。 */
-    public void touch(String sessionKey, long lastActivityMs) {
-        lock.writeLock().lock();
-        try {
-            StoredEntry existing = entries.get(sessionKey);
-            if (existing == null) {
-                return;
-            }
-            entries.put(
-                    sessionKey,
-                    new StoredEntry(
-                            existing.sessionKey(),
-                            existing.agentId(),
-                            existing.sessionId(),
-                            existing.label(),
-                            existing.kind(),
-                            existing.spawnedBy(),
-                            existing.spawnDepth(),
-                            existing.createdAtMs(),
-                            lastActivityMs,
-                            existing.sessionFilePath(),
-                            existing.spawnRunId(),
-                            existing.gateKey(),
-                            existing.userId()));
-            flushToDisk();
-        } finally {
-            lock.writeLock().unlock();
-        }
-    }
-
     /** 按 key 移除 session 条目。 */
     public void remove(String sessionKey) {
         lock.writeLock().lock();
@@ -202,30 +171,6 @@ public final class SessionStore {
         } finally {
             lock.readLock().unlock();
         }
-    }
-
-    /** 按 key 返回单个条目（如果存在）。 */
-    public Optional<StoredEntry> get(String sessionKey) {
-        lock.readLock().lock();
-        try {
-            return Optional.ofNullable(entries.get(sessionKey));
-        } finally {
-            lock.readLock().unlock();
-        }
-    }
-
-    public int size() {
-        lock.readLock().lock();
-        try {
-            return entries.size();
-        } finally {
-            lock.readLock().unlock();
-        }
-    }
-
-    /** 后端存储文件的路径。 */
-    public Path getStoreFile() {
-        return storeFile;
     }
 
     private void flushToDisk() {

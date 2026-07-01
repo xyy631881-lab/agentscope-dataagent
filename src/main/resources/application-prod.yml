@@ -1,0 +1,34 @@
+# ========================================================================
+# Profile: prod — 生产环境安全加固
+# ========================================================================
+dataagent:
+  jwt:
+    secret: ${DATAAGENT_JWT_SECRET}          # 必须通过环境变量设置，无默认值
+    expire:
+      access-token: 15m
+      refresh-token: 1d
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include:
+          - health
+          - info
+          - metrics
+          - prometheus
+  endpoint:
+    health:
+      show-details: always
+
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+logging:
+  level:
+    root: WARN
+    io.agentscope: INFO
+  file:
+    name: logs/data-agent.log

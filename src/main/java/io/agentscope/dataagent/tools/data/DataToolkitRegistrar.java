@@ -23,12 +23,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * 在启动时将单例 {@link DataAgentToolkit} 连接到内置主 Agent 的 toolkit 上，
- * 以便 Agent 可以调用 {@code list_data_sources}、{@code describe_table}、
- * {@code run_sql_preview} 和 {@code render_chart}。
+ * 在启动时将 {@link DataAgentToolkit} 单例注册到主 Agent 的 toolkit 上。
  *
- * <p>镜像 {@code ContributionToolRegistrar}：在 {@link DataAgentBootstrap} 构建了所有
- * Agent 后运行，错误时软失败，以便缺失的工具插槽不会阻止应用程序启动。
+ * <p>toolkit 已由 {@link DataToolkitConfig} 创建为 Spring bean（含可选的 JDBC DataSource）。
+ * 本类负责将其注册到 AgentScope HarnessAgent 的工具集中。
  */
 @Component
 public class DataToolkitRegistrar {
@@ -36,16 +34,11 @@ public class DataToolkitRegistrar {
     private static final Logger log = LoggerFactory.getLogger(DataToolkitRegistrar.class);
 
     private final DataAgentBootstrap bootstrap;
-    private final DataSourceRegistry registry;
-    private final ChartRenderer chartRenderer;
+    private final DataAgentToolkit toolkit;
 
-    public DataToolkitRegistrar(
-            DataAgentBootstrap bootstrap,
-            DataSourceRegistry registry,
-            ChartRenderer chartRenderer) {
+    public DataToolkitRegistrar(DataAgentBootstrap bootstrap, DataAgentToolkit toolkit) {
         this.bootstrap = bootstrap;
-        this.registry = registry;
-        this.chartRenderer = chartRenderer;
+        this.toolkit = toolkit;
     }
 
     @PostConstruct
@@ -61,10 +54,10 @@ public class DataToolkitRegistrar {
                                                     "没有可用于注册 data toolkit 的 Agent"));
         }
         try {
-            main.getDelegate()
-                    .getToolkit()
-                    .registerTool(new DataAgentToolkit(registry, chartRenderer));
-            log.info("已向主 Agent '{}' 注册 DataAgent toolkit", main.getName());
+            main.getDelegate().getToolkit().registerTool(toolkit);
+            log.info("已向主 Agent '{}' 注册 DataAgent toolkit (含工具: {})",
+                    main.getName(),
+                    toolkit.getClass().getSimpleName());
         } catch (RuntimeException e) {
             log.warn("向主 Agent 注册 DataAgent toolkit 失败: {}", e.getMessage());
         }

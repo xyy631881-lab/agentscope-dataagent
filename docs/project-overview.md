@@ -163,7 +163,7 @@ dataagent 是一个**多租户、自进化的企业数据分析 Agent 平台**�
 
 ## 四、包结构与文件清单
 
-> 共 98 个 Java 源文件，分布在 18 个包下。
+> 共 115 个 Java 源文件，分布在 18 个包下。
 
 ### 4.1 `web/` — Web 层 (Spring Boot)
 
@@ -171,16 +171,17 @@ dataagent 是一个**多租户、自进化的企业数据分析 Agent 平台**�
 
 | 文件 | 职责 |
 |------|------|
-| `DataAgentConfig.java` | **核心配置入口**。组装 DataAgentBootstrap，注册 Model Bean，配置所有 Agent 的 Plan Mode / Compaction / Memory / SubagentDeclarations / Permission / 模型容错，创建 ChatUiChannel |
+| `DataAgentConfig.java` | **核心配置入口**。组装 DataAgentBootstrap，注册 Model Bean，通过 `configureAllAgents` 回调统一配置所有 Agent 的 2.0 能力：Plan Mode / Compaction (trigger=30, keep=10) / Memory (throttled flush) / SubagentDeclarations (code-reviewer + report-writer) / PermissionContextState (ALLOW/ASK 规则) / maxRetries=2 / DockerFilesystemSpec (USER 隔离) |
 | `SecurityConfig.java` | Spring Security 配置：JWT 过滤器、CORS、路径权限 (公开 / 用户 / 管理员) |
 | `WebConfig.java` | CORS 跨域配置 |
 
-#### `web/api/` — REST Controller (13 个)
+#### `web/api/` — REST Controller (14 个)
 
 | 文件 | 路径前缀 | 职责 |
 |------|----------|------|
-| `ChatController.java` | `/api/agents/{agentId}/chat` | **核心对话端点**。POST `/stream` (SSE 流式)、POST `/send` (同步)、GET `/session` (会话检查)、斜杠命令 `/new` `/reset` `/identity` |
+| `ChatController.java` | `/api/agents/{agentId}/chat` | **核心对话端点**。POST `/stream` (SSE 流式，单 Map<ToolCallId, ToolBuffer> 累积工具事件)、POST `/send` (同步)、GET `/session` (会话检查)、斜杠命令 `/new` `/reset` `/identity`。O(1) gateKey→sessionKey 查找 |
 | `SessionController.java` | `/api/sessions` | Session 列表、历史消息、树形结构、reset/delete |
+| `AdminUserController.java` | `/api/admin/*` | 管理员端：用户管理、运行时概览、用量统计 |
 | `AgentCatalogController.java` | `/api/catalog` | 浏览可用的 GLOBAL agent 模板 |
 | `AgentCloneController.java` | `/api/me/agents/{id}/clone` | 克隆 agent |
 | `AgentSkillsController.java` | `/api/me/agents/{id}/skills` | 查看/编辑/删除 workspace 中的 skill |
@@ -188,10 +189,11 @@ dataagent 是一个**多租户、自进化的企业数据分析 Agent 平台**�
 | `AgentWorkspaceController.java` | `/api/me/agents/{id}/workspace` | 浏览/读写 workspace 文件 |
 | `AgentActivityController.java` | `/api/me/agents/{id}/activity` | Agent 活动日志 |
 | `AgentBindingController.java` | `/api/user/bindings` | 用户通道绑定偏好 |
+| `BindingPersistence.java` | — | 通道绑定持久化辅助 |
 | `ChannelDirectoryController.java` | `/api/channels` | 通道目录 |
 | `MarketplacesController.java` | `/api/me/marketplaces` | 用户 marketplace 订阅管理 |
-| `AdminUserController.java` | `/api/admin/*` | 管理员端：用户管理、运行时概览、用量统计 |
 | `SandboxHeartbeatController.java` | `/api/admin/sandbox` | Sandbox 健康检查端点 |
+| `SandboxReaperService.java` | — | Sandbox 僵尸容器回收服务 |
 
 #### `web/auth/` — 认证 (4 个)
 
@@ -261,7 +263,7 @@ dataagent 是一个**多租户、自进化的企业数据分析 Agent 平台**�
 | `DataAgentApp.java` | `web/` | Spring Boot 入口，启用定时任务 |
 | `WorkspaceScaffolder.java` | `web/scaffold/` | 首次启动时自动创建 AGENTS.md / skills/ / subagents/ |
 | `ToolEventBus.java` | `web/toolbus/` | 工具事件 SSE 总线 (Sinks.Many) |
-| `ToolNotificationMiddleware.java` | `web/toolbus/` | HarnessAgent Middleware：工具调用前发布事件到 ToolEventBus |
+| `ToolNotificationMiddleware.java` | `web/toolbus/` | HarnessAgent Middleware：工具调用前发布事件到 ToolEventBus。含 TODO：前端直接从主 SSE 流消费工具事件后可移除 |
 | `IdentityLinkStore.java` | `web/identity/` | 用户身份链接 (dock 命令) |
 | `AgentAccessGuard.java` | `web/share/` | Agent 访问权限守卫 |
 | `AgentAclService.java` | `web/share/` | ACL 服务 (GLOBAL / USER / SHARED) |
@@ -298,11 +300,11 @@ dataagent 是一个**多租户、自进化的企业数据分析 Agent 平台**�
 
 | 文件 | 职责 |
 |------|------|
-| `SessionAgentManager.java` | **MAIN session 状态管理器**。内存注册表 (sessionsByKey/gateKeyToSessionKey)，增删查改、重置、空闲/每日重置、维护清理。已精简至 ~285 行（子代理执行/通知已迁移至 2.0 SubagentsMiddleware） |
+| `SessionAgentManager.java` | **MAIN session 状态管理器**。内存注册表 (sessionsByKey/gateKeyToSessionKey)，增删查改、重置、维护清理。已精简至 ~270 行 |
 | `SessionStore.java` | JSON 文件持久化 session 元数据 (save/load/touch/remove) |
 | `SessionEntry.java` | Session 元数据记录 (sessionKey, agentId, sessionId, label, kind, userId, gateKey, ...) |
 | `SessionKind.java` | Session 类型枚举：MAIN / SUBAGENT |
-| `AgentManagerConfig.java` | Session 维护配置 (maintenanceConfig) |
+| `AgentManagerConfig.java` | Session 维护配置。已从 ~90 行精简至 ~30 行，仅保留 `maintenanceConfig`（子代理并发、队列、重置策略已随 `AnnounceDispatcher` 删除） |
 | `SessionMaintenanceConfig.java` | 维护策略 (pruneAfterMs, maxEntries) |
 | `HistoryResult.java` | Session 历史查询结果 |
 
@@ -327,7 +329,7 @@ dataagent 是一个**多租户、自进化的企业数据分析 Agent 平台**�
 | `WebhookOutboundClient.java` | 出站回调 HTTP 客户端 |
 | `WebhookSignature.java` | HMAC-SHA256 签名验证 |
 
-#### `runtime/config/` — 配置解析 (8 个)
+#### `runtime/config/` — 配置解析 (9 个)
 
 | 文件 | 职责 |
 |------|------|
@@ -360,7 +362,7 @@ dataagent 是一个**多租户、自进化的企业数据分析 Agent 平台**�
 |------|------|
 | `UserSandboxContextMiddleware.java` | 在每个 Agent 调用前注入 per-用户的 Docker Sandbox Context |
 
-#### `runtime/tools/data/` — 数据分析工具 (8 个)
+#### `tools/data/` — 数据分析工具 (8 个)
 
 | 文件 | 职责 |
 |------|------|
@@ -574,16 +576,16 @@ agentscope-dataagent/
 │   ├── runtime/                          # 核心运行时
 │   │   ├── DataAgentBootstrap.java       # 编排核心
 │   │   ├── channel/webhook/              # Webhook 通道 (7 个文件)
-│   │   ├── config/                       # 配置解析 (8 个文件)
+│   │   ├── config/                       # 配置解析 (9 个文件)
 │   │   ├── marketplace/                  # 市场适配器 (8 个文件)
 │   │   ├── middleware/                   # 自定义中间件 (1 个)
 │   │   ├── outbound/                     # 出站消息 (4 个)
 │   │   ├── session/                      # 会话管理 (7 个)
-│   │   └── tools/data/                   # 数据分析工具 (8 个)
+│   ├── tools/data/                       # 数据分析工具 (8 个)
 │   ├── web/                              # Web 层
 │   │   ├── DataAgentApp.java             # Spring Boot 入口
 │   │   ├── ai/                           # AI 辅助 (2 个)
-│   │   ├── api/                          # REST Controller (13 个)
+│   │   ├── api/                          # REST Controller (14 个)
 │   │   ├── audit/                        # 审计 (2 个)
 │   │   ├── auth/                         # 认证 (4 个)
 │   │   ├── catalog/                      # Agent 目录 (4 个)
@@ -642,12 +644,20 @@ agentscope-dataagent/
 ## 八、构建与运行
 
 ```bash
-# 构建
-mvn -pl agentscope-examples/agents/agentscope-dataagent -am package -DskipTests
+# 编译（跳过前端构建）
+mvn compile -DskipFrontend
+
+# 打包
+mvn package -DskipFrontend -DskipTests
 
 # 运行
 java -jar target/agentscope-dataagent-*-exec.jar
 # 打开 http://localhost:8080, 默认账号: bob/bob alice/alice
+```
+
+> **Windows 环境 Maven 注意**：Git Bash 下 `mvn` 脚本可能有路径转换问题，使用 `mvn.cmd` + Windows 路径格式即可：
+> ```bash
+> JAVA_HOME="D:\\jdk21" "D:\\apache-maven-3.9.16\\bin\\mvn.cmd" compile -DskipFrontend
 ```
 
 ---
@@ -657,3 +667,80 @@ java -jar target/agentscope-dataagent-*-exec.jar
 - [AgentScope Java v2 官方文档](https://java.agentscope.io/v2/en/docs/index.html)
 - [AgentScope Java GitHub](https://github.com/agentscope-ai/agentscope-java)
 - [官方示例代码](https://github.com/agentscope-ai/agentscope-java/tree/main/agentscope-examples/documentation)
+
+---
+
+## 十、代码阅读指南
+
+> 四步走，按数据流方向从"配置"到"对话"再到"工具"。
+
+### Step 1 — 看清配置（5 分钟）
+
+| 文件 | 看什么 |
+|------|--------|
+| `src/main/resources/application.yml` | 默认 H2 零依赖启动。同文件内含 `mysql` 和 `redis` profile（`---` 分隔），一个文件搞定所有环境 |
+| `web/config/DataAgentConfig.java` | **全项目最重要文件**——组装 DataAgentBootstrap，注册 Model Bean，`configureAllAgents()` 加 Plan Mode/Compaction/Memory/Permission/Subagents |
+
+### Step 2 — 启动管线（10 分钟）
+
+| 文件 | 看什么 |
+|------|--------|
+| `runtime/DataAgentBootstrap.java` | 从 `agentscope.json` 构建 HarnessAgent → 创建 Gateway → 绑定 Channel → 初始化 SessionAgentManager |
+| `runtime/session/SessionAgentManager.java` | 按 gateKey 索引查 session、reset 会话、维护清理 |
+| `web/config/SecurityConfig.java` | JWT 过滤器链、`/api/` 路径权限 |
+
+### Step 3 — 对话是怎么走的（15 分钟）
+
+| 文件 | 看什么 |
+|------|--------|
+| `web/api/ChatController.java` | **入口**。`POST /stream` 是核心——把一个用户消息变成 SSE 事件流：token → tool_call → tool_result → done |
+| `tools/data/DataAgentToolkit.java` | Agent 实际调用的四个工具：`list_data_sources` / `describe_table` / `run_sql_preview` / `render_chart` |
+| `tools/data/AnalyticsDataConfig.java` | 独立的 H2 分析数据库 + DataSourceRegistry |
+| `runtime/outbound/OutboundTool.java` | Agent 向 IM 通道推送消息的 `outbound_send` 工具 |
+
+### Step 4 — 高级功能（选读）
+
+| 文件 | 看什么 |
+|------|--------|
+| `web/marketplace/` | 技能贡献 → 审批 → 共享库流程 |
+| `runtime/marketplace/` | Git/Nacos 市场的适配器 |
+| `runtime/channel/webhook/` | HTTP Webhook 入站通道（签名验证） |
+| `web/workspace/UserSandboxRegistry.java` | Docker 沙箱按 (userId, agentId) 生命周期管理 |
+
+---
+
+## 十一、近期变更 (2026.06.30)
+
+本版本进行了全面的 AgentScope 2.0 深度集成 + 死代码清理 + 本地测试数据搭建。
+
+### 架构升级
+
+| 模块 | 变更 | 效果 |
+|------|------|------|
+| 子代理系统 | 删除自建 SessionsTool(579行)+AnnounceDispatcher(318行)，改用 2.0 SubagentsMiddleware | 子代理原生支持 |
+| Session 管理 | SessionAgentManager 955→270 行，session/ 目录 19→7 文件 | 仅保留注册表 |
+| AgentManagerConfig | 90→30 行 | 删除死字段 |
+| SSE 事件流 | 3 个 ConcurrentHashMap → 1 个 ToolBuffer | 代码量 -60% |
+| Session 查找 | O(n) 扫描 → O(1) gateKeyToSessionKey 索引 | 性能提升 |
+| DataAgentBootstrap | 633→496 行 (-22%) | 删 15 个死方法 + 6 个死字段 |
+| 死代码清理 | 累计删除 ~2000+ 行 | 项目干净 |
+
+### 新增 2.0 能力
+
+- Plan Mode / Compaction（trigger=30 keep=10）/ Memory Pipeline
+- SubagentDeclarations（code-reviewer + report-writer）/ PermissionEngine / Model Retry
+
+### 测试数据库
+
+独立 H2 内存数据库 `analytics` + 120+ 条种子数据：products(15款) / users(20人) / orders(120+笔) / daily_sales。Agent 调用 `list_data_sources → describe_table → run_sql_preview` 链路完全可用。
+
+### 编译状态
+
+`mvn compile -DskipFrontend` → **BUILD SUCCESS**（115 source files, 0 errors）
+
+### API 兼容性警告
+
+2.0.0-SNAPSHOT 快照 API 与文档可能有差异，已验证：
+- `SubagentDeclaration` 位于 `io.agentscope.harness.agent.subagent`（非 `agent`）
+- `WorkspaceMode` 值为 `ISOLATED` / `SHARED`（非 `SANDBOX`）
+- `PermissionContextState.Builder.addAllowRule(String category, PermissionRule)` 需两个参数

@@ -31,15 +31,12 @@ import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 
 /**
- * 在每次 Agent 调用前，从 {@link UserSandboxRegistry} 借用 {@code (userId, agentId)}
- * 对应的 Docker {@link Sandbox}，并将其作为 {@link SandboxContext#getExternalSandbox()}
- * 注入到 {@link RuntimeContext}，以便 {@code SandboxManager.acquire} 走 Priority-1 路径，
- * Agent 在与浏览器 workspace 控制器同读同写的同一个容器中运行。
+ * 它是一个"中间人"，负责在 Agent 运行之前，把属于当前用户的 Docker 沙箱容器"递"给 Agent
+     * 每个用户 有自己专属的办公室（Docker 沙箱容器），里面有自己的文件和工具。
+     * Agent 就像一个跑腿的办事员，需要进办公室帮用户干活。
+     * 这个中间件 就是门口的前台——办事员还没进门之前，前台先查一下"你是帮哪个用户办事的？"，
+     * 然后找到那个用户的办公室钥匙，交给办事员。这样办事员就能直接进对应用户的办公室干活了。
  *
- * <p>替代了原先在自定义 {@code HarnessGateway.attachUserSandboxContext} 中的逻辑，
- * 使 sandbox 注入从网关层解耦到 middleware 层，便于后续切换到官方网关。
- *
- * <p>当 {@code userId} 缺失或注册表未配置时不做任何操作，Agent 回退到默认 SandboxContext。
  */
 public final class UserSandboxContextMiddleware implements MiddlewareBase {
 
@@ -51,8 +48,6 @@ public final class UserSandboxContextMiddleware implements MiddlewareBase {
     /**
      * @param registry 每个用户的 sandbox 注册表
      * @param agentId  稳定的 Agent 标识（来自配置文件，如 "data-agent"），
-     *                 用于 {@link UserSandboxRegistry#borrow} 的容器 key，
-     *                 避免随机 UUID 导致容器累积
      */
     public UserSandboxContextMiddleware(UserSandboxRegistry registry, String agentId) {
         this.registry = Objects.requireNonNull(registry, "registry");
@@ -65,12 +60,16 @@ public final class UserSandboxContextMiddleware implements MiddlewareBase {
             RuntimeContext ctx,
             AgentInput input,
             Function<AgentInput, Flux<AgentEvent>> next) {
-        // 仅在尚未设置 SandboxContext 时注入（允许上游显式覆盖）
+        // 检查：Agent 要运行了，中间件先看看当前运行上下文（RuntimeContext）里有没有已经设置好的沙箱信息。
+        // 如果有，就不插手（"上游已经安排好了，我就不操心了"）。
         if (ctx.get(SandboxContext.class) == null) {
+            //找用户：从上下文里取出 userId（当前是哪个用户在用）。
             String userId = ctx.getUserId();
             if (userId != null && !userId.isBlank()) {
                 try {
+                    //借沙箱：从注册表里借一个属于当前用户的沙箱容器。
                     Sandbox sb = registry.borrow(userId, agentId);
+                    //创建沙箱容器上下文：把沙箱容器和隔离范围（USER）封装起来，形成一个上下文。
                     SandboxContext sandboxCtx =
                             SandboxContext.builder()
                                     .externalSandbox(sb)
