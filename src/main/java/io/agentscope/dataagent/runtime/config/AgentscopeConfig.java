@@ -39,7 +39,7 @@ public class AgentscopeConfig {
 
     /**
      * 默认入口点的 Agent ID。程序化的 {@link
-     * DataAgentBootstrap.Builder#mainAgent(String)} 设置时会覆盖此值。
+     * DataAgentBootstrap.Builder 设置时会覆盖此值。
      */
     @JsonProperty("main")
     private String main;

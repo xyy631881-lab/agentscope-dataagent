@@ -16,8 +16,7 @@
 package io.agentscope.dataagent.runtime.session;
 
 /**
- * Session 存储维护的配置。控制过期 session 的自动清理和总条目数的上限，
- * 镜像 OpenClaw 的 session 维护模式。
+ * 过期清理规则（多久清、最多留多少）
  *
  * @param enabled 是否在 session 创建/更新时自动运行维护
  * @param pruneAfterMs 移除此持续时间内未更新的 session（0 = 禁用）

@@ -32,19 +32,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Drives the session lifecycle triggers declared in {@code agentscope.json}'s
- * {@code session} block:
- *
- * <ul>
- *   <li><b>Daily reset</b> — at the configured {@code dailyAt} time, resets every active session
- *       so each gets a fresh transcript while preserving session-key, ownership, and labels.
- *   <li><b>Idle reset</b> — every minute, resets sessions that have been idle longer than
- *       {@code idleMinutes}.
- *   <li><b>Maintenance</b> — every 5 minutes, runs {@link SessionAgentManager#runMaintenance()}
- *       to prune old / over-cap sessions (the policy comes from {@code AgentManagerConfig}).
- * </ul>
- *
- * <p>This scheduler is a no-op when no {@code session} block is configured.
+ * 定时任务：空闲重置、每日重置、定期清理
  */
 @Component
 public class SessionLifecycleScheduler {

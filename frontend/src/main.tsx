@@ -12,6 +12,7 @@ import SkillsPage from './pages/configure/SkillsPage';
 import SubagentsPage from './pages/configure/SubagentsPage';
 import ChannelsPage from './pages/configure/ChannelsPage';
 import ToolsPage from './pages/configure/ToolsPage';
+import SharesPage from './pages/configure/SharesPage';
 import SettingsPage from './pages/configure/SettingsPage';
 
 import ProfilePage from './pages/ProfilePage';
@@ -79,6 +80,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <Route path="/configure/subagents" element={<EditTierGate><SubagentsPage /></EditTierGate>} />
           <Route path="/configure/channels"  element={<EditTierGate><ChannelsPage /></EditTierGate>} />
           <Route path="/configure/tools"     element={<EditTierGate><ToolsPage /></EditTierGate>} />
+          <Route path="/configure/shares"    element={<EditTierGate><SharesPage /></EditTierGate>} />
           <Route path="/configure/settings"  element={<EditTierGate><SettingsPage /></EditTierGate>} />
 
           {/* 用户工具页面 */}

@@ -19,13 +19,9 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * DataAgent 部署公开的管理员策划的 {@link DataSource} 描述符集的 SPI。
- * 实现位于 Spring {@code @Bean} 之后，以便操作员可以交换内存中的存根为
- * 基于 JPA、Nacos 或服务发现的实现，而无需更改 toolkit 代码。
- *
- * <p>从 Agent 的角度来看，注册表是只读的；管理员写入路径（CRUD UI、REST）在
- * v1 中不在范围内——操作员通过 {@code agentscope.json} 或专用的
- * Spring {@code @Bean} 来填充注册表。
+ * DataSourceRegistry 是一个数据源目录——告诉 Agent "有哪些数据库可以查"，就像公司里的"数据资产清单"。
+ * 通俗理解：DataSourceRegistry 就像一本"电话簿"——Agent 要查数据时，
+ * 先翻电话簿找到对应的数据库联系方式（URL），然后拨号查询。
  */
 public interface DataSourceRegistry {
 

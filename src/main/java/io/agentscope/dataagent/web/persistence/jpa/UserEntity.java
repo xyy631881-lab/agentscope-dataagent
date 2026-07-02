@@ -23,13 +23,7 @@ import jakarta.persistence.Table;
 import java.time.Instant;
 
 /**
- * Persistent representation of a builder user. Keyed by stable {@code userId} (the same value
- * used as the HarnessAgent namespace key on disk in file mode) so migration from a JSON store
- * preserves all references.
- *
- * <p>Roles are stored as a comma-separated string to keep the schema portable across MySQL,
- * PostgreSQL and H2 without introducing a join table. The {@code username} column is unique and
- * indexed for fast {@code findByUsername} lookups.
+ * 对应的数据库表：dataagent_user
  */
 @Entity
 @Table(
@@ -41,23 +35,23 @@ public class UserEntity {
 
     @Id
     @Column(name = "user_id", length = 128, nullable = false)
-    private String userId;
+    private String userId;  // 主键：稳定唯一标识
 
     @Column(name = "username", length = 191, nullable = false)
-    private String username;
+    private String username; // 用户名（唯一索引，用于登录）
 
     @Column(name = "password_hash", length = 200, nullable = false)
-    private String passwordHash;
+    private String passwordHash;  // 密码哈希值（用于登录验证）
 
     /**
      * Comma-separated role list. {@code null} or empty is treated as {@code "user"} at the API
      * boundary.
      */
     @Column(name = "roles_csv", length = 500)
-    private String rolesCsv;
+    private String rolesCsv;  // 角色逗号分隔字符串（默认值为"user"）
 
     @Column(name = "created_at")
-    private Instant createdAt = Instant.now();
+    private Instant createdAt = Instant.now();  // 创建时间（默认值为当前时间）
 
     public UserEntity() {}
 

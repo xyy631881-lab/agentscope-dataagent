@@ -20,23 +20,18 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 管理员策划的编目条目，描述 Agent 可以查询的命名数据源。v1 是一个薄
- * 描述符：一个稳定的 ID、一个人类可读的标签、JDBC 风格的 URL 前缀（或其他连接器
- * 提示），以及一个用于连接器特定配置的不透明 {@code properties} 映射。
- *
- * <p>具体的连接器实现（JDBC、BigQuery、Hologres、OSS+Parquet）明确不在
- * v1 的范围内——toolkit 在此返回描述符，以便 Agent 可以推理使用哪个源，
- * 即将推出的连接器模块将实现实际的 {@code run_sql_preview}。
+ * 只存元信息（名字、类型、标签），不存密码、不存敏感信息。真正的连接由底层的 JDBC DataSource 管理。
+ * 通俗理解：每条 DataSource 就像一张名片——上面写着"我是谁、我能提供什么、我的联系方式"，但不写内部机密。
  */
 public record DataSource(
-        String id,
-        String label,
-        String description,
-        String kind,
-        String urlHint,
-        List<String> tags,
-        Map<String, String> properties) {
-
+        String id,  // 唯一标识
+        String label,  // 显示名
+        String description,  // 详细描述
+        String kind,  // 类型："h2"、"mysql"、"postgresql"
+        String urlHint,  // URL 前缀提示
+        List<String> tags,  // 标签
+        Map<String, String> properties)  // 连接器特定配置
+{
     public DataSource {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(label, "label");

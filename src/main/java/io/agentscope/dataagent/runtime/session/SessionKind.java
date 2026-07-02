@@ -15,10 +15,10 @@
  */
 package io.agentscope.dataagent.runtime.session;
 
-/** 与 OpenClaw session 种类匹配的 session 分类。 */
+/** 会话类型：主会话 vs 子代理会话  */
 public enum SessionKind {
-    SUBAGENT("subagent"),
-    MAIN("main");
+    SUBAGENT("subagent"),  // 子代理会话，Agent 内部调用子 Agent 产生
+    MAIN("main");  // 主会话，用户直接跟 Agent 聊天
 
     private final String value;
 

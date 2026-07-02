@@ -32,14 +32,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * Per-user, per-session "last read at" tracker, used by the Threads inbox to derive an unread flag.
- *
- * <p>A session is considered <em>unread</em> when its {@code lastActivityMs} is greater than the
- * stored last-read timestamp. Marking-as-read updates the stored timestamp to {@link
- * System#currentTimeMillis()} (or to a caller-supplied value).
- *
- * <p>State is persisted as a flat JSON map at {@code .agentscope/session-read-state.json} so that
- * read state survives restarts. Writes go through an atomic temp-file rename.
+ * 跟踪每个会话的已读/未读状态
  */
 @Component
 public class SessionReadStateStore {

@@ -54,16 +54,15 @@ public final class WorkspaceManagerFactory {
     }
 
     /**
-     * Returns a {@link WorkspaceManager} for a user-scoped agent. Borrows (and starts on first
-     * use) the per-{@code (ownerId, agentId)} sandbox; the returned {@link WorkspaceManager} reads
-     * and writes through that sandbox via {@link SharedSandboxFilesystem}.
+     * 工厂接到订单"给用户 A 的 Agent B 准备一个办公室"——先找一个空闲办公室（借沙箱），
+     * 挂上门牌号（算路径），配上钥匙（文件系统），交付使用。
      */
     public WorkspaceManager forAgent(String ownerId, String agentId, String workspacePath) {
         validateSegment("ownerId", ownerId);
         validateSegment("agentId", agentId);
-        Sandbox sb = registry.borrow(ownerId, agentId);
-        Path dataPath = resolveAgentDataPath(workspacePath, agentId);
-        return new WorkspaceManager(dataPath, new SharedSandboxFilesystem(sb));
+        Sandbox sb = registry.borrow(ownerId, agentId);  //获取/创建用户的 Docker 容器
+        Path dataPath = resolveAgentDataPath(workspacePath, agentId);  //确定工作空间的逻辑路径
+        return new WorkspaceManager(dataPath, new SharedSandboxFilesystem(sb));  //把路径和文件系统绑定在一起
     }
 
     /**
@@ -106,17 +105,7 @@ public final class WorkspaceManagerFactory {
     }
 
     /**
-     * Resolves the user-supplied workspace path for an agent into an absolute host-side data
-     * root, mirroring the pre-sandbox behaviour so {@link WorkspaceManager#getWorkspace()} keeps
-     * returning the same labels (audit logs, UI display).
-     *
-     * <ul>
-     *   <li>If {@code workspacePath} is null or blank, {@code fallbackAgentId} is used in its
-     *       place.
-     *   <li>Absolute paths are returned normalized.
-     *   <li>Relative paths that already start under {@code ${cwd}/.agentscope/} are used as-is.
-     *   <li>Other relative paths are resolved against {@code ${cwd}/.agentscope/}.
-     * </ul>
+     * 路径解析规则
      */
     public Path resolveAgentDataPath(String workspacePath, String fallbackAgentId) {
         String raw =

@@ -4,6 +4,8 @@ export interface AgentShareGrant {
   granteeType: string;
   granteeId: string;
   tier: string;
+  createdAt?: number;
+  createdBy?: string;
 }
 
 export interface AgentDefinition {
@@ -137,6 +139,51 @@ export async function cloneAgent(sourceId: string, body: { id?: string; name?: s
   if (!res.ok) {
     const msg = await res.text().catch(() => `${res.status}`);
     throw new Error(`克隆 agent 失败: ${msg}`);
+  }
+  return res.json();
+}
+
+// 分享授权请求体（POST /api/agents/{id}/shares 的请求 body）
+export interface ShareGrantRequest {
+  granteeType: 'USER' | 'WORKSPACE';
+  granteeId: string;  // USER 时为目标 userId；WORKSPACE 时传 '*'（后端会归一化）
+  tier: 'CLONE' | 'RUN' | 'EDIT';
+}
+
+/**
+ * 追加（或更新）一条分享授权。upsert 语义：同 (granteeType, granteeId) 已存在就更新 tier。
+ * 只有 Agent 的 owner 能调用，后端会校验。
+ */
+export async function grantShare(agentId: string, req: ShareGrantRequest): Promise<AgentDefinition> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/shares`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => `${res.status}`);
+    throw new Error(`分享 agent 失败: ${msg}`);
+  }
+  return res.json();
+}
+
+/**
+ * 撤销一条分享授权。精确匹配 (granteeType, granteeId)。
+ * 参数走 query string（DELETE 带 body 不规范）。
+ */
+export async function revokeShare(
+  agentId: string,
+  granteeType: 'USER' | 'WORKSPACE',
+  granteeId: string,
+): Promise<AgentDefinition> {
+  const qs = new URLSearchParams({ granteeType, granteeId });
+  const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/shares?${qs}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const msg = await res.text().catch(() => `${res.status}`);
+    throw new Error(`撤销分享失败: ${msg}`);
   }
   return res.json();
 }

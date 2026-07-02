@@ -83,6 +83,7 @@ public class AnalyticsDataConfig {
 
     /**
      * 数据源注册表 —— 向 Agent 暴露分析数据库中的数据源。
+     * 当前默认只注册了一个数据源：电商业务分析 H2 数据库。
      */
     @Bean
     @ConditionalOnMissingBean(DataSourceRegistry.class)

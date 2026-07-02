@@ -16,9 +16,9 @@
 package io.agentscope.dataagent.tools.data;
 
 /**
- * 默认返回的无操作 {@link ChartRenderer}。将 spec 原样返回，以便 SPA
- * 可以获取并在客户端渲染（v1 前端已理解 Vega-Lite 规范）。
- * 想要服务端渲染的操作员应注册自己的实现此 SPI 的 bean。
+ * 默认返回的无操作
+ * 什么都没画！ 只是返回了一句"收到，前端会画的"
+ * 为什么不直接在服务端画图？ 因为当前架构选择了客户端渲染：
  */
 public final class StubChartRenderer implements ChartRenderer {
 

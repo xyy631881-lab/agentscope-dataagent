@@ -26,35 +26,8 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 import org.springframework.transaction.annotation.EnableTransactionManagement;
 
 /**
- * Wires the JPA-backed {@link UserStore} and {@link UserAgentDefinitionStore}. This is the only
- * persistence backend the builder ships with.
- *
- * <h2>Default DataSource</h2>
- *
- * <p>The default {@code application.yml} points {@code spring.datasource.url} at an embedded H2
- * file under {@code ${user.home}/.agentscope-builder/db} — kept deliberately separate from
- * {@code builder.workspace} so workspace volumes never include the catalog tables. No external
- * services or extra setup are required for a single-node deployment.
- *
- * <h2>Switching to MySQL / PostgreSQL</h2>
- *
- * <p>Activate the bundled {@code jdbc} Spring profile to flip the DataSource defaults to
- * MySQL-shaped values:
- *
- * <pre>{@code
- * --spring.profiles.active=jdbc
- *
- * # Or override individual settings without the profile:
- * BUILDER_DB_URL=jdbc:postgresql://host:5432/agentscope_builder
- * BUILDER_DB_DRIVER=org.postgresql.Driver
- * BUILDER_DB_USER=...
- * BUILDER_DB_PASSWORD=...
- * BUILDER_JPA_DDL_AUTO=validate          # once Flyway / Liquibase manage the schema
- * }</pre>
- *
- * <p>The MySQL ({@code com.mysql:mysql-connector-j}) and PostgreSQL ({@code org.postgresql:postgresql})
- * JDBC drivers are bundled at runtime scope; the active Hibernate dialect is resolved from the
- * {@code spring.datasource.url}.
+ * JpaPersistenceConfig 是"数据库持久化层的总开关"——它通过 3 个注解激活 Spring Data JPA 的全套能力，
+ * 并创建 2 个核心 Bean（用户存储 + Agent 定义存储），是连接"业务接口"和"数据库表"的桥梁。
  */
 @Configuration
 @EnableJpaRepositories(basePackageClasses = JpaPersistenceConfig.class)
@@ -64,12 +37,14 @@ public class JpaPersistenceConfig {
 
     private static final Logger log = LoggerFactory.getLogger(JpaPersistenceConfig.class);
 
+    // ← 创建 UserStore 实现
     @Bean
     public UserStore jpaUserStore(UserEntityRepository repository) {
         log.info("Persistence: user store backed by JPA");
         return new JpaUserStore(repository);
     }
 
+    // ← 创建 Agent 定义存储实现
     @Bean
     public UserAgentDefinitionStore jpaUserAgentDefinitionStore(AgentEntityRepository repository) {
         log.info("Persistence: agent definition store backed by JPA");

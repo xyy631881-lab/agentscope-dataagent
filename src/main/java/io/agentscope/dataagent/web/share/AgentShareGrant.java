@@ -38,7 +38,11 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record AgentShareGrant(
-        String granteeType, String granteeId, String tier, long createdAt, String createdBy) {
+        String granteeType, // USER=指定用户 / WORKSPACE=所有登录用户
+        String granteeId, // USER 时是 userId / WORKSPACE 时是 "*"
+        String tier, // CLONE / RUN / EDIT
+        long createdAt,
+        String createdBy) {
 
     public static final String GRANTEE_USER = "USER";
     public static final String GRANTEE_WORKSPACE = "WORKSPACE";

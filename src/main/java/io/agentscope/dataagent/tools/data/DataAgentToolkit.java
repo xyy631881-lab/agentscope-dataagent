@@ -17,29 +17,29 @@ package io.agentscope.dataagent.tools.data;
 
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
-import java.sql.Connection;
-import java.sql.DatabaseMetaData;
-import java.sql.ResultSet;
-import java.sql.ResultSetMetaData;
-import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.jdbc.core.ConnectionCallback;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * 面向 Agent 的数据分析原语工具包：列出已配置的数据源、描述表、预览 SQL 查询、渲染图表。
- *
  * <p>支持两种模式：
  * <ul>
- *   <li><b>独立模式</b>（无 DataSource）：仅 list_data_sources 有完整实现，
+ *   <li><b>独立模式</b>（无 JdbcTemplate）：仅 list_data_sources 有完整实现，
  *       describe_table 和 run_sql_preview 返回 "not implemented"。</li>
- *   <li><b>连接模式</b>（注入 DataSource）：所有工具通过 JDBC 真实执行，
+ *   <li><b>连接模式</b>（注入 JdbcTemplate）：所有工具通过 Spring JdbcTemplate 真实执行，
  *       describe_table 返回表结构 + 采样数据，run_sql_preview 返回 markdown 表格。</li>
  * </ul>
+ *
+ * <p>优化历史：从原生 JDBC 改为 Spring JdbcTemplate，消除了 try-with-resources 样板代码
+ * 和手动 ResultSet 遍历；markdown 表格渲染抽到 {@link MarkdownTables} 工具类。
  */
 public final class DataAgentToolkit {
 
@@ -49,24 +49,25 @@ public final class DataAgentToolkit {
 
     private final DataSourceRegistry registry;
     private final ChartRenderer chartRenderer;
-    private final DataSource dataSource;
+    // 用 JdbcTemplate 替代原生 DataSource——它封装了连接管理和 ResultSet 遍历
+    private final JdbcTemplate jdbcTemplate;
 
     /**
      * @param registry 数据源注册表（必填）
      * @param chartRenderer 图表渲染器（必填）
-     * @param dataSource 可选 JDBC DataSource；为 null 时 SQL 工具返回 stub
+     * @param jdbcTemplate 可选 JDBC 模板；为 null 时 SQL 工具返回 stub
      */
     public DataAgentToolkit(
             DataSourceRegistry registry,
             ChartRenderer chartRenderer,
-            DataSource dataSource) {
+            JdbcTemplate jdbcTemplate) {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.chartRenderer = Objects.requireNonNull(chartRenderer, "chartRenderer");
-        this.dataSource = dataSource;
-        if (dataSource != null) {
-            log.info("DataAgentToolkit: JDBC DataSource 已注入，describe_table / run_sql_preview 可用");
+        this.jdbcTemplate = jdbcTemplate;
+        if (jdbcTemplate != null) {
+            log.info("DataAgentToolkit: JdbcTemplate 已注入，describe_table / run_sql_preview 可用");
         } else {
-            log.info("DataAgentToolkit: 无 JDBC DataSource，SQL 工具为 stub 模式");
+            log.info("DataAgentToolkit: 无 JdbcTemplate，SQL 工具为 stub 模式");
         }
     }
 
@@ -99,6 +100,10 @@ public final class DataAgentToolkit {
         return sb.toString().stripTrailing();
     }
 
+    /**
+     * 校验 source_id → 校验 table → 检查 JdbcTemplate → 执行 describeTableJdbc
+     * 返回列信息 + 采样数据（前 5 行）。
+     */
     @Tool(
             name = "describe_table",
             description =
@@ -121,12 +126,20 @@ public final class DataAgentToolkit {
         if (table == null || table.isBlank()) {
             return "error: table must not be blank";
         }
-        if (dataSource == null) {
+        if (jdbcTemplate == null) {
             return "not implemented: describe_table requires a connector module (see DataAgent docs)";
         }
         return describeTableJdbc(table);
     }
 
+    /**
+     * 三层防护（像银行三道门）：
+     * ① 白名单：只让 SELECT/WITH 开头（查询客户才进门）
+     * ② 黑名单：搜身查 DDL/DML 关键词（带危险品不让进）
+     * ③ 额度限制：setMaxRows 限制行数（取款限额）
+     *
+     * <p>注意：LIMIT 不再拼接字符串（避免方言不兼容 Oracle），改用 JDBC 的 setMaxRows。
+     */
     @Tool(
             name = "run_sql_preview",
             description =
@@ -153,18 +166,21 @@ public final class DataAgentToolkit {
         }
         String trimmed = sql.trim();
         String lower = trimmed.toLowerCase();
+        // ① 白名单：只允许 SELECT / WITH 开头
         if (!lower.startsWith("select") && !lower.startsWith("with")) {
             return "error: only SELECT / WITH statements are allowed";
         }
-        // 安全检查：禁止 DDL/DML 关键词
-        String[] forbidden = {"insert ", "update ", "delete ", "drop ", "alter ",
-                "create ", "truncate ", "merge ", "replace "};
+        // ② 黑名单：禁止 DDL/DML 关键词（防止 DROP TABLE 等注入）
+        List<String> forbidden = List.of(
+                "insert ", "update ", "delete ", "drop ", "alter ",
+                "create ", "truncate ", "merge ", "replace ");
         for (String kw : forbidden) {
             if (lower.contains(kw)) {
-                return "error: forbidden keyword '" + kw.trim() + "' detected; only SELECT allowed";
+                return "error: forbidden keyword '" + kw.trim()
+                        + "' detected; only SELECT allowed";
             }
         }
-        if (dataSource == null) {
+        if (jdbcTemplate == null) {
             return "not implemented: run_sql_preview requires a connector module (see DataAgent docs)";
         }
         int limit = rowLimit != null ? Math.min(rowLimit, MAX_ROW_LIMIT) : DEFAULT_ROW_LIMIT;
@@ -190,96 +206,89 @@ public final class DataAgentToolkit {
     }
 
     // -----------------------------------------------------------------
-    //  JDBC 实现
+    //  JdbcTemplate 实现
     // -----------------------------------------------------------------
 
+    /**
+     * 描述表结构：列信息（用 DatabaseMetaData）+ 采样数据（SELECT * LIMIT 5）。
+     *
+     * <p>JdbcTemplate 的 {@code extract(DatabaseMetaData)} 回调专门用于拿元数据，
+     * 避免手动管理 Connection。
+     */
     private String describeTableJdbc(String tableName) {
-        try (Connection conn = dataSource.getConnection()) {
-            DatabaseMetaData meta = conn.getMetaData();
+        try {
+            // 1) 列信息：用 JdbcTemplate 的 Connection 回调拿 DatabaseMetaData
             StringBuilder sb = new StringBuilder();
-
-            // 1) 列信息
             sb.append("Table: ").append(tableName).append("\nColumns:\n");
-            try (ResultSet cols = meta.getColumns(null, null,
-                    tableName.toUpperCase(), null)) {
-                if (!cols.isBeforeFirst()) {
-                    // 尝试小写
-                    cols.close();
-                }
-            }
-            try (ResultSet cols = meta.getColumns(null, null,
-                    tableName.toUpperCase(), null)) {
-                boolean hasColumns = false;
-                while (cols.next()) {
-                    hasColumns = true;
-                    String colName = cols.getString("COLUMN_NAME");
-                    String colType = cols.getString("TYPE_NAME");
-                    int colSize = cols.getInt("COLUMN_SIZE");
-                    String nullable = "YES".equals(cols.getString("IS_NULLABLE"))
-                            ? "NULL" : "NOT NULL";
-                    sb.append(String.format("  %-25s %-15s (%d) %s\n",
-                            colName, colType, colSize, nullable));
-                }
-                if (!hasColumns) {
-                    sb.append("  (no columns found; check table name)\n");
+
+            List<String[]> columns = jdbcTemplate.execute(
+                    (ConnectionCallback<List<String[]>>) conn -> {
+                        List<String[]> cols = new ArrayList<>();
+                        java.sql.DatabaseMetaData meta = conn.getMetaData();
+                        try (java.sql.ResultSet rs = meta.getColumns(
+                                null, null, tableName.toUpperCase(), null)) {
+                            while (rs.next()) {
+                                cols.add(new String[]{
+                                        rs.getString("COLUMN_NAME"),
+                                        rs.getString("TYPE_NAME"),
+                                        String.valueOf(rs.getInt("COLUMN_SIZE")),
+                                        "YES".equals(rs.getString("IS_NULLABLE"))
+                                                ? "NULL" : "NOT NULL"
+                                });
+                            }
+                        }
+                        return cols;
+                    });
+
+            if (columns.isEmpty()) {
+                sb.append("  (no columns found; check table name)\n");
+            } else {
+                for (String[] c : columns) {
+                    sb.append(String.format("  %-25s %-15s (%s) %s%n",
+                            c[0], c[1], c[2], c[3]));
                 }
             }
 
-            // 2) 采样数据 (前 5 行)
+            // 2) 采样数据（前 5 行）——用 setMaxRows 限制，不拼 LIMIT 字符串
             sb.append("\nSample rows (LIMIT 5):\n");
-            try (Statement stmt = conn.createStatement();
-                 ResultSet rs = stmt.executeQuery(
-                         "SELECT * FROM " + sanitizeIdentifier(tableName) + " LIMIT 5")) {
-                ResultSetMetaData rsmd = rs.getMetaData();
-                int colCount = rsmd.getColumnCount();
+            String safeTable = sanitizeIdentifier(tableName);
+            List<Map<String, Object>> sampleRows = jdbcTemplate.execute(
+                    (ConnectionCallback<List<Map<String, Object>>>) conn -> {
+                        List<Map<String, Object>> rows = new ArrayList<>();
+                        try (java.sql.Statement stmt = conn.createStatement()) {
+                            stmt.setMaxRows(5);  // 用 JDBC API 限制行数，避免 LIMIT 方言差异
+                            try (java.sql.ResultSet rs = stmt.executeQuery(
+                                    "SELECT * FROM " + safeTable)) {
+                                java.sql.ResultSetMetaData rsmd = rs.getMetaData();
+                                int colCount = rsmd.getColumnCount();
+                                while (rs.next()) {
+                                    Map<String, Object> row = new LinkedHashMap<>();
+                                    for (int i = 1; i <= colCount; i++) {
+                                        row.put(rsmd.getColumnName(i), rs.getString(i));
+                                    }
+                                    rows.add(row);
+                                }
+                            }
+                        }
+                        return rows;
+                    });
 
-                // 表头
-                List<String> headers = new ArrayList<>();
-                List<Integer> widths = new ArrayList<>();
-                for (int i = 1; i <= colCount; i++) {
-                    String h = rsmd.getColumnName(i);
-                    headers.add(h);
-                    widths.add(Math.max(h.length(), 10));
+            List<String> headers = sampleRows.isEmpty()
+                    ? List.of()
+                    : new ArrayList<>(sampleRows.get(0).keySet());
+            List<List<String>> stringRows = new ArrayList<>();
+            for (Map<String, Object> row : sampleRows) {
+                List<String> vals = new ArrayList<>();
+                for (String h : headers) {
+                    Object v = row.get(h);
+                    vals.add(v == null ? "NULL" : v.toString());
                 }
-
-                // 收集数据行
-                List<List<String>> rows = new ArrayList<>();
-                while (rs.next()) {
-                    List<String> row = new ArrayList<>();
-                    for (int i = 1; i <= colCount; i++) {
-                        String val = rs.getString(i);
-                        if (val == null) val = "NULL";
-                        row.add(val);
-                        widths.set(i - 1, Math.max(widths.get(i - 1),
-                                Math.min(val.length(), 30)));
-                    }
-                    rows.add(row);
-                }
-
-                // 渲染表头
-                sb.append("|");
-                for (int i = 0; i < colCount; i++) {
-                    sb.append(" ").append(padRight(headers.get(i), widths.get(i))).append(" |");
-                }
-                sb.append("\n|");
-                for (int i = 0; i < colCount; i++) {
-                    sb.append("-".repeat(widths.get(i) + 2)).append("|");
-                }
-                sb.append("\n");
-
-                // 渲染数据
-                for (List<String> row : rows) {
-                    sb.append("|");
-                    for (int i = 0; i < colCount; i++) {
-                        String val = row.get(i);
-                        if (val.length() > 30) val = val.substring(0, 27) + "...";
-                        sb.append(" ").append(padRight(val, widths.get(i))).append(" |");
-                    }
-                    sb.append("\n");
-                }
-                if (rows.isEmpty()) {
-                    sb.append("(empty table)\n");
-                }
+                stringRows.add(vals);
+            }
+            if (sampleRows.isEmpty()) {
+                sb.append("(empty table)\n");
+            } else {
+                sb.append(MarkdownTables.render(headers, stringRows, null));
             }
             return sb.toString().stripTrailing();
         } catch (Exception e) {
@@ -288,68 +297,43 @@ public final class DataAgentToolkit {
         }
     }
 
+    /**
+     * 执行只读 SQL，返回 markdown 表格。
+     *
+     * <p>关键优化：
+     * <ul>
+     *   <li>用 {@code setMaxRows(rowLimit)} 限制行数，不拼接 LIMIT 字符串
+     *       —— 解决 Oracle 等不支持 LIMIT 的方言问题</li>
+     *   <li>用 JdbcTemplate 的 {@code query(StatementCallback)} 自定义 Statement 创建
+     *       —— 在创建时调 setMaxRows</li>
+     * </ul>
+     */
     private String runSqlPreviewJdbc(String sql, int rowLimit) {
-        // 强制追加 LIMIT（如果原 SQL 没有）
-        String lowerSql = sql.toLowerCase();
-        if (!lowerSql.contains("limit") && !lowerSql.contains("fetch")) {
-            sql = sql + " LIMIT " + rowLimit;
-        }
-        try (Connection conn = dataSource.getConnection();
-             Statement stmt = conn.createStatement()) {
-            stmt.setMaxRows(rowLimit);
-            try (ResultSet rs = stmt.executeQuery(sql)) {
-                ResultSetMetaData rsmd = rs.getMetaData();
-                int colCount = rsmd.getColumnCount();
+        try {
+            // 用 ConnectionCallback 拿 Connection 自己建 Statement，
+            // 在建完 Statement 后立刻调 setMaxRows——这样无论什么数据库方言都生效
+            List<Map<String, Object>> rows = jdbcTemplate.execute(
+                    (ConnectionCallback<List<Map<String, Object>>>) conn -> {
+                        List<Map<String, Object>> result = new ArrayList<>();
+                        try (java.sql.Statement stmt = conn.createStatement()) {
+                            stmt.setMaxRows(rowLimit);
+                            try (java.sql.ResultSet rs = stmt.executeQuery(sql)) {
+                                java.sql.ResultSetMetaData rsmd = rs.getMetaData();
+                                int colCount = rsmd.getColumnCount();
+                                while (rs.next()) {
+                                    Map<String, Object> row = new LinkedHashMap<>();
+                                    for (int i = 1; i <= colCount; i++) {
+                                        row.put(rsmd.getColumnName(i), rs.getString(i));
+                                    }
+                                    result.add(row);
+                                }
+                            }
+                        }
+                        return result;
+                    });
 
-                // 列名与宽度
-                List<String> headers = new ArrayList<>();
-                List<Integer> widths = new ArrayList<>();
-                for (int i = 1; i <= colCount; i++) {
-                    String h = rsmd.getColumnName(i);
-                    headers.add(h);
-                    widths.add(Math.max(h.length(), 8));
-                }
-
-                // 收集数据
-                List<List<String>> rows = new ArrayList<>();
-                int rowCount = 0;
-                while (rs.next() && rowCount < rowLimit) {
-                    List<String> row = new ArrayList<>();
-                    for (int i = 1; i <= colCount; i++) {
-                        String val = rs.getString(i);
-                        if (val == null) val = "NULL";
-                        row.add(val);
-                        widths.set(i - 1, Math.max(widths.get(i - 1),
-                                Math.min(val.length(), 35)));
-                    }
-                    rows.add(row);
-                    rowCount++;
-                }
-
-                StringBuilder sb = new StringBuilder();
-                sb.append("Query returned ").append(rowCount).append(" row(s):\n\n");
-
-                // Markdown 表格
-                sb.append("|");
-                for (int i = 0; i < colCount; i++) {
-                    sb.append(" ").append(padRight(headers.get(i), widths.get(i))).append(" |");
-                }
-                sb.append("\n|");
-                for (int i = 0; i < colCount; i++) {
-                    sb.append("-".repeat(widths.get(i) + 2)).append("|");
-                }
-                sb.append("\n");
-                for (List<String> row : rows) {
-                    sb.append("|");
-                    for (int i = 0; i < colCount; i++) {
-                        String val = row.get(i);
-                        if (val.length() > 35) val = val.substring(0, 32) + "...";
-                        sb.append(" ").append(padRight(val, widths.get(i))).append(" |");
-                    }
-                    sb.append("\n");
-                }
-                return sb.toString().stripTrailing();
-            }
+            String title = "Query returned " + rows.size() + " row(s):";
+            return MarkdownTables.renderFromMaps(rows, rowLimit, title);
         } catch (Exception e) {
             log.error("run_sql_preview failed: sql={}, error={}", sql, e.getMessage());
             return "error: SQL execution failed — " + e.getMessage();
@@ -360,13 +344,8 @@ public final class DataAgentToolkit {
     //  辅助方法
     // -----------------------------------------------------------------
 
+    /** 只允许字母数字和下划线，防止表名注入。 */
     private static String sanitizeIdentifier(String name) {
-        // 只允许字母数字和下划线
         return name.replaceAll("[^a-zA-Z0-9_]", "");
-    }
-
-    private static String padRight(String s, int len) {
-        if (s.length() >= len) return s;
-        return s + " ".repeat(len - s.length());
     }
 }

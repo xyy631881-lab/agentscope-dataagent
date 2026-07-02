@@ -45,29 +45,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Owns the per-{@code (userId, agentId)} live {@link Sandbox} instances used by the DataAgent web
- * tier.
+ * UserSandboxRegistry 是一个"用户专属 Docker 容器池"——它为每个 (userId, agentId)
+ * 组合懒创建、缓存复用、空闲回收 Docker 沙箱容器，实现多租户的文件系统隔离。
  *
- * <p>Both the browser workspace controllers and the agent runtime (via {@link
- * io.agentscope.harness.agent.sandbox.SandboxContext#getExternalSandbox()}) read and write through
- * the sandbox returned by {@link #borrow(String, String)}. Reusing a single container per user
- * across browser requests and agent turns is what makes the workspace user-isolated — every other
- * route the old {@link io.agentscope.harness.agent.filesystem.CompositeFilesystem} fell through to
- * a shared {@code LocalFilesystem}, leaking content across tenants.
- *
- * <p>Lifecycle: a sandbox is created+started lazily on the first {@link #borrow} for a key, kept
- * alive across subsequent borrows, and closed once it has gone idle for {@link #idleTtl}. {@link
- * #shutdownAll()} runs on bean destruction. Approval of a marketplace contribution calls
- * {@link #invalidate(String, String)} to evict all sandboxes whose shared layer has changed.
- *
- * <p>Threading: {@link ConcurrentHashMap#compute} serialises {@link #borrow} for the same key, so
- * {@link Sandbox#start()} is only invoked once per container. Concurrent borrows on different keys
- * are independent.
- *
- * <p>Multi-replica: this registry is in-memory only. Deployments with more than one replica must
- * use sticky load-balancing by {@code userId} to keep a user's traffic on the same pod (each pod
- * would otherwise spin up its own container for the same user, and the frontend would observe
- * non-deterministic state).
+ * 比喻：酒店式公寓前台，住客（用户）来的时候给他开一间房（容器），走的时候不退房（缓存复用），
+ * 但空闲超过 TTL 就自动退房（回收）。
  */
 public final class UserSandboxRegistry {
 
@@ -80,6 +62,7 @@ public final class UserSandboxRegistry {
     private final Path hostWorkspaceRoot;
     private final Duration idleTtl;
     private final SandboxLifecycleRepository lifecycleRepo;
+    //entries —— 主缓存表，key 是 (userId, agentId)，value 是容器 Entry，ConcurrentHashMap 保证多线程安全。
     private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
     private final ScheduledExecutorService evictor;
 
@@ -117,6 +100,7 @@ public final class UserSandboxRegistry {
                             t.setDaemon(true);
                             return t;
                         });
+        //定时任务驱动
         this.evictor.scheduleWithFixedDelay(
                 this::evictIdleQuietly, pollMs, pollMs, TimeUnit.MILLISECONDS);
         log.info(
@@ -128,9 +112,10 @@ public final class UserSandboxRegistry {
     }
 
     /**
-     * Returns the live {@link Sandbox} for {@code (userId, agentId)}, creating + starting it on
-     * first call. Subsequent calls within the {@link #idleTtl} window return the same instance
-     * and bump its idle timer.
+     * borrow(userId, agentId) — 借一个沙箱（核心入口）
+     * 比喻：没空房就新开一间，有就直接用。
+     * compute 是原子操作：同一个 key 同时被两个线程调 borrow，
+     * 只会创建一次容器，不会重复。这是关键——避免并发下重复开容器。
      */
     public Sandbox borrow(String userId, String agentId) {
         validateSegment("userId", userId);
@@ -141,42 +126,33 @@ public final class UserSandboxRegistry {
                         key,
                         (k, existing) -> {
                             if (existing != null) {
-                                existing.touch();
+                                existing.touch();   // 已有 → 刷新访问时间
                                 return existing;
                             }
-                            return new Entry(createAndStart(k));
+                            return new Entry(createAndStart(k));  // 没有 → 创建新的
                         });
         return entry.sandbox;
     }
 
     /**
-     * Returns the live {@link Sandbox} for {@code (userId, agentId)} if one is already cached.
-     * Does NOT create a new container — useful for callers (e.g. file-tree rendering on a freshly
-     * loaded UI) that should not pay the cold-start cost when nothing has happened yet.
+     * peek(userId, agentId) — 看一眼有没有（不创建）
+     * 用途：前端刚加载页面时，只看有没有已有容器，不触发冷启动（创建容器要好几秒）
      */
     public Optional<Sandbox> peek(String userId, String agentId) {
         validateSegment("userId", userId);
         validateSegment("agentId", agentId);
         Entry e = entries.get(new Key(userId, agentId));
         if (e == null) {
-            return Optional.empty();
+            return Optional.empty();  // 没找到 → 返回空
         }
         e.touch();
         return Optional.of(e.sandbox);
     }
 
     /**
-     * Closes and removes cached sandboxes matching {@code (userId, agentId)}.
-     *
-     * <ul>
-     *   <li>{@code userId} non-null: only that user's sandbox for the agent is evicted.
-     *   <li>{@code userId} null: every user's sandbox for the agent is evicted — used by the
-     *       contribution-approval flow so the next {@link #borrow} for any user of that agent
-     *       reconstructs the container and picks up the newly approved shared content.
-     * </ul>
-     *
-     * <p>Safe to call concurrently with other {@link #borrow} calls — they will simply re-create
-     * the sandbox on the next access.
+     * invalidate(userId, agentId) — 作废沙箱（强制重建）
+     * 用途：MarketContributionService 审批通过一个贡献时，
+     * 需要让所有用户的沙箱重建，以便加载新的共享内容（skills/knowledge 等）。
      */
     public void invalidate(String userId, String agentId) {
         validateSegment("agentId", agentId);
@@ -189,9 +165,9 @@ public final class UserSandboxRegistry {
                 continue;
             }
             if (userId != null && !userId.isBlank() && !k.userId().equals(userId)) {
-                continue;
+                continue;  // userId 非 null → 只清该用户的沙箱
             }
-            it.remove();
+            it.remove();  //清该 Agent 所有用户的
             closeQuietly(k, e.getValue().sandbox, "invalidate");
             removed++;
         }
@@ -205,8 +181,9 @@ public final class UserSandboxRegistry {
     }
 
     /**
-     * Visible for tests. Closes every sandbox whose last access time is older than {@link
-     * #idleTtl}.
+     * evictIdle() — 回收空闲沙箱
+     * 机制：后台定时线程每隔 evictionPollInterval（默认 60 秒）扫一次，
+     * 超过 idleTtl（默认 15 分钟）没被访问的容器自动关闭。
      */
     void evictIdle() {
         long cutoff = System.currentTimeMillis() - idleTtl.toMillis();
@@ -229,6 +206,10 @@ public final class UserSandboxRegistry {
         }
     }
 
+    /**
+     * shutdownAll() — 关闭所有沙箱
+     * 用途：应用关闭时，确保所有沙箱都被关闭，释放资源。
+     */
     @PreDestroy
     public void shutdownAll() {
         evictor.shutdownNow();
@@ -238,15 +219,22 @@ public final class UserSandboxRegistry {
         entries.clear();
     }
 
+    /**
+     * createAndStart(key) — 创建并启动沙箱
+     * 用途：首次借沙箱时，创建并启动沙箱。
+     */
     private Sandbox createAndStart(Key key) {
         DockerSandboxClientOptions options = new DockerSandboxClientOptions();
+        // 1. 构建工作空间规格（挂载共享内容）
         WorkspaceSpec ws = buildWorkspaceSpec(key);
+        // 2. 创建 Docker 容器
         Sandbox sandbox = client.create(ws, new NoopSnapshotSpec(), options);
         try {
+            // 3. 启动容器
             sandbox.start();
         } catch (Exception startErr) {
             try {
-                sandbox.close();
+                sandbox.close();  // start 失败会先 close 半成品容器，避免泄漏。这是个好设计——创建失败不留残骸。
             } catch (Exception closeErr) {
                 log.warn(
                         "[sandbox-registry] failed to close half-started sandbox for {}: {}",
@@ -267,6 +255,8 @@ public final class UserSandboxRegistry {
     /**
      * 将沙箱生命周期记录持久化到 DB。
      * 记录容器 ID、用户、Agent、镜像等信息供调度器跟踪。
+     * 为什么需要 DB 记录？ 因为 entries 是纯内存的，应用重启后内存清空，
+     * 但 Docker 容器可能还活着。DB 记录让重启后的应用能识别"孤儿容器"并精确清理，而不是无脑扫全部。
      */
     private void recordLifecycle(Key key, Sandbox sandbox) {
         if (lifecycleRepo == null) {
@@ -293,16 +283,18 @@ public final class UserSandboxRegistry {
     }
 
     /**
-     * Builds the workspace projection spec for {@code key}: the source root is the per-agent slice
-     * under {@link #hostWorkspaceRoot} so the container only sees its own agent's shared layer.
-     * The directory is created on demand to avoid a Docker mount failure when the agent's slice
-     * doesn't exist yet.
+     * 效果：每个新容器启动时，
+     * 两层隔离：
+     * 用户间隔离：每个用户一个独立容器，文件系统天然隔离
+     * Agent 间隔离：容器只挂载自己 agentId 的共享层，看不到别的 Agent 的 skills
+     * 自动获得该 Agent 的共享内容（技能、子代理、知识库、AGENTS.md），但用户自己的文件是空的。
      */
     private WorkspaceSpec buildWorkspaceSpec(Key key) {
         WorkspaceSpec spec = new WorkspaceSpec();
         if (hostWorkspaceRoot == null) {
             return spec;
         }
+        // 宿主机路径: {cwd}/shared/agents/{agentId}/
         Path agentSlice =
                 hostWorkspaceRoot
                         .resolve("agents")
@@ -310,12 +302,14 @@ public final class UserSandboxRegistry {
                         .toAbsolutePath()
                         .normalize();
         try {
+            // 确保目录存在
             Files.createDirectories(agentSlice);
         } catch (IOException e) {
             throw new IllegalStateException(
                     "Failed to ensure per-agent shared dir " + agentSlice + ": " + e.getMessage(),
                     e);
         }
+        // 把这个目录下的特定子目录投影（挂载）到容器里
         WorkspaceProjectionEntry projection = new WorkspaceProjectionEntry();
         projection.setSourceRoot(agentSlice.toString());
         projection.setIncludeRoots(DEFAULT_PROJECTION_ROOTS);
@@ -325,6 +319,7 @@ public final class UserSandboxRegistry {
         return spec;
     }
 
+    //关闭失败只 warn 不抛异常——避免一个容器关失败导致整个清理循环中断。
     private void closeQuietly(Key key, Sandbox sandbox, String reason) {
         try {
             sandbox.close();
@@ -357,7 +352,10 @@ public final class UserSandboxRegistry {
         }
     }
 
-    /** Composite key used to scope a sandbox to one user + agent. */
+    /**
+     * 每个用户 × 每个 Agent = 一个独立容器。
+     * Alice 用数据分析师是一个容器，Alice 用报表生成器是另一个容器。
+     * */
     public record Key(String userId, String agentId) {
         public Key {
             Objects.requireNonNull(userId, "userId");
@@ -367,7 +365,9 @@ public final class UserSandboxRegistry {
 
     private static final class Entry {
         final Sandbox sandbox;
-        volatile long lastAccessMs;
+        volatile long lastAccessMs;  // 最后访问时间，用于空闲回收，
+        // 为啥要记 lastAccessMs：回收时按这个判断"空多久了"。
+        // volatile 是因为多线程读写（borrow/evictor 同时跑）。
 
         Entry(Sandbox sandbox) {
             this.sandbox = sandbox;

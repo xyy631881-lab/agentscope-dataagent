@@ -21,33 +21,21 @@ import java.util.List;
 import org.springframework.stereotype.Service;
 
 /**
- * Single source of truth for per-agent permissions.
+ * AgentAclService 是"权限计算引擎"——它根据"谁（userId）对哪个 Agent（AgentDefinition）有什么操作意图"，
+ * 计算出这个用户在这个 Agent 上拥有的最高权限级别。
  *
- * <p>Tiers are ordered: {@code EDIT > RUN > CLONE}. Rules:
- *
- * <ul>
- *   <li>Owner of a {@code SCOPE_USER} agent → {@code EDIT}.
- *   <li>Any logged-in user on a {@code SCOPE_GLOBAL} agent → {@code RUN}. Globals stay UI
- *       read-only; edits to globals happen by checking in {@code agentscope.json} and are not
- *       routed through ACL.
- *   <li>A grant on {@code (USER, userId)} applies immediately to that user.
- *   <li>A grant on {@code (WORKSPACE, "*")} applies to every logged-in user.
- *   <li>Highest matching tier wins.
- *   <li>The {@code admin} role grants user-management only — it does <strong>not</strong> grant
- *       agent-level access automatically.
- * </ul>
- *
- * <p>This service is intentionally stateless; the per-request snapshot of an
- * {@link AgentDefinition} is the only input. Catalog/store layers must surface the agent's
- * {@code shares} list verbatim — gating happens here, not in catalog or controller code paths.
+ * Agent 有三种归属关系：
+ * 1. GLOBAL 全局共享，管理员创建：任何用户都可以运行（调用）
+ * 2. USER 用户自己创建的：创建者自己可以运行（调用）和编辑（修改）
+ * 3. SHARE 分享给用户的 Agent：被分享者自己可以运行（调用）和编辑（修改）
  */
 @Service
 public class AgentAclService {
 
     public enum Tier {
-        CLONE(1),
-        RUN(2),
-        EDIT(3);
+        CLONE(1),  // 可以克隆（复制一份变成自己的）
+        RUN(2),    // 可以运行（调用 Agent）
+        EDIT(3);   // 可以编辑（修改 Agent）
 
         private final int rank;
 
@@ -57,7 +45,7 @@ public class AgentAclService {
 
         public boolean implies(Tier other) {
             return this.rank >= other.rank;
-        }
+        }  // 高级别包含低级别
     }
 
     /** Returns the highest tier {@code userId} holds on {@code def}, or {@code null} if none. */
@@ -65,12 +53,15 @@ public class AgentAclService {
         if (def == null) {
             return null;
         }
+        // 规则1：全局 Agent → 所有人都有 RUN 权限
         if (AgentDefinition.SCOPE_GLOBAL.equals(def.scope())) {
             return Tier.RUN;
         }
+        // 规则2：自己创建的 Agent → 有 EDIT（全权） 权限
         if (userId != null && userId.equals(def.ownerId())) {
             return Tier.EDIT;
         }
+        // 规则3：别人分享给你的 Agent → 看分享记录
         return highestMatchingGrant(userId, def.shares());
     }
 
@@ -92,8 +83,8 @@ public class AgentAclService {
     }
 
     /**
-     * Returns the highest tier from {@code grants} that applies to {@code userId} via either a
-     * direct USER grant or a WORKSPACE grant. {@code null} if none matches.
+     * highestMatchingGrant 会遍历所有分享记录，找到最高的权限：
+     * 最高匹配原则：如果一个人同时被 USER 和 WORKSPACE 两种方式分享了，取最高的那个。
      */
     private Tier highestMatchingGrant(String userId, List<AgentShareGrant> grants) {
         if (grants == null || grants.isEmpty()) {
@@ -115,6 +106,11 @@ public class AgentAclService {
         return best;
     }
 
+    /**
+     * applies 方法判断"这条记录对我生效吗"：
+     * WORKSPACE 类型：只要我登录了（userId != null）就生效
+     * USER 类型：granteeId 必须等于我的 userId
+     */
     private static boolean applies(String userId, AgentShareGrant g) {
         if (g == null || g.granteeType() == null || g.tier() == null) {
             return false;

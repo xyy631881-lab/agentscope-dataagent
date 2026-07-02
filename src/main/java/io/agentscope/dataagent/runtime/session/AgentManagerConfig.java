@@ -16,7 +16,7 @@
 package io.agentscope.dataagent.runtime.session;
 
 /**
- * {@link SessionAgentManager} 的维护配置。
+ * 维护策略配置
  */
 public record AgentManagerConfig(SessionMaintenanceConfig maintenanceConfig) {
 

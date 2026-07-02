@@ -39,12 +39,10 @@ public class AgentAccessGuard {
     }
 
     /**
-     * Resolves the agent and returns it iff {@code userId} holds at least {@code required}.
-     *
-     * @throws ResponseStatusException 404 if the agent is invisible to the user, 403 if visible
-     *     but below the required tier.
+     * 这是整个系统的门卫——你能不能见这个 Agent？能见的话，能做什么级别的操作？门卫帮你查清楚，不合规的直接拦在门外。
      */
     public AgentDefinition require(String userId, String agentId, Tier required) {
+        // 第一道门：你能不能"看到"这个 Agent？
         AgentDefinition def =
                 catalog.findVisible(userId, agentId)
                         .orElseThrow(
@@ -52,6 +50,7 @@ public class AgentAccessGuard {
                                         new ResponseStatusException(
                                                 HttpStatus.NOT_FOUND,
                                                 "Agent not found: " + agentId));
+        // 第二道门：你有没有足够的权限做这个操作？
         if (!acl.can(userId, def, required)) {
             throw new ResponseStatusException(
                     HttpStatus.FORBIDDEN,

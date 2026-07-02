@@ -7,6 +7,7 @@ const CONFIG_BUTTONS: { key: string; label: string; icon: string }[] = [
   { key: 'subagents', label: '子 Agent', icon: '🧩' },
   { key: 'channels',  label: '通道',  icon: '📡' },
   { key: 'tools',     label: '工具',     icon: '🧰' },
+  { key: 'shares',    label: '分享',     icon: '👥' },
   { key: 'settings',  label: '设置',  icon: '⚙' },
 ];
 

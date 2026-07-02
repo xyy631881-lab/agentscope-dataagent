@@ -33,13 +33,22 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * MAIN session 状态管理器，供 web 层使用。
+ * 会话的 CRUD + 维护
+ * 系统的会话调度中心——管理所有"用户与 Agent 对话"的会话记录，负责会话的注册、查询、重置、清理和持久化。
+ * ChatController
+ *   ├── currentSession() → findByGateKey()     ← 查会话是否存在
+ *   ├── executeChatStream() → (网关自动注册会话)  ← 会话由网关创建
+ *   └── handleSlashCommand() → resetSession()   ← /reset 命令
  *
- * <p>Phase 3+ (2026-06-30): 子代理生成/执行/通知已全部迁移至 AgentScope 2.0 内置的
- * SubagentsMiddleware。本类仅保留 MAIN session 的注册表操作（查询、重置、维护）。
+ * SessionController
+ *   ├── inbox() → allSessions()                 ← 列出所有会话
+ *   ├── turns() → getSession()                  ← 查看对话详情
+ *   ├── reset() → resetSession()                ← 重置会话
+ *   ├── markRead() → getSession()               ← 标记已读
+ *   └── delete() → removeSession()              ← 删除会话
  *
- * <p>由 web 层（{@code ChatController}、{@code SessionController}、
- * {@code SessionLifecycleScheduler}）使用。
+ * SandboxReaperService
+ *   └── (间接) ← 生命周期记录由 UserSandboxRegistry 写入
  */
 public class SessionAgentManager {
 
@@ -49,11 +58,10 @@ public class SessionAgentManager {
     private final AgentManagerConfig config;
     private final SessionStore sessionStore;
 
-    private final ConcurrentHashMap<String, SessionEntry> sessionsByKey = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, String> labelToSessionKey = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, String> gateKeyToSessionKey = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, List<String>> childrenByParent =
-            new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, SessionEntry> sessionsByKey = new ConcurrentHashMap<>();  //主索引，按主键查会话
+    private final ConcurrentHashMap<String, String> labelToSessionKey = new ConcurrentHashMap<>();  //按标签名查会话
+    private final ConcurrentHashMap<String, String> gateKeyToSessionKey = new ConcurrentHashMap<>();  //按网关路由键查会话（ChatController 用）
+    private final ConcurrentHashMap<String, List<String>> childrenByParent = new ConcurrentHashMap<>();  //查子代理会话
 
     /**
      * @param workspaceManager workspace 路径解析
@@ -68,12 +76,12 @@ public class SessionAgentManager {
         this.config = Objects.requireNonNull(config, "config");
         this.sessionStore = sessionStore;
         if (sessionStore != null) {
-            restoreFromStore();
+            restoreFromStore();  // 从数据库恢复所有会话到内存
         }
     }
 
     /**
-     * 从持久化 {@link SessionStore} 恢复内存中 session 注册表。
+     * 从从持久化存储中读取所有会话记录，重建四个内存索引。应用重启后，之前的会话不会丢失。
      */
     private void restoreFromStore() {
         for (SessionStore.StoredEntry stored : sessionStore.listAll()) {
@@ -99,6 +107,7 @@ public class SessionAgentManager {
     //  AgentStateStore 注册表
     // -----------------------------------------------------------------
 
+    //解析会话 key（支持别名）
     public Optional<String> resolveSessionKey(String keyOrLabel) {
         if (keyOrLabel == null || keyOrLabel.isBlank()) {
             return Optional.empty();
@@ -125,7 +134,7 @@ public class SessionAgentManager {
         return Optional.ofNullable(sessionsByKey.get(sessionKey.trim()));
     }
 
-    /** O(1) 查找: 根据 gateway routing key 查找 session。 */
+    /** O(1) 查找:  按网关路由键查会话 */
     public Optional<SessionEntry> findByGateKey(String gateKey, String userId) {
         if (gateKey == null) return Optional.empty();
         String key = gateKeyToSessionKey.get(gateKey);
@@ -145,19 +154,21 @@ public class SessionAgentManager {
     // -----------------------------------------------------------------
 
     /**
-     * 重置一个 session：分配新的 {@code sessionId}，同时保留 {@code sessionKey}、所有权和标签。
-     * 用于实现 {@code /new}、{@code /reset} 命令以及空闲/每日自动重置。
+     * 重置就像"换个新本子"——聊天窗口还在，但 Agent 的记忆被清空了，从白纸重新开始。旧的本子（日志文件）还在磁盘上，不会被删。
      */
     public boolean resetSession(String sessionKey) {
         if (sessionKey == null) return false;
         SessionEntry e = sessionsByKey.get(sessionKey);
         if (e == null) return false;
+        // 分配新的 sessionId
         String newSessionId =
                 e.kind() == SessionKind.MAIN
                         ? "main-" + UUID.randomUUID()
                         : "subagent-" + UUID.randomUUID();
+        // 算出新的文件路径
         String newPath = resolveSessionFilePath(e.userId(), e.agentId(), newSessionId);
         long now = System.currentTimeMillis();
+        // 构造新的 SessionEntry（保留 sessionKey、userId、label 等，只换 sessionId 和时间）
         SessionEntry reset =
                 new SessionEntry(
                         e.sessionKey(),
@@ -173,9 +184,9 @@ public class SessionAgentManager {
                         e.spawnRunId(),
                         e.gateKey(),
                         e.userId());
-        sessionsByKey.put(sessionKey, reset);
+        sessionsByKey.put(sessionKey, reset);  // 覆盖旧记录
         if (sessionStore != null) {
-            sessionStore.save(reset);
+            sessionStore.save(reset);  // 持久化
         }
         log.info(
                 "Session 已重置: sessionKey={}, newSessionId={}, agentId={}",
@@ -185,7 +196,7 @@ public class SessionAgentManager {
         return true;
     }
 
-    /** 重置空闲超过 {@code idleMs} 毫秒的 session。 */
+    /** 超过 idleMs 没活跃的会话，自动重置。防止 Agent 的上下文窗口被过长的历史撑爆。 */
     public int resetIdleSessions(long idleMs) {
         if (idleMs <= 0) return 0;
         long cutoff = System.currentTimeMillis() - idleMs;
@@ -218,8 +229,9 @@ public class SessionAgentManager {
     // -----------------------------------------------------------------
 
     /**
-     * 运行 session 维护：清理过期 session 并限制总条目数。
-     * @return 移除的 session 数
+     * 维护清理
+     * 过期清理：超过 N 天没活跃的会话直接删掉
+     * 总数限制：最多保留 N 个会话，超出的按活跃时间排序删除
      */
     public int runMaintenance() {
         SessionMaintenanceConfig mc = config.maintenanceConfig();
@@ -228,9 +240,9 @@ public class SessionAgentManager {
         }
         int removed = 0;
         long now = System.currentTimeMillis();
-
+        // ① 清理过期会话
         if (mc.pruneAfterMs() > 0) {
-            long cutoff = now - mc.pruneAfterMs();
+            long cutoff = now - mc.pruneAfterMs();  // 删除 lastActivityMs < cutoff 的会话
             List<String> staleKeys =
                     sessionsByKey.values().stream()
                             .filter(e -> e.lastActivityMs() < cutoff)
@@ -241,7 +253,7 @@ public class SessionAgentManager {
                 removed++;
             }
         }
-
+        // ② 限制总数
         if (mc.maxEntries() > 0 && sessionsByKey.size() > mc.maxEntries()) {
             List<SessionEntry> sorted =
                     sessionsByKey.values().stream()
@@ -261,7 +273,8 @@ public class SessionAgentManager {
     }
 
     /**
-     * 从所有注册表中移除一个 session（内存 + 存储）。
+     *  删除会话
+     *  四个索引全部清理，确保没有残留引用。持久化存储也同步删除。
      */
     public void removeSession(String sessionKey) {
         SessionEntry entry = sessionsByKey.remove(sessionKey);
@@ -286,7 +299,7 @@ public class SessionAgentManager {
     // -----------------------------------------------------------------
     //  AgentStateStore 查询 / 可观测性
     // -----------------------------------------------------------------
-
+    // 读取对话历史记录
     public HistoryResult history(String sessionKeyOrLabel, int limit) {
         Optional<String> resolved = resolveSessionKey(sessionKeyOrLabel);
         if (resolved.isEmpty()) {
@@ -304,6 +317,7 @@ public class SessionAgentManager {
         try {
             String content = Files.readString(path, StandardCharsets.UTF_8);
             if (limit > 0) {
+                //tailLines 的作用：如果对话历史很长（几万行），只取最后 N 行，避免把整个大文件都加载到内存。
                 content = tailLines(content, limit);
             }
             return new HistoryResult(entry.sessionKey(), entry.sessionFilePath(), content, null);

@@ -47,18 +47,26 @@ import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 
 /**
- * 会话管理端点，作用于特定的 Agent。
- *
- * <ul>
- *   <li>{@code GET /api/agents/{agentId}/sessions/inbox} — 带预览和未读标记的分页会话列表
- *   <li>{@code GET /api/agents/{agentId}/sessions/{key}} — 结构化的逐轮对话记录
- *   <li>{@code POST /api/agents/{agentId}/sessions/{key}/reset} — 清除对话历史
- *   <li>{@code PATCH /api/agents/{agentId}/sessions/{key}/read} — 将会话标记为已读
- *   <li>{@code DELETE /api/agents/{agentId}/sessions/{key}} — 完全删除会话
- * </ul>
- *
- * <p>所有端点要求会话同时属于已认证用户<em>和</em> URL 路径中的 Agent；
- * 不匹配返回 403。
+ * 这个类是系统的会话管家——管理用户和 Agent 之间的所有对话记录，就像一个聊天应用的"消息管理器"。
+ * 前端
+ *  │
+ *  ├── GET  /inbox          → 收件箱列表（会话 + 未读 + 预览）
+ *  ├── GET  /{key}          → 对话详情（完整轮次）
+ *  ├── POST /{key}/reset    → 重置会话（清空历史）
+ *  ├── PATCH /{key}/read    → 标记已读
+ *  └── DELETE /{key}        → 删除会话
+ *  │
+ *  ▼
+ * SessionController
+ *  │
+ *  ├── requireOwnedSession()  ← 所有接口的安检门
+ *  │     ├── 找会话（支持 sessionKey / conversationId 两种 key）
+ *  │     └── 校验归属（用户 + Agent 都要匹配）
+ *  │
+ *  ├── SessionAgentManager    ← 会话的增删改查
+ *  ├── SessionReadStateStore  ← 已读/未读状态
+ *  ├── SessionTurnParser      ← 日志 → 结构化轮次
+ *  └── WorkspaceManager       ← 读取日志文件
  */
 @RestController
 @RequestMapping("/api/agents/{agentId}/sessions")
@@ -79,6 +87,24 @@ public class SessionController {
         this.catalogService = catalogService;
     }
 
+    /**
+     * 收件箱：会话列表 + 未读标记 + 最后一条消息预览
+     * 就像微信的聊天列表页——每个会话一行，显示会话名、最后一条消息预览、时间、有没有红点（未读标记）。
+     * @param agentId Agent ID
+     * @param limit 最大返回数量
+     * @param unreadOnly 是否仅返回未读会话
+     * @param auth 认证信息，用于获取当前用户 ID 和会话 ID 映射关系
+     * @return 收件箱中的会话列表
+     * ① 算出这个用户的 gatewayAgentId
+     * ② 从所有会话中筛选出属于这个用户 + 这个 Agent 的会话
+     * ③ 按最后活跃时间倒序排列（最近的排最前）
+     * ④ 取前 limit 条
+     * ⑤ 对每条会话：
+     *    - 查是否未读
+     *    - 如果 unreadOnly=true 且已读 → 跳过
+     *    - 提取最后一条消息作为预览（最多200字）
+     * ⑥ 返回收件箱列表
+     */
     @GetMapping("/inbox")
     public Mono<List<InboxEntry>> inbox(
             @PathVariable String agentId,
@@ -120,6 +146,18 @@ public class SessionController {
                 });
     }
 
+    /**
+     * 查看某个会话的完整对话记录
+     * 点进一个聊天会话，看到完整的聊天记录，每条消息谁说的、说了什么、什么时候说的，一目了然。
+     * @param agentId Agent ID
+     * @param key 会话 ID
+     * @param auth 认证信息，用于获取当前用户 ID 和会话 ID 映射关系
+     * @return 会话的完整对话记录
+     * ① 找到这个会话（requireOwnedSession）
+     * ② 读取会话日志文件的内容
+     * ③ 用 SessionTurnParser 解析成结构化的对话轮次
+     * ④ 返回轮次列表
+     */
     @GetMapping("/{key}")
     public Mono<List<SessionTurnParser.TurnEntry>> turns(
             @PathVariable String agentId, @PathVariable String key, Authentication auth) {
@@ -132,6 +170,18 @@ public class SessionController {
                 });
     }
 
+    /**
+     * 重置会话（清空对话历史，但保留会话）
+     * 重置就像"清空聊天记录"，你们还在同一个聊天窗口里，但之前的对话都没了，Agent 也不记得之前说过什么了。
+     * 点击重置按钮，会话会清空，但是会话会保留在收件箱中。
+     * @param agentId Agent ID
+     * @param key 会话 ID
+     * @param auth 认证信息，用于获取当前用户 ID 和会话 ID 映射关系
+     * @return 重置结果
+     * ① 找到这个会话（requireOwnedSession）
+     * ② 调用 sessionAgentManager.resetSession() 清空对话历史
+     * ③ 返回重置结果
+     */
     @PostMapping("/{key}/reset")
     public Mono<ResetResult> reset(
             @PathVariable String agentId, @PathVariable String key, Authentication auth) {
@@ -144,6 +194,17 @@ public class SessionController {
                 });
     }
 
+    /**
+     * 标记会话为已读
+     * 就像微信点进聊天窗口——红点消失，标记为已读。但如果 Agent 又回复了新消息，就又变成未读了。
+     * @param agentId Agent ID
+     * @param key 会话 ID
+     * @param auth 认证信息，用于获取当前用户 ID 和会话 ID 映射关系
+     * @return 标记已读结果
+     * ① 找到这个会话（requireOwnedSession）
+     * ② 调用 readStateStore.markRead() 标记已读
+     * ③ 返回标记已读结果
+     */
     @PatchMapping("/{key}/read")
     public Mono<ReadStateResult> markRead(
             @PathVariable String agentId, @PathVariable String key, Authentication auth) {
@@ -156,6 +217,17 @@ public class SessionController {
                 });
     }
 
+    /**
+     * 彻底删除会话
+     * ：左滑删除聊天——整个会话连同对话记录都没了。
+     * @param agentId Agent ID
+     * @param key 会话 ID
+     * @param auth 认证信息，用于获取当前用户 ID 和会话 ID 映射关系
+     * @return 删除结果
+     * ① 找到这个会话（requireOwnedSession）
+     * ② 调用 sessionAgentManager.removeSession() 删除会话
+     * ③ 返回 204 No Content
+     */
     @DeleteMapping("/{key}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public Mono<Void> delete(
@@ -169,14 +241,21 @@ public class SessionController {
     }
 
     // -----------------------------------------------------------------
-    //  Internal helpers
+    //  核心内部方法
     // -----------------------------------------------------------------
 
     /**
-     * Resolves a path-level {@code key} to a {@link SessionEntry} owned by {@code userId} for the
-     * URL {@code agentId}. {@code key} may be either the internal storage key (legacy callers) or
-     * the conversationId surfaced via {@link InboxEntry#conversationId()} — the FE only ever sees
-     * the latter for ChatGPT-style multi-session navigation.
+     * 安全校验
+     * ① 找到会话（支持两种 key 格式）
+     *    - 内部存储 key（旧版）: "sess-xyz-789"
+     *    - conversationId（新版）: "conv-456"
+     *
+     * ② 校验归属
+     *    - 这个会话是不是这个用户的？
+     *    - 这个会话是不是属于 URL 中指定的 Agent？
+     *    - 不满足 → 403 Forbidden
+     *   为什么支持两种 key？ 因为前端只知道 conversationId（创建会话时自己生成的），
+     *   但系统内部用 sessionKey。requireOwnedSession 两种都能查，对前端透明。
      */
     private SessionEntry requireOwnedSession(String agentId, String key, String userId) {
         SessionEntry entry =
@@ -214,15 +293,9 @@ public class SessionController {
     }
 
     /**
-     * Authorizes a session against the URL agent. {@link SessionEntry#agentId()} holds the
-     * HarnessAgent's internal UUID (not the gateway/catalog id), so we cannot match by agent id
-     * directly. Instead we look at the session's {@code gateKey} (which is deterministically
-     * derived from {@code (userId, gatewayAgentId, conversationId)}) and check that it carries the
-     * expected gatewayAgentId in its {@code |x:agentId=...} segment — independent of any
-     * {@code |t:<conversationId>} that distinguishes ChatGPT-style sessions for the same agent.
-     * Sub/group sessions that lack a gateKey fall through to a userId-only ownership check —
-     * leaking these isn't possible across users because the inbox/turn endpoints are already
-     * filtered by {@code entry.userId() == auth principal}.
+     * 会话与 Agent 的匹配
+     * 确保你查的会话确实属于你指定的 Agent，不会把 Agent A 的会话误当成 Agent B 的。
+     * 从 gateKey 中提取 agentId 片段，和 URL 中的 gatewayAgentId 比较。
      */
     private static boolean sessionMatchesAgent(SessionEntry e, String gatewayAgentId) {
         if (gatewayAgentId == null) return false;
@@ -265,6 +338,11 @@ public class SessionController {
         return val.isEmpty() ? null : val;
     }
 
+    /**
+     * 最后一条消息预览
+     *从会话日志中解析出所有轮次，从后往前找第一条有内容的消息，截取前 200 字作为预览。
+     * 通俗理解：微信聊天列表上每行显示的那句"最后一条消息"。
+     */
     private String lastMessagePreview(String agentId, SessionEntry entry) {
         try {
             String content = readSessionLogContent(agentId, entry);
@@ -286,17 +364,14 @@ public class SessionController {
     }
 
     /**
-     * Reads the chat content for a session. The actual transcript lives at the per-agent workspace
-     * under {@code agents/<innerAgentId>/sessions/<sessionId>.log.jsonl}, written by the harness
-     * memory hooks. The {@link SessionAgentManager} registry stores a stale legacy path
-     * ({@code .json}) keyed by the harness UUID rooted at the main-agent workspace, so its
-     * {@code history(...)} cannot be used here.
+     * 读取会话日志
+     * ① 优先读 .log.jsonl 文件（新版格式）
+     *    路径: agents//sessions/.log.jsonl
      *
-     * <p>Reads go through the per-agent {@link WorkspaceManager}'s composite filesystem (which is
-     * what the harness writes through), so multi-tenant deployments backed by the shared
-     * {@link BaseStore} stay correct. Falls back to
-     * {@link SessionAgentManager#history} only if the WorkspaceManager cannot be resolved
-     * (e.g. the agent has been unloaded).
+     * ② 其次读 .jsonl 文件（旧版格式）
+     *    路径: agents//sessions/.jsonl
+     *
+     * ③ 最后兜底用 sessionAgentManager.history()（最旧的方式）
      */
     private String readSessionLogContent(String urlAgentId, SessionEntry entry) {
         String gatewayAgentId = catalogService.peekGatewayAgentId(entry.userId(), urlAgentId);

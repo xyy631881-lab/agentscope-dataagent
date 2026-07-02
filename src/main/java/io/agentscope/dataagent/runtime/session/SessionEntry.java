@@ -16,24 +16,21 @@
 package io.agentscope.dataagent.runtime.session;
 
 /**
- * 已注册的托管 session 的内部元数据（由 {@link SessionAgentManager} 使用）。
- *
- * @param gateKey 网关用于将此 session 映射回 channel 上下文的路由键；
- *     仅对 {@link SessionKind#MAIN} session 填充（可为 null）
- * @param userId 拥有此 session 的可选用户标识；由 HarnessAgent 的
- *     NamespaceFactory 用于每个用户的文件系统隔离（可为 null —— 表示单租户）
+ * 数据模型（纯数据结构）
+ * 每条 SessionEntry 就是一份"会话档案"——记录了谁在什么时候跟哪个 Agent 聊了天、聊到哪了、对话记录存在哪。
  */
 public record SessionEntry(
-        String sessionKey,
-        String agentId,
-        String sessionId,
-        String label,
-        SessionKind kind,
-        String spawnedBy,
-        int spawnDepth,
-        long createdAtMs,
-        long lastActivityMs,
-        String sessionFilePath,
-        String spawnRunId,
-        String gateKey,
-        String userId) {}
+        String sessionKey,       // 会话主键："sess-abc-123"
+        String agentId,          // Agent ID："uca-userA-data-analyst"
+        String sessionId,        // 会话实例ID："main-uuid-456"（重置后会变）
+        String label,            // 用户自定义标签："数据分析会话"
+        SessionKind kind,        // 会话类型：MAIN（主会话）或 SUBAGENT（子代理会话）
+        String spawnedBy,        // 谁创建的这个会话（父会话key）
+        int spawnDepth,          // 嵌套深度（0=顶层）
+        long createdAtMs,        // 创建时间
+        long lastActivityMs,     // 最后活跃时间
+        String sessionFilePath,  // 对话日志文件路径
+        String spawnRunId,       // 子代理运行的批次ID
+        String gateKey,          // 网关路由键（用于反查）
+        String userId            // 所属用户
+) {}

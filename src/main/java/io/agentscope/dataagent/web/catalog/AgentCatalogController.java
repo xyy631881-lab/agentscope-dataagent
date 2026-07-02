@@ -18,6 +18,7 @@ package io.agentscope.dataagent.web.catalog;
 import io.agentscope.dataagent.web.audit.ActivityEvent;
 import io.agentscope.dataagent.web.audit.AgentActivityStore;
 import io.agentscope.dataagent.web.catalog.AgentCatalogService.AgentCreateRequest;
+import io.agentscope.dataagent.web.catalog.AgentCatalogService.ShareGrantRequest;
 import io.agentscope.dataagent.web.share.AgentAccessGuard;
 import io.agentscope.dataagent.web.share.AgentAclService;
 import io.agentscope.dataagent.web.share.AgentAclService.Tier;
@@ -31,6 +32,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
@@ -45,6 +47,8 @@ import reactor.core.publisher.Mono;
  *   <li>{@code POST /api/agents} — create a user-custom agent
  *   <li>{@code PUT /api/agents/{id}} — update a user-custom agent (own only)
  *   <li>{@code DELETE /api/agents/{id}} — delete a user-custom agent (own only)
+ *   <li>{@code POST /api/agents/{id}/shares} — 追加/更新一条分享授权（owner only）
+ *   <li>{@code DELETE /api/agents/{id}/shares} — 撤销一条分享授权（owner only）
  * </ul>
  */
 @RestController
@@ -177,6 +181,98 @@ public class AgentCatalogController {
                     // sweep can see who triggered the deletion before the log went away.
                     activity.record(
                             ownerId, id, activity.actor(userId), ActivityEvent.Action.DELETE_AGENT);
+                });
+    }
+
+    // -----------------------------------------------------------------
+    //  分享授权（Share management）—— 只有 owner 能操作
+    // -----------------------------------------------------------------
+
+    /**
+     * 追加（或更新）一条分享授权。采用 upsert 语义：如果 (granteeType, granteeId) 已存在，
+     * 就更新它的 tier；否则新增一条。
+     *
+     * <p>权限设计：只有 Agent 的 owner 能分享。
+     * 为什么不让被授权 EDIT 的人也能分享？——防止"权限扩散"：被授权者再授权给别人，
+     * 会导致权限不可控。owner 才是权限的源头。
+     *
+     * <p>请求体示例：
+     * <pre>{@code
+     * { "granteeType": "USER", "granteeId": "alice", "tier": "RUN" }
+     * { "granteeType": "WORKSPACE", "granteeId": "*", "tier": "CLONE" }
+     * }</pre>
+     */
+    @PostMapping("/{id}/shares")
+    public Mono<AgentDefinition> grantShare(
+            @PathVariable String id,
+            @RequestBody ShareGrantRequest req,
+            Authentication auth) {
+        String userId = (String) auth.getPrincipal();
+        return Mono.fromCallable(
+                () -> {
+                    // 第一道门：可见性 + EDIT 权限（owner 必然满足 EDIT，因为 tierFor 规则2）
+                    AgentDefinition def = guard.require(userId, id, Tier.EDIT);
+                    String ownerId = def.ownerId();
+                    if (ownerId == null) {
+                        // 全局 Agent 不走分享（它本来就所有人可见）
+                        throw new ResponseStatusException(
+                                HttpStatus.CONFLICT,
+                                "Global agents cannot be shared via the catalog API");
+                    }
+                    // 第二道门：只有 owner 能管理分享，被授权 EDIT 的人不能再授权
+                    if (!userId.equals(ownerId)) {
+                        throw new ResponseStatusException(
+                                HttpStatus.FORBIDDEN,
+                                "Only the owner may manage shares on agent " + id);
+                    }
+                    AgentDefinition updated = catalogService.grantShare(ownerId, id, req);
+                    activity.record(
+                            ownerId,
+                            id,
+                            activity.actor(userId),
+                            ActivityEvent.Action.EDIT_SETTINGS);
+                    return withTier(userId, updated);
+                });
+    }
+
+    /**
+     * 撤销一条分享授权。精确匹配 (granteeType, granteeId)，移除对应的那条 grant。
+     *
+     * <p>参数通过 query string 传递（DELETE 带 body 不规范）：
+     * <pre>{@code
+     * DELETE /api/agents/{id}/shares?granteeType=USER&granteeId=alice
+     * DELETE /api/agents/{id}/shares?granteeType=WORKSPACE&granteeId=*
+     * }</pre>
+     */
+    @DeleteMapping("/{id}/shares")
+    public Mono<AgentDefinition> revokeShare(
+            @PathVariable String id,
+            @RequestParam String granteeType,
+            @RequestParam String granteeId,
+            Authentication auth) {
+        String userId = (String) auth.getPrincipal();
+        return Mono.fromCallable(
+                () -> {
+                    AgentDefinition def = guard.require(userId, id, Tier.EDIT);
+                    String ownerId = def.ownerId();
+                    if (ownerId == null) {
+                        throw new ResponseStatusException(
+                                HttpStatus.CONFLICT,
+                                "Global agents cannot be shared via the catalog API");
+                    }
+                    if (!userId.equals(ownerId)) {
+                        throw new ResponseStatusException(
+                                HttpStatus.FORBIDDEN,
+                                "Only the owner may manage shares on agent " + id);
+                    }
+                    AgentDefinition updated =
+                            catalogService.revokeShare(ownerId, id, granteeType, granteeId);
+                    activity.record(
+                            ownerId,
+                            id,
+                            activity.actor(userId),
+                            ActivityEvent.Action.EDIT_SETTINGS);
+                    return withTier(userId, updated);
                 });
     }
 }

@@ -15,6 +15,6 @@
  */
 package io.agentscope.dataagent.runtime.session;
 
-/** 读取 session 转录文件的结果。 */
+/** 读取历史的结果包装。 */
 public record HistoryResult(
         String sessionKey, String sessionFilePath, String content, String error) {}

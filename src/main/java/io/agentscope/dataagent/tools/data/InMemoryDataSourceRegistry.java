@@ -26,9 +26,17 @@ import java.util.Optional;
  * 由内存中的 {@link LinkedHashMap} 支持的默认 {@link DataSourceRegistry}。在构造时一次性填充；
  * 操作员可以将 bean 替换为 JPA 或 Nacos 支持的实现。集合在构造后不可修改——
  * 需要动态添加条目的调用方应提供更丰富的实现，而不是修改此实现。
+ *
+ * // 将来可以替换为：
+ * public class JpaDataSourceRegistry implements DataSourceRegistry { ... }     // 从数据库读
+ * public class NacosDataSourceRegistry implements DataSourceRegistry { ... }  // 从 Nacos 配置中心读
+ * public class ServiceDiscoveryDataSourceRegistry { ... }
+ * 好处：管理员可以在不改 toolkit 代码的情况下，把内存实现替换成任何其他实现。
  */
+//当前默认实现：
 public final class InMemoryDataSourceRegistry implements DataSourceRegistry {
 
+    // LinkedHashMap，保证插入顺序一致
     private final Map<String, DataSource> byId;
 
     public InMemoryDataSourceRegistry(List<DataSource> seed) {
@@ -38,7 +46,7 @@ public final class InMemoryDataSourceRegistry implements DataSourceRegistry {
             if (ds == null) continue;
             m.put(ds.id(), ds);
         }
-        this.byId = Map.copyOf(m);
+        this.byId = Map.copyOf(m);  // 构造后不可修改！
     }
 
     @Override

@@ -23,18 +23,16 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * 在启动时将 {@link DataAgentToolkit} 单例注册到主 Agent 的 toolkit 上。
- *
- * <p>toolkit 已由 {@link DataToolkitConfig} 创建为 Spring bean（含可选的 JDBC DataSource）。
- * 本类负责将其注册到 AgentScope HarnessAgent 的工具集中。
+ * DataToolkitRegistrar 是一个工具注册员——应用启动时，把 DataAgentToolkit（数据分析工具箱）挂载到主 Agent 身上，
+ * 让 Agent 能用"查数据源、看表结构、跑 SQL、画图表"这四个工具。
  */
 @Component
 public class DataToolkitRegistrar {
 
     private static final Logger log = LoggerFactory.getLogger(DataToolkitRegistrar.class);
 
-    private final DataAgentBootstrap bootstrap;
-    private final DataAgentToolkit toolkit;
+    private final DataAgentBootstrap bootstrap;  // 应用启动时的引导器
+    private final DataAgentToolkit toolkit;  //数据分析工具箱
 
     public DataToolkitRegistrar(DataAgentBootstrap bootstrap, DataAgentToolkit toolkit) {
         this.bootstrap = bootstrap;
@@ -43,8 +41,10 @@ public class DataToolkitRegistrar {
 
     @PostConstruct
     public void registerDataToolkit() {
+        // ① 找到主 Agent
         HarnessAgent main = bootstrap.agents().get(bootstrap.loadedConfig().getMain());
         if (main == null) {
+            // ② 配置里没指定主 Agent → 取第一个
             main =
                     bootstrap.agents().values().stream()
                             .findFirst()
@@ -54,6 +54,7 @@ public class DataToolkitRegistrar {
                                                     "没有可用于注册 data toolkit 的 Agent"));
         }
         try {
+            // ③ 注册工具箱
             main.getDelegate().getToolkit().registerTool(toolkit);
             log.info("已向主 Agent '{}' 注册 DataAgent toolkit (含工具: {})",
                     main.getName(),

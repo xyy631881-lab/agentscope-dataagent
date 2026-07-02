@@ -67,17 +67,7 @@ import reactor.core.publisher.Mono;
 
 /**
  * 聊天端点，作用于特定的 Agent。
- *
- * <ul>
- *   <li>{@code POST /api/agents/{agentId}/chat/stream} — {@code token | tool_call |
- *       tool_result | done | error} 事件的 SSE 流。
- *   <li>{@code POST /api/agents/{agentId}/chat/send} — 同步回复（非流式）。
- * </ul>
- *
- * <p>每个用户在每个 {@code (userId, agentId)} 对中有隔离的会话（agent ID 是
- * {@link io.agentscope.harness.agent.gateway.MsgContext#canonicalKey()} 的一部分）。
- * 斜杠命令 {@code /new}、{@code /reset}、{@code /identity} 和
- * {@code /dock_<channel> <id>} 在调用 Agent 之前被拦截。
+    是用户和 Agent 之间的唯一入口，相当于客服中心前台——用户打电话进来（HTTP 请求），前台把电话转给对应客服（Agent）。
  */
 @RestController
 @RequestMapping("/api/agents/{agentId}/chat")
@@ -120,10 +110,7 @@ public class ChatController {
 
     /**
      * 两个端点共享的请求体。
-     *
-     * <p>{@code sessionKey} 是调用方提供的会话标识符，用于寻址同一 (userId, agentId)
-     * 对的多个类似 ChatGPT 的会话之一。{@code null}/空请求会通过委托给网关的确定性
-     * 键回退到传统的单会话行为。
+     * sessionKey是调用方提供的会话标识符，用于寻址同一 (userId, agentId)
      */
     public record ChatRequest(String message, String sessionKey) {}
 
@@ -131,22 +118,29 @@ public class ChatController {
     public record ChatResponse(String reply, String sessionKey) {}
 
     /**
-     * 对 {@link #currentSession} 的响应。当会话条目已创建时（即用户已发送至少一条消息）
-     * {@code exists} 为 {@code true}；前端使用此信息来决定在挂载时是否获取对话轮次。
+     * currentSession会话的唯一标识符，前端拿着它去拉取历史消息
+     * exists为 true；这个会话是否真实存在（用户是否至少发过一条消息）
      */
     public record CurrentSessionResponse(String sessionKey, boolean exists) {}
 
     /**
-     * SSE 流式端点。基于 {@link ChatUiChannel#dispatchStream} 实现，
-     * 直接消费 {@code Flux<AgentEvent>}，所有事件（token、tool_call、tool_result、done、error）
-     * 在同一个流里有序到达，无需手动合并。
-     *
-     * <p>前端通过 {@code chat.ts} 消费这些事件，将 {@code data:} 负载解析为 JSON，
-     * 格式为 {@code { type, data?, toolName?, toolInput?, toolResult?, error?, sessionKey? }}。
+     * SSE 流式端点，
+     * agentId：跟哪个 Agent 聊天
+     * auth：当前登录用户信息
+     * req：请求体，包含 message（用户消息）和 sessionKey（会话标识）
      */
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> stream(
             @PathVariable String agentId, @RequestBody ChatRequest req, Authentication auth) {
+
+
+        /**
+         * 通俗理解：前台接到电话，先确认"你是谁"、"有没有权限"，然后分配一个通话编号。
+         * 从登录信息中取出用户ID
+         * 检查这个用户有没有权限跟这个 Agent 聊天（Tier.RUN 权限）
+         * 如果前端传了 sessionKey 就用它，没传就生成一个新的 UUID
+         * 记录一条"会话开始"的审计日志
+         */
         String userId = (String) auth.getPrincipal();
         AgentDefinition def = guard.require(userId, agentId, Tier.RUN);
         String conversationId = normalizedConversationId(req.sessionKey());
@@ -157,6 +151,7 @@ public class ChatController {
         recordRunSession(def, agentId, userId, resolvedConversationId);
 
         // 斜杠命令会短路 Agent，直接生成一条合成的单 token 回复。
+        // 如果用户输入的是 /new、/reset 等斜杠命令，不走 Agent，直接返回一条合成消息就结束。
         CommandResult cmd =
                 handleSlashCommand(userId, agentId, req.message(), resolvedConversationId);
         if (cmd != null) {
@@ -171,8 +166,8 @@ public class ChatController {
                     sse("done", doneFrame));
         }
 
-        // Single map tracks accumulated tool input/results per toolCallId.
-        // Replaces the former 3-map approach (toolNames + toolInputs + toolResults).
+        // 核心——把 Agent 事件流转换为 SSE 事件流
+        // Agent 在执行过程中会不断产生事件，这个方法把每种事件翻译成前端能理解的 SSE 格式。
         final Map<String, ToolBuffer> buffers = new ConcurrentHashMap<>();
 
         return executeChatStream(userId, agentId, req.message(), resolvedConversationId)
@@ -226,6 +221,7 @@ public class ChatController {
                     return null;
                 })
                 .filter(Objects::nonNull)
+                // 如果 Agent 执行过程中出错了，不会让整个流崩掉，而是发一个 error 事件给前端，前端可以显示"出错了，请重试"。
                 .onErrorResume(ex -> {
                     log.warn(
                             "Chat stream error: userId={}, agentId={}, error={}",
@@ -238,11 +234,9 @@ public class ChatController {
     }
 
     /**
-     * Reports whether a session is already registered for the (userId, agentId, conversationId)
-     * tuple. The returned {@code sessionKey} field is the caller's own {@code conversationId} (or
-     * {@code null} when none was supplied) — never the internal storage key. {@code exists} is
-     * {@code true} when the harness has registered a session for this tuple; the FE uses this to
-     * decide whether to fetch turns on mount.
+     * currentSession() 是前端的"会话探测仪"——页面加载时问后端"我有没有进行中的对话"，
+     * 后端通过模拟网关路由算出 gateKey，再反查会话存储，告诉前端"有/没有"以及"会话 key 是什么"，
+     * 前端据此决定是显示欢迎页还是加载历史消息。
      */
     @GetMapping("/session")
     public Mono<CurrentSessionResponse> currentSession(
@@ -250,22 +244,29 @@ public class ChatController {
             @org.springframework.web.bind.annotation.RequestParam(required = false)
             String sessionKey,
             Authentication auth) {
+        // ① 取用户ID
         String userId = (String) auth.getPrincipal();
+        // ② 权限校验：这个用户能不能跟这个 Agent 聊天？
         guard.require(userId, agentId, Tier.RUN);
+        // ③ 标准化 sessionKey：空字符串 → null
         String conversationId = normalizedConversationId(sessionKey);
+        // ④ 用 Mono.fromCallable 包裹同步逻辑，变成异步响应
         return Mono.fromCallable(
                 () -> {
                     if (conversationId == null) {
+                        // 情况1：前端没传 sessionKey，说明是新用户
                         return new CurrentSessionResponse(null, false);
                     }
+                    // 情况2/3：前端传了 sessionKey → 查一下这个会话存不存在
                     String gateKey = resolveGateKey(userId, agentId, conversationId);
-                    boolean exists =
-                            gateKey != null && findSessionKeyByGate(userId, gateKey) != null;
+                    boolean exists = gateKey != null && findSessionKeyByGate(userId, gateKey) != null;
+                    // exists=false：前端传了 sessionKey，但数据库里找不到对应会话，这个 key 对应的会话不存在了
+                    // exists=true：前端传了 sessionKey，数据库里找到了对应会话，会话还在，去加载历史消息吧
                     return new CurrentSessionResponse(conversationId, exists);
                 });
     }
 
-    /** Synchronous (non-streaming) chat. Blocks until the agent produces a reply. */
+    /** 同步聊天. */
     @PostMapping("/send")
     public Mono<ChatResponse> send(
             @PathVariable String agentId, @RequestBody ChatRequest req, Authentication auth) {
@@ -302,29 +303,30 @@ public class ChatController {
     // -----------------------------------------------------------------
 
     /**
-     * Emits a single {@code RUN_SESSION} event the first time a (userId, agentId, conversationId)
-     * tuple starts a chat in this process. Subsequent turns within the same session are silent.
-     * Resetting the session via {@code /reset} clears the cached marker so a fresh session is
-     * logged again.
+     * 在用户第一次跟某个 Agent 开始对话时，记一条审计日志，而且同一个会话只记一次，用于用量统计和审计追踪。
      */
     private void recordRunSession(
             AgentDefinition def, String agentId, String userId, String conversationId) {
         if (def == null || def.ownerId() == null) {
-            // Globals have no per-agent activity log.
+            // 全局 Agent 没有逐 Agent 的活动日志
+            // 全局 Agent（系统内置的）没有 ownerId，不需要记录活动日志。
+            // 只有用户自定义的 Agent 才需要记录——因为需要统计"哪个用户的 Agent 被用了多少次"。
+            // 公共设施不需要记谁用了，但私人助理的每次服务都要记账。
             return;
         }
-        // Use the gateKey here as a per-(user, agent, conversation) dedupe id — the real
-        // sessionKey may not exist yet on the very first turn.
+        // 用 resolveGateKey 算出一个唯一标识，作为去重依据。
         String dedupeKey = resolveGateKey(userId, agentId, conversationId);
         if (dedupeKey == null) return;
-        if (!startedSessions.add(dedupeKey)) return;
+        // 如果不做去重，一个会话里发了 10 条消息，就会记 10 条 RUN_SESSION 日志，
+        // 但实际只开了 1 个会话。去重后，活动日志里每个会话只有一行记录。
+        if (!startedSessions.add(dedupeKey)) return;  // 去重——同一个会话只记一次
         activity.record(
-                def.ownerId(),
-                agentId,
-                activity.actor(userId),
-                ActivityEvent.Action.RUN_SESSION,
-                dedupeKey,
-                null);
+                def.ownerId(),                        // Agent 的所有者（谁创建的这个 Agent）
+                agentId,                              // Agent ID
+                activity.actor(userId),               // 操作者（谁在用这个 Agent）
+                ActivityEvent.Action.RUN_SESSION,     // 动作类型：开始会话
+                dedupeKey,                            // 去重 key / 关联 ID
+                null);                                // 附加信息（无）
     }
 
     /** Normalizes a request-supplied {@code sessionKey} into a conversationId, or {@code null}. */
@@ -333,15 +335,8 @@ public class ChatController {
     }
 
     /**
-     * Computes the gateway routing key for a given (userId, agentId, conversationId) tuple. This
-     * is the {@link io.agentscope.harness.agent.gateway.MsgContext#canonicalKey()} the gateway uses to look up (or create) the
-     * underlying session — it is <em>not</em> the {@code SessionEntry.sessionKey()} the storage
-     * layer uses. Use {@link #findSessionKeyByGate} to translate to the real sessionKey.
-     *
-     * <p>Uses {@link ChatUiChannel#previewRoute} so the key matches exactly what
-     * {@link #executeChat} will produce when it dispatches through the same channel.
-     * {@code conversationId} (when non-null) flows through to {@code MsgContext.threadId}, so each
-     * ChatGPT-style session yields a distinct gateKey and therefore a distinct underlying session.
+     *  模拟网关路由，算出 gateKey
+     *  精髓在于 previewRoute——它不真正发送消息，只是"预演"一下：如果我要发一条消息，网关会把它路由到哪个 key？
      */
     private String resolveGateKey(String userId, String agentId, String conversationId) {
         if (agentId == null || agentId.isBlank()) return null;
@@ -359,8 +354,10 @@ public class ChatController {
     }
 
     /**
-     * O(1) lookup: translates a gateway routing key into the session key via the
-     * gateKeyToSessionKey index in SessionAgentManager.
+     * O(1) lookup
+     * 通过 SessionAgentManager 内部的索引查一下：有没有一个会话已经注册在这个 gateKey 下了？
+     * 找到了 → 说明用户之前已经跟这个 Agent 聊过天，会话还在 → exists = true
+     * 找不到 → 说明从来没有创建过会话，或者会话已经被清理了 → exists = false
      */
     private String findSessionKeyByGate(String userId, String gateKey) {
         if (gateKey == null) return null;
@@ -482,7 +479,7 @@ public class ChatController {
     }
 
     /**
-     * 核心调度逻辑（同步）。通过 {@link ChatUiChannel#dispatch} 路由，用于 {@link #send} 端点。
+     * 发消息给 Agent，等 Agent 完全说完再一次性返回，而不是一个字一个字地流式推送。
      */
     private Mono<Msg> executeChat(
             String userId, String agentId, String message, String conversationId) {
@@ -502,9 +499,12 @@ public class ChatController {
                             .accountId(conversationId)
                             .build();
         }
+        // executeChat：同步版，等 Agent 完全处理完，返回最终回复
         Mono<Msg> call = chatUiChannel.dispatch(inbound);
 
         final String recordedAgentId = agentId != null ? agentId : "(default)";
+        //如果 Agent 执行出错，Mono 会变成错误状态，doOnSuccess 不会触发，也就不会记录一条"0ms"或异常的耗时。
+        // 触发条件，仅成功时
         return call.doOnSuccess(
                 reply ->
                         usageStore.record(
@@ -512,28 +512,43 @@ public class ChatController {
     }
 
     /**
-     * 核心调度逻辑（流式）。通过 {@link ChatUiChannel#dispatchStream} 路由，
-     * 返回 {@code Flux<AgentEvent>}，由 {@link #stream} 方法转为 SSE 流。
+     * 打包消息：把用户文字包装成 InboundMessage，贴上 userId、agentId、conversationId
+     * 丢给通道：chatUiChannel.dispatchStream(inbound) —— 这才是真正调 Agent 的地方
+     * 比喻：前台把电话转给客服，客服开始说话，电话那头能听到客服一个字一个字往外蹦。
      */
     private Flux<AgentEvent> executeChatStream(
             String userId, String agentId, String message, String conversationId) {
-        Msg userMsg = new UserMessage("user", message);
-        long startMs = System.currentTimeMillis();
 
-        InboundMessage inbound;
+        // ① 把用户文字包装成框架内部的消息对象
+        Msg userMsg = new UserMessage("user", message);
+        // ② 记录开始时间，后面算耗时用
+        long startMs = System.currentTimeMillis();
+        // ③ 根据有没有指定 agentId，构造不同的"入站消息"
+        // DM 模式像打客服热线——系统帮你转接；
+        // 精确投递像打直拨号——你知道要找谁，直接拨过去，还告诉对方"这是我们的第 3 次通话"。
+        InboundMessage inbound;  //InboundMessage 是 Agent 框架内部的标准信封——不管消息从哪来（网页聊天、Webhook、API），都要先塞进这个信封，才能投递给 Agent。
         if (agentId == null || agentId.isBlank()) {
+            // 情况A：没指定 Agent → 用 DM 模式（直接消息，让系统自动路由）
+            // 就像发了一条"私信"，系统根据用户身份自动路由到合适的 Agent。
             inbound = InboundMessage.dm(ChatUiChannel.CHANNEL_ID, userId, List.of(userMsg));
         } else {
+            // 情况B：指定了 Agent → 精确投递给这个 Agent
             String gatewayAgentId = catalogService.resolveGatewayAgentId(userId, agentId);
             inbound =
                     InboundMessage.builder(
-                                    ChatUiChannel.CHANNEL_ID, Peer.direct(userId), List.of(userMsg))
-                            .preferredAgentId(gatewayAgentId)
-                            .accountId(conversationId)
+                                    ChatUiChannel.CHANNEL_ID, Peer.direct(userId), List.of(userMsg))  //Peer.direct(userId)发送者身份，Agent 需要知道是谁在跟它说话
+                            .preferredAgentId(gatewayAgentId)  // 指定要哪个 Agent
+                            .accountId(conversationId)  // 会话ID，保证同一会话的消息路由到同一个 Agent 实例
                             .build();
         }
+
+        // ④ 把消息丢给通道，拿到 Agent 的事件流，真正调 Agent
+        // chatUiChannel 是一个通信通道（类似消息队列），
+        // dispatchStream 把消息投递进去，Agent 框架在另一端接收并处理，
+        // 产生的所有事件（文字片段、工具调用、工具结果等）以 Flux<AgentEvent> 流的形式返回
         Flux<AgentEvent> events = chatUiChannel.dispatchStream(inbound);
 
+        // ⑤ 流结束后记录耗时
         final String recordedAgentId = agentId != null ? agentId : "(default)";
         return events.doFinally(signalType ->
                 usageStore.record(userId, recordedAgentId, System.currentTimeMillis() - startMs));

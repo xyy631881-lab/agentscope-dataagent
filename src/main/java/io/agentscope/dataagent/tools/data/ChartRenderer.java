@@ -16,9 +16,8 @@
 package io.agentscope.dataagent.tools.data;
 
 /**
- * 从小型表格结果渲染内联图表的 SPI。v1 附带一个桩实现；具体的渲染器
- * （通过 XChart 的服务端 PNG、用于 SPA 的 ECharts 规范 JSON、用于内联 markdown 的
- * Mermaid）属于 {@code agentscope-extensions/}。
+ * ChartRenderer 是一个图表渲染器接口——Agent 查完数据后想画个图，就调用它。
+ * 当前版本是个"空壳"，只负责把图表规格原样传给前端，由前端来画。
  */
 public interface ChartRenderer {
 
@@ -27,8 +26,28 @@ public interface ChartRenderer {
      * Agent 可以将其包含在响应中——通常是 markdown 图片链接、
      * 内联 base64 图片或 {@code "ok: rendered to <url>"} 指针。
      *
-     * @param chartType "line"、"bar"、"area"、"scatter" 之一
+     * @param chartType 图表类型 "line"、"bar"、"area"、"scatter" 之一
      * @param vegaLiteSpec 兼容 Vega-Lite 的 JSON 规范，包含内联数据
+     * @return 图表渲染状态字符串
+     *
+     * {
+     *   "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+     *   "mark": "bar",
+     *   "data": {
+     *     "values": [
+     *       {"category": "电子产品", "amount": 45000},
+     *       {"category": "运动户外", "amount": 28000},
+     *       {"category": "食品饮料", "amount": 35000}
+     *     ]
+     *   },
+     *   "encoding": {
+     *     "x": {"field": "category", "type": "nominal"},
+     *     "y": {"field": "amount", "type": "quantitative"}
+     *   }
+     * }
+     * 这段 JSON 描述了一个柱状图：X 轴是品类，Y 轴是金额。数据直接内联在 spec 里
+     * Vega-Lite 就像"装修图纸"——你只需要说"这里放一个柱状图，X 轴是什么，Y 轴是什么，数据是什么"，
+     * 不需要自己拿笔画。
      */
     String render(String chartType, String vegaLiteSpec);
 }
