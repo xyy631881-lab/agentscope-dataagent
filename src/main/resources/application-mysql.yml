@@ -1,12 +1,13 @@
 # ========================================================================
-# Profile: mysql — MySQL 数据源
-# 启动: --spring.profiles.active=dev,mysql (开发连 MySQL)
+# Profile: mysql — MySQL 数据源（生产/开发统一用这个 profile）
+# 启动: --spring.profiles.active=mysql          (开发连本地 MySQL)
+#       --spring.profiles.active=mysql,redis      (多副本部署)
 #       --spring.profiles.active=prod,mysql,redis (生产全栈)
 # ========================================================================
 spring:
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/agentscope_dataagent?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=GMT%2B8&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://localhost:3306/agentscope_dataagent?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=GMT%2B8&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true
     username: root
     password: ${MYSQL_PASSWORD:root}
     hikari:
@@ -18,4 +19,19 @@ spring:
       connection-timeout: 30000
   sql:
     init:
-      mode: never   # MySQL 不跑 H2 种子脚本
+      mode: never   # 主业务库不跑 SQL 种子脚本（admin/admin 由 JpaUserStore.seedDefaultAdmin() 注入）
+  jpa:
+    hibernate:
+      ddl-auto: update   # 自动建表/加列；生产环境建议改 validate + Flyway
+
+# ========================================================================
+# 分析数据库（Agent 查询用的电商演示库，与主业务库物理隔离）
+# ========================================================================
+dataagent:
+  analytics:
+    enabled: true
+    jdbc-url: jdbc:mysql://localhost:3306/dataagent_analytics?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=GMT%2B8&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true
+    username: ${MYSQL_PASSWORD:root}
+    password: ${MYSQL_PASSWORD:root}
+    maximum-pool-size: 3
+    init-script: data-analytics-mysql.sql   # 启动时执行的种子脚本（幂等，可重复执行）

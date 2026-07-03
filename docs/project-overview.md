@@ -34,7 +34,23 @@ dataagent 是一个**多租户、自进化的企业数据分析 Agent 平台**�
 
 ## 二、快速开始（5 分钟跑通）
 
-### 2.1 启动
+### 2.1 前置准备
+
+| 依赖 | 版本要求 | 说明 |
+|---|---|---|
+| JDK | 21+ | 项目用 Java 21 |
+| Maven | 3.9+ | 构建工具 |
+| MySQL | 8.0+ | 主业务库 + 分析演示库（项目已移除 H2 依赖） |
+| Docker | 可选 | 仅在需要 Sandbox 隔离时安装 |
+
+**准备 MySQL 数据库**：项目需要两个独立的 MySQL 数据库，通过 `createDatabaseIfNotExist=true` 自动创建，无需手动建库：
+
+| 数据库 | 用途 | 自动建表 |
+|---|---|---|
+| `agentscope_dataagent` | 主业务库（用户/Agent/会话/贡献等 JPA 实体） | Hibernate `ddl-auto=update` 自动建表 |
+| `dataagent_analytics` | 分析演示库（Agent 调用 SQL 工具时查询的电商数据） | 启动时执行 `data-analytics-mysql.sql`（幂等） |
+
+### 2.2 启动
 
 ```bash
 # 编译（跳过前端构建）
@@ -43,8 +59,8 @@ mvn compile -DskipFrontend
 # 打包
 mvn package -DskipFrontend -DskipTests
 
-# 运行
-java -jar target/agentscope-dataagent-*-exec.jar
+# 运行（默认 mysql profile，连接本地 MySQL root/root）
+java -jar target\agentscope-dataagent-2.0.0-SNAPSHOT-exec.jar
 # 打开 http://localhost:8080
 ```
 
@@ -53,32 +69,32 @@ java -jar target/agentscope-dataagent-*-exec.jar
 > JAVA_HOME="D:\\jdk21" "D:\\apache-maven-3.9.16\\bin\\mvn.cmd" compile -DskipFrontend
 > ```
 
-### 2.2 默认账号
+### 2.3 默认账号
 
 | 用户名 | 密码 | 角色 | 说明 |
 |---|---|---|---|
-| `admin` | `admin` | user, admin | 所有 profile 都会注入（首次启动空表时） |
-| `bob` | `bob` | user | 仅 H2 dev profile 注入 |
-| `alice` | `alice` | user | 仅 H2 dev profile 注入 |
+| `admin` | `admin` | user, admin | 所有 profile 都会注入（首次启动空表时由 `JpaUserStore.seedDefaultAdmin()` 创建） |
+
+> 注：之前的 `bob/bob`、`alice/alice` 是 H2 专用的演示账号，已随 H2 移除。如需测试用户，用 `admin` 登录后在 `/admin/users` 页面创建。
 
 **第一次登录建议用 `admin/admin`**——既是 owner（能管理 Agent 分享）也是管理员（能审批贡献、管用户）。
 
-### 2.3 默认数据源
+### 2.4 默认数据源
 
-开箱即用的电商测试数据库（无需任何配置）：
+开箱即用的电商测试数据库（无需任何配置，启动时自动建表 + 灌数据）：
 
 | 属性 | 值 |
 |---|---|
 | 数据源 id | `analytics_db` |
 | 标签 | 电商业务数据库 |
-| 类型 | H2 内存数据库 |
-| JDBC URL | `jdbc:h2:mem:analytics;MODE=MySQL` |
+| 类型 | MySQL 8 |
+| JDBC URL | `jdbc:mysql://localhost:3306/dataagent_analytics` |
 | 表 | `products`(15 行) / `users`(20 行) / `orders`(120+ 行) / `daily_sales`(每日汇总) |
 | 覆盖品类 | 电子产品 / 运动户外 / 食品饮料 / 家居办公 / 图书教育 |
 
-种子脚本在 [data-analytics.sql](file:///e:/demo/agentscope-dataagent/src/main/resources/data-analytics.sql)，启动时自动执行。
+种子脚本在 [data-analytics-mysql.sql](file:///e:/demo/agentscope-dataagent/src/main/resources/data-analytics-mysql.sql)，启动时由 [AnalyticsDataConfig](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/tools/data/AnalyticsDataConfig.java) 自动执行（幂等：DROP + CREATE + INSERT）。
 
-### 2.4 第一个对话（Web UI）
+### 2.5 第一个对话（Web UI）
 
 1. 浏览器打开 `http://localhost:8080`
 2. 用 `admin/admin` 登录
@@ -1201,7 +1217,11 @@ agentscope-dataagent/
 | `dataagent.marketplace.max-contribution-bytes` | `1048576` | 最大贡献大小 |
 | `dataagent.agent.name` | `data-agent` | Agent 显示名 |
 | `dataagent.agent.sys-prompt` | 内置 | 系统提示词 |
-| `dataagent.analytics.h2.enabled` | `true` | 启用电商测试数据库 |
+| `dataagent.analytics.enabled` | `true` | 启用电商分析演示数据库 |
+| `dataagent.analytics.jdbc-url` | `jdbc:mysql://localhost:3306/dataagent_analytics...` | 分析库 JDBC URL（独立于主业务库） |
+| `dataagent.analytics.username` | `${spring.datasource.username}` | 分析库用户名（默认继承主库） |
+| `dataagent.analytics.password` | `${spring.datasource.password}` | 分析库密码（默认继承主库） |
+| `dataagent.analytics.init-script` | `data-analytics-mysql.sql` | 启动时执行的种子脚本（幂等） |
 | `server.port` | `8080` | HTTP 端口 |
 
 ---
@@ -1438,12 +1458,408 @@ harness 框架（运行时）──直接写──→ sessions.json ──启动
 
 ---
 
-## 十六、近期变更 (2026.07.02)
+## 十六、部署模式与多副本现状
+
+> **重要前提**：本项目当前是**单机设计**。多副本部署需要改造 6+ 个核心组件，或配合 sticky session 规避。请先读完本章节再决定部署策略。
+
+### 16.1 当前架构的多副本能力矩阵
+
+| 组件 | 多副本能力 | 问题与风险 |
+|---|---|---|
+| 主业务库（MySQL） | ✅ 已支持 | JPA 实体在共享 MySQL，多副本天然共享 |
+| AgentStateStore | ✅ 可选 Redis | `--spring.profiles.active=mysql,redis` 启用，跨副本共享会话状态 |
+| SandboxLifecycleRecord | ✅ 已支持 | 容器生命周期记录在 MySQL，跨副本可见 |
+| SandboxHeartbeatController | ✅ 已支持 | 心跳上报到共享 DB |
+| **UserSandboxRegistry** | ❌ 纯内存 | `ConcurrentHashMap<Key, Entry>` 副本间不共享，会**为同一用户重复创建容器** |
+| **SessionAgentManager** | ❌ 纯内存 | 4 个 ConcurrentHashMap（sessionsByKey/labelToSessionKey/gateKeyToSessionKey/childrenByParent）跨副本不一致 |
+| **ToolEventBus** | ❌ 纯进程内 | Reactor `Sinks.many()` 多播，副本 A 的工具事件副本 B 的 SSE 订阅者收不到 |
+| **SessionStore (sessions.json)** | ❌ 本地文件 | 无文件锁，多副本并发写互相覆盖 |
+| **SandboxReaperService** | ❌ 无分布式锁 | 每副本都跑 `@Scheduled` 清理，会重复 `docker rm` + 误杀其他副本活跃容器 |
+| **SharedSandboxFilesystem** | ❌ 绑定单容器 | 持有单个 `Sandbox` 实例，跨副本无法访问容器文件 |
+| **sticky session** | ⚠️ 仅文档约束 | 代码零实现，依赖外部 LB 配置 userId 亲和 |
+
+### 16.2 推荐部署策略：sticky session + 单机增强
+
+**最务实的方案**：用 LB 的 sticky session 把同一用户路由到同一副本，规避大部分多副本问题。
+
+```
+                    ┌─────────────────────────┐
+                    │  Load Balancer (Nginx)   │
+                    │  按 userId 亲和路由       │
+                    │  upstream hash $arg_uid  │
+                    └─────────────┬───────────┘
+                                  │
+              ┌───────────────────┼───────────────────┐
+              ▼                   ▼                   ▼
+      ┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+      │   副本 A      │    │   副本 B      │    │   副本 C      │
+      │  本地内存状态  │    │  本地内存状态  │    │  本地内存状态  │
+      │  本地容器池    │    │  本地容器池    │    │  本地容器池    │
+      └──────┬───────┘    └──────┬───────┘    └──────┬───────┘
+             │                   │                   │
+             └───────────────────┼───────────────────┘
+                                 ▼
+                    ┌─────────────────────────┐
+                    │  共享存储层               │
+                    │  • MySQL (业务+生命周期)  │
+                    │  • Redis (AgentState)    │
+                    │  • NFS (workspace 目录)  │
+                    └─────────────────────────┘
+```
+
+**Nginx sticky session 配置示例**：
+
+```nginx
+upstream dataagent_backend {
+    # 按 userId 哈希路由（从 JWT 解析或 query 参数获取）
+    hash $arg_uid consistent;
+    server replica-a:8080;
+    server replica-b:8080;
+    server replica-c:8080;
+}
+
+server {
+    listen 80;
+    location / {
+        proxy_pass http://dataagent_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        # SSE 必须关掉 buffer
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+}
+```
+
+**Kubernetes Ingress 配置示例**（用 nginx-ingress 的 affinity）：
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dataagent-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/affinity-mode: persistent
+    nginx.ingress.kubernetes.io/session-cookie-name: dataagent_route
+    nginx.ingress.kubernetes.io/session-cookie-hash: sha1
+spec:
+  rules:
+    - host: dataagent.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dataagent
+                port:
+                  number: 8080
+```
+
+### 16.3 sticky session 仍存在的风险
+
+即便用 sticky session，仍有 2 个风险需要警惕：
+
+| 风险 | 触发场景 | 缓解措施 |
+|---|---|---|
+| **副本下线后用户重路由** | 副本 A 挂了，LB 把 alice 路由到副本 B。B 没有 alice 的内存状态，会重新创建容器+会话 | 副本重启后从 MySQL+Redis 恢复（SessionStore 加载 sessions.json、SandboxLifecycleRecord 查 DB）；用户感知是"会话重置" |
+| **SandboxReaperService 误杀** | 副本 A 重启时 `cleanupOnStartup()` 扫 DB 把心跳>1分钟的 ACTIVE 容器全 `docker rm -f`，可能杀掉副本 B 正在用的容器 | **临时缓解**：注释掉 `cleanupOnStartup()` 或加 `instance_id` 字段过滤；**根本解决**：加 ShedLock 分布式锁 |
+
+### 16.4 要真正支持多副本需做的改造（未来路线图）
+
+如果未来要彻底摆脱 sticky session，需要改造以下组件：
+
+| 优先级 | 组件 | 改造方案 | 工作量 |
+|---|---|---|---|
+| P0 | SandboxReaperService | 加 ShedLock 分布式锁 + `SandboxLifecycleRecord` 加 `owner_pod` 字段 | 小 |
+| P0 | SessionStore | 从 JSON 文件改为 JPA 表（复用 MySQL） | 中 |
+| P1 | UserSandboxRegistry | entries 从内存 ConcurrentHashMap 改为 Redis Hash | 大 |
+| P1 | SessionAgentManager | 4 个内存索引改为 Redis Hash + Sorted Set | 大 |
+| P2 | ToolEventBus | 从 Reactor Sinks 改为 Redis Pub/Sub | 中 |
+| P3 | SharedSandboxFilesystem | 跨副本容器寻址（或保证 sticky） | 大 |
+
+---
+
+## 十七、生产环境检查清单
+
+> 部署到生产前逐项检查。**未满足的项会导致生产事故**。
+
+### 17.1 必填项（不满足不能上生产）
+
+| # | 检查项 | 配置方式 | 验证方法 |
+|---|---|---|---|
+| 1 | **MySQL 8.0+ 已部署** | `application-mysql.yml` 的 `spring.datasource.url` | `mysql -u root -p -e "SELECT VERSION()"` |
+| 2 | **两个数据库已创建** | `createDatabaseIfNotExist=true` 自动创建 | `SHOW DATABASES LIKE 'agentscope_dataagent'; SHOW DATABASES LIKE 'dataagent_analytics';` |
+| 3 | **MySQL 密码已改** | 环境变量 `MYSQL_PASSWORD=<强密码>` | 不再是默认的 `root` |
+| 4 | **JWT 密钥已设** | 环境变量 `DATAAGENT_JWT_SECRET=<≥32字符随机串>` | `echo $DATAAGENT_JWT_SECRET \| wc -c` ≥ 33 |
+| 5 | **DashScope API Key 已设** | 环境变量 `DASHSCOPE_API_KEY=<sk-xxx>` | 启动日志无 "api-key is empty" 警告 |
+| 6 | **workspace 目录可写** | 环境变量 `DATAAGENT_WORKSPACE=<绝对路径>` | `touch <path>/test && rm <path>/test` |
+| 7 | **ddl-auto 改为 validate** | `--spring.profiles.active=prod,mysql,redis` | 启动日志无 "SchemaDdl" 变更 |
+| 8 | **Docker daemon 可访问**（如需沙箱） | `docker info` 成功 | `docker ps` 不报错 |
+
+### 17.2 强烈建议项
+
+| # | 检查项 | 原因 |
+|---|---|---|
+| 9 | Redis 已部署（多副本必需） | `--spring.profiles.active=mysql,redis`，否则 AgentState 用内存兜底，副本重启丢状态 |
+| 10 | Redis 密码已设 | `REDIS_PASSWORD=<强密码>` |
+| 11 | HTTPS 反向代理 | Nginx/Caddy 终结 TLS，JWT 不裸传 |
+| 12 | 日志持久化 | 挂载 `logs/` 目录到持久卷 |
+| 13 | 数据库定期备份 | `mysqldump agentscope_dataagent > backup.sql` |
+| 14 | Docker 容器资源限制 | `--memory=512m --cpus=0.5` 防止沙箱吃满主机 |
+| 15 | 监控告警 | Actuator `/actuator/health` + Prometheus + Grafana |
+| 16 | **关闭 SandboxReaperService 的 cleanupOnStartup**（多副本） | 避免副本重启误杀其他副本容器 |
+
+### 17.3 启动命令模板
+
+```bash
+# 单机生产（最简）
+java -jar dataagent.jar \
+  --spring.profiles.active=prod,mysql \
+  --DATAAGENT_JWT_SECRET=<32字符> \
+  --DASHSCOPE_API_KEY=<sk-xxx> \
+  --MYSQL_PASSWORD=<强密码>
+
+# 多副本生产（sticky session + Redis）
+java -jar dataagent.jar \
+  --spring.profiles.active=prod,mysql,redis \
+  --DATAAGENT_JWT_SECRET=<32字符> \
+  --DASHSCOPE_API_KEY=<sk-xxx> \
+  --MYSQL_PASSWORD=<强密码> \
+  --REDIS_HOST=<redis-host> \
+  --REDIS_PASSWORD=<redis-password>
+
+# Docker 容器启动
+docker run -d --name dataagent \
+  -p 8080:8080 \
+  -e SPRING_PROFILES_ACTIVE=prod,mysql,redis \
+  -e DATAAGENT_JWT_SECRET=<32字符> \
+  -e DASHSCOPE_API_KEY=<sk-xxx> \
+  -e MYSQL_PASSWORD=<强密码> \
+  -e REDIS_HOST=<redis-host> \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /opt/dataagent/workspace:/workspace \
+  dataagent:latest
+```
+
+### 17.4 环境变量速查表
+
+| 变量名 | 必填 | 默认值 | 说明 |
+|---|---|---|---|
+| `DATAAGENT_JWT_SECRET` | ✅ | dev 占位 | JWT 签名密钥（≥32 字符） |
+| `DASHSCOPE_API_KEY` | ✅ | 空 | 阿里云 DashScope API Key |
+| `MYSQL_PASSWORD` | ✅ | root | MySQL 密码 |
+| `REDIS_HOST` | 多副本必填 | localhost | Redis 地址 |
+| `REDIS_PASSWORD` | 多副本必填 | 空 | Redis 密码 |
+| `DATAAGENT_WORKSPACE` | 建议 | $CWD | workspace 根目录 |
+| `SERVER_PORT` | 否 | 8080 | HTTP 端口 |
+| `SPRING_PROFILES_ACTIVE` | ✅ | mysql | profile 组合 |
+
+---
+
+## 十八、测试方案
+
+### 18.1 单机功能测试（冒烟测试）
+
+**目标**：验证单机部署后核心链路可用。
+
+```bash
+# 1. 启动服务
+java -jar dataagent.jar --spring.profiles.active=mysql
+
+# 2. 登录获取 token
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin"}' | jq -r .token)
+echo "Token: $TOKEN"
+
+# 3. 验证 Agent 列表
+curl -s http://localhost:8080/api/agents \
+  -H "Authorization: Bearer $TOKEN" | jq .
+
+# 4. 验证 SSE 流式对话（核心链路）
+curl -N -X POST http://localhost:8080/api/agents/data-agent/chat/stream \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"列出所有可用的数据源"}'
+# 预期：SSE 事件流（token → tool_call → tool_result → done）
+
+# 5. 验证 SQL 工具
+curl -N -X POST http://localhost:8080/api/agents/data-agent/chat/stream \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"查询 products 表前 5 条记录"}'
+# 预期：Agent 调用 run_sql_preview 工具，返回 5 条产品数据
+
+# 6. 验证分享 API
+curl -s -X POST http://localhost:8080/api/agents/data-agent/shares \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"granteeType":"WORKSPACE","granteeId":"*","tier":"RUN"}' | jq .
+# 预期：返回 AgentDefinition，shares 字段含新授权
+
+# 7. 验证工作区文件
+curl -s "http://localhost:8080/api/agents/data-agent/workspace/files?recursive=true" \
+  -H "Authorization: Bearer $TOKEN" | jq .
+# 预期：返回沙箱容器内文件树
+
+# 8. 验证数据库种子数据
+mysql -u root -p -e "USE dataagent_analytics; SELECT COUNT(*) FROM orders;"
+# 预期：120
+```
+
+### 18.2 多副本测试方案（单机模拟）
+
+> 目标：在单机上模拟多副本，验证 sticky session 必要性和已知风险。
+
+**步骤 1：启动两个副本**
+
+```bash
+# 副本 A（端口 8081）
+java -jar dataagent.jar \
+  --spring.profiles.active=mysql,redis \
+  --server.port=8081 \
+  --DATAAGENT_WORKSPACE=/tmp/replica-a
+
+# 副本 B（端口 8082，共享同一 MySQL + Redis）
+java -jar dataagent.jar \
+  --spring.profiles.active=mysql,redis \
+  --server.port=8082 \
+  --DATAAGENT_WORKSPACE=/tmp/replica-b
+```
+
+**步骤 2：验证 Redis 共享 AgentState**
+
+```bash
+# 在副本 A 发起对话
+TOKEN_A=$(curl -s -X POST http://localhost:8081/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin"}' | jq -r .token)
+
+curl -N -X POST http://localhost:8081/api/agents/data-agent/chat/stream \
+  -H "Authorization: Bearer $TOKEN_A" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"你好"}'
+
+# 从 SSE 响应里拿到 sessionKey
+SESSION_KEY=main-xxx
+
+# 在副本 B 查询同一会话（验证 Redis 共享）
+TOKEN_B=$(curl -s -X POST http://localhost:8082/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin"}' | jq -r .token)
+
+curl "http://localhost:8082/api/agents/data-agent/chat/session?sessionKey=$SESSION_KEY" \
+  -H "Authorization: Bearer $TOKEN_B"
+# 预期：存在（AgentState 在 Redis 共享）
+# 但会话注册表（SessionAgentManager）在副本 B 内存里没有 → 可能返回不存在
+```
+
+**步骤 3：验证已知风险——容器重复创建**
+
+```bash
+# 在副本 A 借用沙箱（通过聊天触发容器创建）
+curl -N -X POST http://localhost:8081/api/agents/data-agent/chat/stream \
+  -H "Authorization: Bearer $TOKEN_A" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"执行 ls 命令"'
+
+# 查看副本 A 创建的容器
+docker ps --filter "label=dataagent"
+
+# 在副本 B 给同一用户发起对话（无 sticky session → 副本 B 会重新创建容器）
+curl -N -X POST http://localhost:8082/api/agents/data-agent/chat/stream \
+  -H "Authorization: Bearer $TOKEN_B" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"执行 ls 命令"'
+
+# 再次查看容器
+docker ps --filter "label=dataagent"
+# 预期：有 2 个容器（每个副本各创建一个）→ 验证了 UserSandboxRegistry 不共享的问题
+```
+
+**步骤 4：验证已知风险——SandboxReaperService 重复清理**
+
+```bash
+# 两副本都跑 @Scheduled(fixedRate=60000) 清理任务
+# 等待容器空闲超时（默认 15 分钟）或手动触发
+# 观察日志：两副本都会对同一超时容器执行 docker stop
+tail -f /tmp/replica-a/logs/data-agent.log | grep -i reap
+tail -f /tmp/replica-b/logs/data-agent.log | grep -i reap
+# 预期：两副本都尝试清理同一容器（一个成功，一个 warn "container not found"）
+```
+
+**步骤 5：验证 sticky session 效果**
+
+```bash
+# 用 Nginx 做反向代理 + sticky session
+cat > /tmp/nginx.conf <<'EOF'
+upstream dataagent {
+    hash $arg_uid consistent;
+    server 127.0.0.1:8081;
+    server 127.0.0.1:8082;
+}
+server {
+    listen 8080;
+    location / {
+        proxy_pass http://dataagent;
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+}
+EOF
+nginx -c /tmp/nginx.conf
+
+# 同一用户的请求总是路由到同一副本 → 不会重复创建容器
+curl "http://localhost:8080/api/agents?uid=admin" -H "Authorization: Bearer $TOKEN_A"
+```
+
+### 18.3 测试用例速查表
+
+| 测试场景 | 验证点 | 预期结果 | 命令 |
+|---|---|---|---|
+| 登录 | JWT 签发 | 返回 token | `POST /api/auth/login` |
+| 流式对话 | SSE 事件流 | token→tool_call→tool_result→done | `POST /api/agents/{id}/chat/stream` |
+| SQL 查询 | `run_sql_preview` 工具 | 返回查询结果 | 问 "查询 products 前 5 条" |
+| 图表生成 | `render_chart` 工具 | 返回 Vega-Lite spec | 问 "画日销售额折线图" |
+| Agent 分享 | `POST /shares` | shares 列表新增 | `POST /api/agents/{id}/shares` |
+| Agent 克隆 | `POST /clone` | 新 Agent 创建 | `POST /api/agents/{id}/clone` |
+| 工作区文件 | 文件树 | 返回 JSON 树 | `GET /workspace/files` |
+| 会话列表 | inbox | 返回会话数组 | `GET /sessions/inbox` |
+| 贡献审批 | 提交→审批→共享 | shared/ 目录出现新文件 | `POST /api/me/contributions` |
+| 多副本 Redis 共享 | AgentState 跨副本 | 副本 B 能读到副本 A 的状态 | 步骤 2 |
+| 多副本容器隔离 | UserSandboxRegistry | 每副本独立容器池 | 步骤 3 |
+| sticky session | LB 亲和路由 | 同一用户固定副本 | 步骤 5 |
+
+### 18.4 压力测试建议
+
+```bash
+# 用 wrk 或 hey 压测 SSE 流式接口
+# 注意：SSE 是长连接，并发数 = 同时在线用户数
+hey -z 60s -c 50 -m POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"message":"你好"}' \
+  http://localhost:8080/api/agents/data-agent/chat/send
+
+# 关注指标：
+# - QPS（同步 send 接口）
+# - P99 延迟（LLM 响应时间，通常 2-10s）
+# - MySQL 连接池水位（HikariCP maximum-pool-size=20）
+# - Docker 容器数量（UserSandboxRegistry entries size）
+# - JVM 堆内存（Agent 上下文 + 工具结果缓存）
+```
+
+---
+
+## 十九、近期变更 (2026.07.02)
 
 ### 本次更新
 
 | 模块 | 变更 | 效果 |
 |------|------|------|
+| **H2 → MySQL 迁移** | 彻底移除 H2 依赖：删除 `application-dev.yml`、`data-h2.sql`、`data-analytics.sql`、`H2DemoSeedTest`、pom.xml H2 依赖；改造 `AnalyticsDataConfig` 为可配置 MySQL 数据源；新建 `data-analytics-mysql.sql`（幂等）；默认 profile 从 `dev` 改为 `mysql` | 生产/开发统一用 MySQL，项目不再依赖 H2。两个独立数据库：`agentscope_dataagent`（主业务）+ `dataagent_analytics`（演示数据） |
 | **Agent 分享 API** | 新增 `POST/DELETE /api/agents/{id}/shares` 端点 + `grantShare`/`revokeShare` Service 方法 | 补全了之前"地基打好了楼没盖"的架构缺口——ACL 引擎、存储映射、撤销逻辑都齐了，现在写入端点也齐了 |
 | **前端分享管理** | 新增 `/configure/shares` 页面 + `grantShare`/`revokeShare` API 函数 + ChatHeader 导航按钮 | owner 可在 UI 上管理 Agent 分享，非 owner 看到只读列表 |
 | **SharedSandboxFilesystem** | 用框架 `FilesystemUtils.shellQuote()` 替代手写 `shellSingleQuote`；base64Content 也包单引号 | 对齐父类 quoting 逻辑，消除重复代码，增强防御性 |

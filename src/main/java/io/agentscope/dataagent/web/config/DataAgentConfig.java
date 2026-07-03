@@ -16,9 +16,9 @@
 package io.agentscope.dataagent.web.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.agentscope.core.model.DashScopeChatModel;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ModelRegistry;
+import io.agentscope.core.model.OllamaChatModel;
 import io.agentscope.core.permission.PermissionBehavior;
 import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.permission.PermissionRule;
@@ -78,19 +78,17 @@ public class DataAgentConfig {
     private static final Logger log = LoggerFactory.getLogger(DataAgentConfig.class);
 
     // ===== 从 application.yml 读进来的"配置旋钮" =====
-    // 注意：model 的 stream / 超时等参数由 ModelRegistry 默认处理，不再手写 @Value。
-    // 切换厂商只需改 model-name 为 "openai:gpt-4o" / "anthropic:claude-sonnet-4-5" 等，
-    // 并设置对应环境变量（OPENAI_API_KEY / ANTHROPIC_API_KEY ...）。
-    @Value("${dataagent.dashscope.api-key:}")
-    private String dashscopeApiKey;
+    // Ollama 本地模型配置
+    @Value("${dataagent.ollama.base-url:http://localhost:11434}")
+    private String ollamaBaseUrl;
 
-    @Value("${dataagent.dashscope.model-name:qwen-max}")
-    private String dashscopeModelName;
+    @Value("${dataagent.ollama.model-name:qwen2.5:1.5b}")
+    private String ollamaModelName;
 
     // 主模型失败重试 2 次仍不行时，自动切到这个备用模型（2.0 fallbackModel 能力）。
-    // 留空字符串则不启用 fallback。默认 qwen-plus 比 qwen-max 更便宜更稳。
-    @Value("${dataagent.dashscope.fallback-model-name:qwen-plus}")
-    private String dashscopeFallbackModelName;
+    // Ollama 本地模型无需备用，默认留空不启用 fallback。
+    @Value("${dataagent.ollama.fallback-model-name:}")
+    private String ollamaFallbackModelName;
 
     @Value(
             "${dataagent.agent.system-prompt:You are a Data Agent built with AgentScope."
@@ -111,59 +109,30 @@ public class DataAgentConfig {
     private String redisKeyPrefix;
 
     // -----------------------------------------------------------------
-    //  Model bean — 通过 ModelRegistry 解析字符串 id 创建。
-    //  两种来源都能工作：
-    //   1. yml 配了 dataagent.dashscope.api-key → 注册工厂用这个 key
-    //   2. 没配 api-key → 依赖环境变量 DASHSCOPE_API_KEY（2.0 推荐方式）
+    //  Model bean — 通过 OllamaChatModel 直接构建本地模型实例。
+    //  读取 application.yml 中 dataagent.ollama.* 配置。
     // -----------------------------------------------------------------
 
     /**
-     * 装配"大脑"——通过 ModelRegistry 解析 model id 创建模型实例。
+     * 装配"大脑"——使用本地 Ollama 服务中的模型。
      *
-     * <p>这是 AgentScope 2.0 推荐的方式：传字符串 id（如 "dashscope:qwen-max"），
-     * 框架自动解析并读取对应环境变量。
+     * <p>Ollama 是本地推理引擎，无需 API Key，可运行各种开源模型。
+     * 默认连接 http://localhost:11434，可通过 dataagent.ollama.base-url 配置。
      *
-     * <p>兼容两种配置来源：
-     * <ul>
-     *   <li>yml 配了 {@code dataagent.dashscope.api-key} → 注册一个工厂用这个 key；
-     *   <li>没配 api-key → 走 ModelRegistry 内置工厂，读 {@code DASHSCOPE_API_KEY} 环境变量。
-     * </ul>
-     *
-     * <p>切换厂商：把 model-name 改成 "openai:gpt-4o" / "anthropic:claude-sonnet-4-5" 等，
-     * 并设置对应环境变量。
+     * <p>备用模型(fallback)默认关闭，因为本地模型不存在云端 API 的限流/鉴权问题。
+     * 如有需要可通过 dataagent.ollama.fallback-model-name 启用。
      */
     @Bean
     @ConditionalOnMissingBean(Model.class)
-    public Model dashscopeModel() {
-        // 如果 yml 配了 api-key，注册一个工厂让 ModelRegistry 用这个 key
-        // （优先级高于内置工厂，所以会覆盖默认的环境变量读取逻辑）
-        if (dashscopeApiKey != null && !dashscopeApiKey.isBlank()) {
-            String apiKey = dashscopeApiKey;
-            ModelRegistry.registerFactory(
-                    "dashscope:(.+)",
-                    id -> DashScopeChatModel.builder()
-                            .apiKey(apiKey)
-                            .modelName(id.substring("dashscope:".length()))
-                            .stream(true)
-                            .build());
-            // 兼容无前缀的 model-name（如 "qwen-max"）
-            ModelRegistry.registerFactory(
-                    "qwen.*",
-                    id -> DashScopeChatModel.builder()
-                            .apiKey(apiKey)
-                            .modelName(id)
-                            .stream(true)
-                            .build());
-            log.info("注册 DashScope 工厂（使用 yml 中的 api-key）: model={}", dashscopeModelName);
-        } else {
-            log.info("未配置 yml api-key，ModelRegistry 将读 DASHSCOPE_API_KEY 环境变量: model={}", dashscopeModelName);
-        }
+    public Model ollamaModel() {
+        log.info("初始化 Ollama 本地模型: model={}, baseUrl={}", ollamaModelName, ollamaBaseUrl);
 
-        // model-name 如果没有 provider 前缀，补上 dashscope: 让 ModelRegistry 正确识别
-        String modelId = dashscopeModelName.contains(":")
-                ? dashscopeModelName
-                : "dashscope:" + dashscopeModelName;
-        return ModelRegistry.resolve(modelId);
+        // 构建 OllamaChatModel
+        // 注意：模型名如 "qwen2.5:1.5b" 中的 : 是 Ollama 的版本标签，不是提供商前缀
+        return OllamaChatModel.builder()
+                .modelName(ollamaModelName)
+                .baseUrl(ollamaBaseUrl)
+                .build();
     }
 
     /**
@@ -231,7 +200,7 @@ public class DataAgentConfig {
 
     // -----------------------------------------------------------------
     //  核心 bootstrap — model 作为方法参数注入（无字段级别的
-    //  @Autowired）以避免与上面的 dashscopeModel() 产生循环依赖。
+    //  @Autowired）以避免与上面的 ollamaModel() 产生循环依赖。
     // -----------------------------------------------------------------
 
     /**
@@ -254,8 +223,8 @@ public class DataAgentConfig {
             builder.model(modelOpt.get());
         } else {
             log.warn(
-                    "未配置 model。请设置环境变量 DASHSCOPE_API_KEY"
-                            + " 或在 application.yml 中配置 dataagent.dashscope.api-key"
+                    "未配置 model。请检查 dataagent.ollama 配置"
+                            + " 或在 application.yml 中配置 dataagent.ollama.* 配置项。"
                             + " 或提供自定义 Model bean。在可用 model 之前，Agent 调用将失败。");
         }
 
@@ -290,14 +259,11 @@ public class DataAgentConfig {
                                     .isolationScope(IsolationScope.USER));
 
                     // ---- #6 模型容错: 主模型失败重试 + fallback 自动切换 ----
-                    // 主模型失败自动重试 2 次；仍不行则切到备用模型（默认 qwen-plus）。
-                    // 链路：主模型 → retry 2 次 → fallback 模型。
+                    // 主模型失败自动重试 2 次；如果配置了 fallback 模型，仍不行则切换。
+                    // 本地 Ollama 模型默认不启用 fallback（无云端限流问题）。
                     b.maxRetries(2);
-                    if (dashscopeFallbackModelName != null && !dashscopeFallbackModelName.isBlank()) {
-                        String fallbackId = dashscopeFallbackModelName.contains(":")
-                                ? dashscopeFallbackModelName
-                                : "dashscope:" + dashscopeFallbackModelName;
-                        b.fallbackModel(fallbackId);
+                    if (ollamaFallbackModelName != null && !ollamaFallbackModelName.isBlank()) {
+                        b.fallbackModel("ollama:" + ollamaFallbackModelName);
                     }
 
                     // ---- #5 Plan Mode: 复杂分析任务先规划再执行 ----
@@ -340,7 +306,7 @@ public class DataAgentConfig {
                                     .name("code-reviewer")
                                     .description("Code review specialist. Reviews data-analysis scripts, SQL, and chart definitions. "
                                             + "Returns structured findings with severity levels.")
-                                    .model("dashscope:qwen-max")
+                                    .model("ollama:" + ollamaModelName)
                                     .maxIters(5)
                                     .exposeToUser(false)
                                     .workspaceMode(WorkspaceMode.ISOLATED)
@@ -352,7 +318,7 @@ public class DataAgentConfig {
                                     .name("report-writer")
                                     .description("Report writer. Composes data-analysis reports in Markdown. "
                                             + "Takes findings and chart descriptions, produces polished narrative.")
-                                    .model("dashscope:qwen-max")
+                                    .model(ollamaModelName)
                                     .maxIters(8)
                                     .exposeToUser(true)  // 用户可看到子代理的思考过程
                                     .workspaceMode(WorkspaceMode.ISOLATED)

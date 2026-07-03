@@ -15,6 +15,8 @@
  */
 package io.agentscope.dataagent.web.workspace;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.dataagent.web.persistence.jpa.SandboxLifecycleRepository;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClient;
@@ -75,7 +77,10 @@ public class DataAgentWorkspaceConfig {
     @ConditionalOnMissingBean(SandboxClient.class)
     public SandboxClient<DockerSandboxClientOptions> sandboxClient() {
         log.info("Wiring default DockerSandboxClient for per-user workspace sandboxes");
-        return new DockerSandboxClient(); // ← 直接调用 docker 命令
+        ObjectMapper mapper =
+                new ObjectMapper()
+                        .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        return new DockerSandboxClient(mapper); // ← 直接调用 docker 命令
     }
 
     @Bean

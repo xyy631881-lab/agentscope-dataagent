@@ -1,10 +1,21 @@
 -- ============================================================
--- AgentScope DataAgent 分析数据库种子脚本
+-- AgentScope DataAgent 分析数据库种子脚本 (MySQL 8 版本)
 -- 模拟真实电商业务场景: 销售、用户、产品、库存
+--
+-- 特点:
+--   1. 幂等: DROP TABLE IF EXISTS 保证重复执行无副作用
+--   2. 标准 MySQL 8 语法: ENGINE=InnoDB, CHARSET=utf8mb4
+--   3. 与 data-analytics.sql (H2 版) 数据完全一致
 -- ============================================================
 
+-- 先删后建，保证幂等（启动时重复执行无副作用）
+DROP TABLE IF EXISTS daily_sales;
+DROP TABLE IF EXISTS orders;
+DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS products;
+
 -- 产品表
-CREATE TABLE IF NOT EXISTS products (
+CREATE TABLE products (
     id          INT PRIMARY KEY,
     name        VARCHAR(200)  NOT NULL,
     category    VARCHAR(50)   NOT NULL,
@@ -13,10 +24,10 @@ CREATE TABLE IF NOT EXISTS products (
     cost        DECIMAL(10,2) NOT NULL,
     supplier    VARCHAR(100),
     created_at  DATE          NOT NULL
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 用户表
-CREATE TABLE IF NOT EXISTS users (
+CREATE TABLE users (
     id            INT PRIMARY KEY,
     name          VARCHAR(100) NOT NULL,
     email         VARCHAR(200),
@@ -24,10 +35,10 @@ CREATE TABLE IF NOT EXISTS users (
     province      VARCHAR(50),
     channel       VARCHAR(20) NOT NULL,  -- app / web / miniprogram
     registered_at DATE         NOT NULL
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 订单表
-CREATE TABLE IF NOT EXISTS orders (
+CREATE TABLE orders (
     id            INT PRIMARY KEY,
     user_id       INT           NOT NULL,
     product_id    INT           NOT NULL,
@@ -35,23 +46,23 @@ CREATE TABLE IF NOT EXISTS orders (
     total_amount  DECIMAL(12,2) NOT NULL,
     status        VARCHAR(20)   NOT NULL,  -- completed / cancelled / refunded
     channel       VARCHAR(20)   NOT NULL,
-    created_at    TIMESTAMP     NOT NULL
-);
+    created_at    DATETIME      NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 每日销售汇总表
-CREATE TABLE IF NOT EXISTS daily_sales (
-    sale_date    DATE          PRIMARY KEY,
-    total_revenue DECIMAL(14,2) NOT NULL,
-    total_orders  INT           NOT NULL,
-    total_users   INT           NOT NULL,
+CREATE TABLE daily_sales (
+    sale_date       DATE          PRIMARY KEY,
+    total_revenue   DECIMAL(14,2) NOT NULL,
+    total_orders    INT           NOT NULL,
+    total_users     INT           NOT NULL,
     avg_order_value DECIMAL(10,2) NOT NULL
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ============================================================
 -- 种子数据
 -- ============================================================
 
--- 产品数据 (15 款)
+-- 产品数据 (15 款，覆盖 5 大品类)
 INSERT INTO products VALUES (1,  '无线蓝牙耳机 Pro',    '电子产品', '音频',   299.00, 180.00, '深圳声学科技',  '2024-03-01');
 INSERT INTO products VALUES (2,  '智能手表 S3',         '电子产品', '穿戴',   899.00, 520.00, '深圳声学科技',  '2024-05-15');
 INSERT INTO products VALUES (3,  '机械键盘 K8',          '电子产品', '外设',   399.00, 220.00, '东莞键鼠制造',  '2024-01-10');
@@ -90,7 +101,7 @@ INSERT INTO users VALUES (18, '许十', 'xushi@gmail.com',   '成都', '四川',
 INSERT INTO users VALUES (19, '韩一', 'hanyi@qq.com',      '北京', '北京',   'app',         '2024-11-01');
 INSERT INTO users VALUES (20, '唐二', 'tanger@163.com',    '上海', '上海',   'web',         '2024-11-15');
 
--- 订单数据 (200+ 条，覆盖 2024年全年)
+-- 订单数据 (120 条，覆盖 2024 年全年)
 -- Q1 (1-3月): 业务起步期
 INSERT INTO orders VALUES (1,  1,  3,  1, 399.00,  'completed',  'app',         '2024-01-20 10:30:00');
 INSERT INTO orders VALUES (2,  2,  1,  2, 598.00,  'completed',  'web',         '2024-02-25 14:15:00');
@@ -163,7 +174,7 @@ INSERT INTO orders VALUES (68, 4,  8,  3, 207.00,  'completed',  'app',         
 INSERT INTO orders VALUES (69, 6,  10, 2, 158.00,  'completed',  'miniprogram', '2024-04-28 10:00:00');
 INSERT INTO orders VALUES (70, 8,  13, 1, 199.00,  'completed',  'web',         '2024-06-28 14:15:00');
 
--- 更多订单 (Q3-Q4 密集订单，模拟业务增长)
+-- Q3-Q4 密集订单，模拟业务增长
 INSERT INTO orders VALUES (71, 1,  1,  2, 598.00,  'completed',  'app',         '2024-07-08 10:30:00');
 INSERT INTO orders VALUES (72, 2,  1,  1, 299.00,  'completed',  'web',         '2024-07-08 11:00:00');
 INSERT INTO orders VALUES (73, 3,  2,  1, 899.00,  'completed',  'miniprogram', '2024-07-08 14:30:00');
@@ -216,14 +227,15 @@ INSERT INTO orders VALUES (119,17, 3,  2, 798.00,  'completed',  'web',         
 INSERT INTO orders VALUES (120,19, 9,  1, 188.00,  'completed',  'app',         '2024-12-24 11:15:00');
 
 -- 每日销售汇总 (从订单数据聚合预计算)
+-- MySQL 用 DATE() 函数提取日期部分，比 H2 的 CAST(... AS DATE) 更标准
 INSERT INTO daily_sales
 SELECT
-    CAST(created_at AS DATE) AS sale_date,
-    SUM(total_amount)        AS total_revenue,
-    COUNT(*)                 AS total_orders,
-    COUNT(DISTINCT user_id)  AS total_users,
+    DATE(created_at)            AS sale_date,
+    SUM(total_amount)           AS total_revenue,
+    COUNT(*)                    AS total_orders,
+    COUNT(DISTINCT user_id)     AS total_users,
     ROUND(AVG(total_amount), 2) AS avg_order_value
 FROM orders
 WHERE status = 'completed'
-GROUP BY CAST(created_at AS DATE)
+GROUP BY DATE(created_at)
 ORDER BY sale_date;

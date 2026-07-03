@@ -64,14 +64,15 @@ import reactor.core.publisher.Flux;
         properties = {
             "dataagent.jwt.secret=test-jwt-secret-must-be-at-least-32-characters-long",
             "dataagent.dashscope.api-key=",
-            "spring.datasource.url=jdbc:h2:mem:dataagentContribIT;DB_CLOSE_DELAY=-1;MODE=MYSQL",
-            "spring.datasource.driver-class-name=org.h2.Driver",
-            "spring.datasource.username=sa",
-            "spring.datasource.password=",
+            "spring.datasource.url=jdbc:mysql://localhost:3306/dataagent_test?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=GMT%2B8&allowPublicKeyRetrieval=true&createDatabaseIfNotExist=true",
+            "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver",
+            "spring.datasource.username=root",
+            "spring.datasource.password=root",
             "spring.jpa.hibernate.ddl-auto=create-drop",
             "spring.jpa.open-in-view=false",
-            // Skip the bob/alice demo seed — the contribution rows are what we assert on.
-            "spring.sql.init.mode=never"
+            "spring.sql.init.mode=never",
+            // 测试时关闭 analytics 数据源（不需要演示数据）
+            "dataagent.analytics.enabled=false"
         })
 class MarketContributionServiceTest {
 

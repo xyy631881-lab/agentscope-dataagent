@@ -5,11 +5,11 @@ spring:
   application:
     name: agentscope-dataagent
   profiles:
-    default: dev    # 默认 dev profile；生产设 SPRING_PROFILES_ACTIVE=prod,mysql,redis
+    default: mysql,redis    # 默认启用 mysql + redis profile：MySQL 数据源 + Redis 分布式 AgentStateStore
   jpa:
     open-in-view: false  # 关掉懒加载（WebFlux 必须关）
     hibernate:
-      ddl-auto: validate          # 生产默认；dev profile 覆写为 update
+      ddl-auto: validate          # 主配置默认 validate；mysql profile 覆写为 update
     properties:
       hibernate:
         jdbc.time_zone: UTC
@@ -64,13 +64,12 @@ dataagent:
     local:
       max-file-size: 10MB
 
-  dashscope:
-    api-key: ${DASHSCOPE_API_KEY:}
-    base-url: https://dashscope.aliyuncs.com
+  ollama:
+    # Ollama 服务地址
+    base-url: http://localhost:11434
     model:
-      chat: ${DATAAGENT_MODEL_NAME:qwen-max}
-    stream:
-      enabled: true
+      # Ollama 中已拉取的模型名称
+      chat: ${DATAAGENT_MODEL_NAME:qwen2.5:1.5b}
 
   agent:
     name: ${DATAAGENT_AGENT_NAME:data-agent}
