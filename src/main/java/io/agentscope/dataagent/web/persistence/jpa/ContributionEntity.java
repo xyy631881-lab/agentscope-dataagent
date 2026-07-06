@@ -25,8 +25,8 @@ import jakarta.persistence.Lob;
 import jakarta.persistence.Table;
 
 /**
- * One user-submitted nomination of a skill / subagent / memory / AGENTS.md / knowledge artifact
- * for promotion to the shared workspace under admin approval.
+ * One user-submitted nomination of a skill / subagent / memory / AGENTS.md / knowledge /
+ * MCP server config artifact for promotion to the shared workspace under admin approval.
  *
  * <p>Lifecycle: {@code PENDING} → {@code APPROVED} (payload materialized under
  * {@code ${dataagentHome}/shared/agents/<targetAgentId>/<targetType>/<targetPath>}) or
@@ -62,6 +62,7 @@ public class ContributionEntity {
     public static final String TARGET_MEMORY = "memory";
     public static final String TARGET_AGENTS_MD = "agents_md";
     public static final String TARGET_KNOWLEDGE = "knowledge";
+    public static final String TARGET_MCP_SERVER = "mcp_server";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -89,7 +90,7 @@ public class ContributionEntity {
 
     /**
      * One of {@link #TARGET_SKILL}, {@link #TARGET_SUBAGENT}, {@link #TARGET_MEMORY},
-     * {@link #TARGET_AGENTS_MD}, {@link #TARGET_KNOWLEDGE}.
+     * {@link #TARGET_AGENTS_MD}, {@link #TARGET_KNOWLEDGE}, {@link #TARGET_MCP_SERVER}.
      */
     @Column(name = "target_type", length = 32, nullable = false)
     private String targetType;
@@ -100,7 +101,8 @@ public class ContributionEntity {
      * directory name (e.g. {@code "cohort-builder"}); for subagents the subagent file name
      * (e.g. {@code "report-writer.md"}); for memory the snippet filename; for {@code agents_md}
      * it is the fixed string {@code "AGENTS.md"}; for {@code knowledge} a relative file path
-     * under {@code knowledge/}.
+     * under {@code knowledge/}; for {@code mcp_server} the server config file name
+     * (e.g. {@code "weather.json"}).
      */
     @Column(name = "target_path", length = 512, nullable = false)
     private String targetPath;

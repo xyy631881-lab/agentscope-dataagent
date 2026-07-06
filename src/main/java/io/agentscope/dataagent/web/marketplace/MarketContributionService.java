@@ -39,7 +39,7 @@ import org.springframework.transaction.annotation.Transactional;
  * 支持用户贡献 + 管理员审批流程的应用服务。
  *
  * <p>用户从其隔离的 workspace 中提名一个或多个 workspace 文件（技能、子 Agent、内存片段、AGENTS.md、
- * 知识文档）；管理员审批后，快照被物化到
+ * 知识文档、MCP 服务器配置）；管理员审批后，快照被物化到
  * {@code ${dataagentHome}/shared/agents/<targetAgentId>/<type>/<path>} 下，
  * 以便该 Agent 的每个用户都能通过沙箱投影立即看到内容。
  *
@@ -61,7 +61,8 @@ public class MarketContributionService {
                     ContributionEntity.TARGET_SUBAGENT,
                     ContributionEntity.TARGET_MEMORY,
                     ContributionEntity.TARGET_AGENTS_MD,
-                    ContributionEntity.TARGET_KNOWLEDGE);
+                    ContributionEntity.TARGET_KNOWLEDGE,
+                    ContributionEntity.TARGET_MCP_SERVER);
 
     private static final TypeReference<List<FileEntry>> FILE_ENTRY_LIST_TYPE =
             new TypeReference<>() {};
@@ -241,8 +242,9 @@ public class MarketContributionService {
 
     /**
      * Resolves the on-disk targets for a contribution. Single-file target types
-     * (subagent / memory / agents_md / knowledge) require exactly one FileEntry. Skills allow one
-     * or more entries; an entry with empty {@code relPath} maps to {@code SKILL.md}.
+     * (subagent / memory / agents_md / knowledge / mcp_server) require exactly one FileEntry.
+     * Skills allow one or more entries; an entry with empty {@code relPath} maps to
+     * {@code SKILL.md}.
      */
     private List<TargetFile> resolveTargetFiles(
             String targetAgentId, String targetType, String targetPath, List<FileEntry> entries) {
@@ -261,6 +263,8 @@ public class MarketContributionService {
                     List.of(agentsMdTarget(agentRoot, targetPath, entries));
             case ContributionEntity.TARGET_KNOWLEDGE ->
                     List.of(singleFileTarget(agentRoot.resolve("knowledge"), targetPath, entries));
+            case ContributionEntity.TARGET_MCP_SERVER ->
+                    List.of(singleFileTarget(agentRoot.resolve("mcp-servers"), targetPath, entries));
             default -> throw new IllegalArgumentException("unsupported targetType: " + targetType);
         };
     }

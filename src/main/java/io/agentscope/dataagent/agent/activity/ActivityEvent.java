@@ -62,6 +62,19 @@ public record ActivityEvent(
         public static final String UNBIND_CHANNEL = "UNBIND_CHANNEL";
         public static final String EDIT_BINDING = "EDIT_BINDING";
         public static final String RUN_SESSION = "RUN_SESSION";
+        // ---- 贡献 & 市场生命周期 ----
+        /** 用户提交贡献（skill/subagent/memory/agents_md/knowledge/mcp_server）。 */
+        public static final String CONTRIBUTE = "CONTRIBUTE";
+        /** 管理员审批通过贡献。 */
+        public static final String APPROVE_CONTRIBUTION = "APPROVE_CONTRIBUTION";
+        /** 管理员驳回贡献。 */
+        public static final String REJECT_CONTRIBUTION = "REJECT_CONTRIBUTION";
+        /** 用户从市场或仓库安装技能。 */
+        public static final String INSTALL_SKILL = "INSTALL_SKILL";
+        /** 用户注册市场（git/nacos）。 */
+        public static final String MARKETPLACE_CREATE = "MARKETPLACE_CREATE";
+        /** 用户删除市场。 */
+        public static final String MARKETPLACE_DELETE = "MARKETPLACE_DELETE";
 
         private Action() {}
     }
