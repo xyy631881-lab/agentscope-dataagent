@@ -1,6 +1,6 @@
 # agentscope-dataagent 项目完整文档
 
-> 版本：2.0.0-SNAPSHOT | 更新时间：2026-07-02
+> 版本：2.0.0-SNAPSHOT | 更新时间：2026-07-06
 
 ---
 
@@ -199,8 +199,15 @@ java -jar target\agentscope-dataagent-2.0.0-SNAPSHOT-exec.jar
 │  └────────────────────────────────────────────────────┘  │
 │  ┌────────────────────────────────────────────────────┐  │
 │  │ web/api/  ── REST Controller                        │  │
+│  │ agent/  ── Agent 领域层 (DDD)                        │  │
+│  │   catalog/ ── CRUD + 定义 + 生命周期 + AI 草稿       │  │
+│  │   sharing/ ── ACL + 权限 + 共享授权                  │  │
+│  │   content/ ── 工作区 + 技能 + 工具 + 绑定            │  │
+│  │   activity/ ── 活动日志                              │  │
+│  └────────────────────────────────────────────────────┘  │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ web/api/  ── 对话/会话/管理 Controller               │  │
 │  │ web/auth/  ── 认证 + 用户管理                       │  │
-│  │ web/catalog/ ── Agent 目录 + 定义持久化 + 分享授权   │  │
 │  │ web/marketplace/ ── 贡献 + 审批流程                  │  │
 │  │ web/session/ ── 会话生命周期调度                     │  │
 │  │ web/workspace/ ── Sandbox + 文件系统管理              │  │
@@ -925,7 +932,59 @@ Agent 在对话中可调用以下工具（由 [DataAgentToolkit.java](file:///e:
 
 ## 八、包结构与文件清单
 
-> 共 115 个 Java 源文件，分布在 18 个包下。
+> 共 120 个 Java 源文件，分布在 21 个包下（3 个顶层领域：agent/、runtime/、web/ + tools/）。
+
+### 8.0 `agent/` — Agent 领域层 (DDD 限界上下文)
+
+> 按领域驱动设计组织的 Agent 核心业务包，从 web/ 层剥离。
+
+#### `agent/catalog/` — Agent 目录与生命周期 (7 个)
+
+| 文件 | 职责 |
+|------|------|
+| [AgentCatalogController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentCatalogController.java) | Agent CRUD + 分享管理 REST 端点 |
+| [AgentCatalogService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentCatalogService.java) | Agent 创建/克隆/配置/分享服务（瘦身版，仅 CRUD+共享） |
+| [AgentLifecycleService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentLifecycleService.java) | Agent 运行时生命周期：构建、注册、缓存、失效（从 AgentCatalogService 拆出） |
+| [AgentCloneController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentCloneController.java) | `POST /api/agents/{id}/clone` 克隆端点 |
+| [AgentCreateRequest.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentCreateRequest.java) | 创建 Agent 的请求 DTO（提取的独立 record） |
+| [AgentDefinition.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentDefinition.java) | Agent 定义数据结构（scope=global/user、ownerId、shares、tierForCurrentUser） |
+| [UserAgentDefinitionStore.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/UserAgentDefinitionStore.java) | 按用户持久化 Agent 定义的 SPI 接口 |
+
+#### `agent/catalog/draft/` — AI 草稿生成 (4 个)
+
+| 文件 | 职责 |
+|------|------|
+| [AgentDraftController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/draft/AgentDraftController.java) | `POST /api/agents/draft` — AI 辅助生成 Agent 配置 |
+| [AgentDraftService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/draft/AgentDraftService.java) | 调用 LLM + 提示词模板生成 Agent 草稿 |
+| [AgentDraft.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/draft/AgentDraft.java) | Agent 草稿 DTO（提取的独立 record） |
+| [NamedFile.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/draft/NamedFile.java) | 文件名+内容配对 record |
+
+#### `agent/sharing/` — 权限与共享 (3 个)
+
+| 文件 | 职责 |
+|------|------|
+| [AgentAclService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/sharing/AgentAclService.java) | ACL 服务。Tier 三级(CLONE<RUN<EDIT) + Scope 三种(global/user/share) |
+| [AgentAccessGuard.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/sharing/AgentAccessGuard.java) | 访问权限守卫。可见性(404) + 权限级别(403) 两道门 |
+| [AgentShareGrant.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/sharing/AgentShareGrant.java) | 共享授权数据结构（granteeType, granteeId, tier） |
+
+#### `agent/content/` — Agent 内容管理 (4 个)
+
+| 文件 | 职责 |
+|------|------|
+| [AgentWorkspaceController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/content/AgentWorkspaceController.java) | 浏览/读写 workspace 文件 |
+| [AgentSkillsController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/content/AgentSkillsController.java) | 查看/编辑/删除 workspace 中的 skill |
+| [AgentToolsController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/content/AgentToolsController.java) | 查看/配置工具白名单/黑名单 + MCP 目录 |
+| [AgentBindingController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/content/AgentBindingController.java) | 用户通道绑定偏好 |
+
+#### `agent/activity/` — 活动日志 (3 个)
+
+| 文件 | 职责 |
+|------|------|
+| [AgentActivityController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/activity/AgentActivityController.java) | `GET /api/agents/{id}/activity` 活动日志端点 |
+| [AgentActivityStore.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/activity/AgentActivityStore.java) | JSONL 追加式活动日志存储 |
+| [ActivityEvent.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/activity/ActivityEvent.java) | 活动事件数据结构 |
+
+---
 
 ### 8.1 `web/` — Web 层 (Spring Boot)
 
@@ -943,14 +1002,8 @@ Agent 在对话中可调用以下工具（由 [DataAgentToolkit.java](file:///e:
 |------|----------|------|
 | [ChatController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/ChatController.java) | `/api/agents/{agentId}/chat` | **核心对话端点**。POST `/stream` (SSE 流式)、POST `/send` (同步)、GET `/session` (会话检查)。**注意**：`stream()` 不调用 SessionAgentManager，会话创建/复用由 harness 框架内部处理；`currentSession()` 才调用 `findByGateKey()` |
 | [SessionController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/SessionController.java) | `/api/agents/{agentId}/sessions` | Session 列表、历史消息、reset/delete、标记已读 |
+| [BindingPersistence.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/BindingPersistence.java) | — | Agent-通道绑定持久化层 |
 | [AdminUserController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/AdminUserController.java) | `/api/admin/users` | 管理员端：用户 CRUD、密码重置、角色管理、撤销用户的所有 share 授权 |
-| [AgentCatalogController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/catalog/AgentCatalogController.java) | `/api/agents` | Agent CRUD + **分享管理**（POST/DELETE `/{id}/shares`） |
-| [AgentCloneController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/AgentCloneController.java) | `/api/agents/{id}/clone` | 克隆 agent |
-| [AgentSkillsController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/AgentSkillsController.java) | `/api/agents/{agentId}/skills` | 查看/编辑/删除 workspace 中的 skill |
-| [AgentToolsController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/AgentToolsController.java) | `/api/agents/{agentId}/tools` | 查看/注册自定义工具 |
-| [AgentWorkspaceController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/AgentWorkspaceController.java) | `/api/agents/{agentId}/workspace` | 浏览/读写 workspace 文件 |
-| [AgentActivityController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/AgentActivityController.java) | `/api/agents/{id}/activity` | Agent 活动日志 |
-| [AgentBindingController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/AgentBindingController.java) | `/api/agents/{agentId}/bindings` | 用户通道绑定偏好 |
 | [ChannelDirectoryController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/ChannelDirectoryController.java) | `/api/channels` | 通道目录 |
 | [MarketplacesController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/MarketplacesController.java) | `/api/me/marketplaces` | 用户 marketplace 订阅管理 |
 | [SandboxHeartbeatController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/SandboxHeartbeatController.java) | `/api/internal/sandbox` | Sandbox 健康检查端点 |
@@ -965,22 +1018,7 @@ Agent 在对话中可调用以下工具（由 [DataAgentToolkit.java](file:///e:
 | [UserController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/auth/UserController.java) | 用户信息查询 |
 | [UserStore.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/auth/UserStore.java) | 用户存储接口 |
 
-#### `web/catalog/` — Agent 目录 (4 个)
-
-| 文件 | 职责 |
-|------|------|
-| [AgentCatalogController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/catalog/AgentCatalogController.java) | Agent CRUD + 分享管理端点 |
-| [AgentCatalogService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/catalog/AgentCatalogService.java) | Agent 创建/克隆/配置/分享服务。`grantShare`/`revokeShare` 实现 upsert/精确撤销 |
-| [AgentDefinition.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/catalog/AgentDefinition.java) | Agent 定义数据结构（含 scope=global/user、ownerId、shares） |
-| [UserAgentDefinitionStore.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/catalog/UserAgentDefinitionStore.java) | 按用户持久化 Agent 定义 |
-
-#### `web/share/` — 权限与分享 (3 个)
-
-| 文件 | 职责 |
-|------|------|
-| [AgentAccessGuard.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/share/AgentAccessGuard.java) | Agent 访问权限守卫。`guard.require(userId, agentId, tier)` 两道门：可见性(404) + 权限级别(403) |
-| [AgentAclService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/share/AgentAclService.java) | ACL 服务。Tier 三级(CLONE<RUN<EDIT) + Scope 三种(global/user/share)。`tierFor()` 算用户最高权限 |
-| [AgentShareGrant.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/share/AgentShareGrant.java) | Agent 共享授权数据结构（granteeType=USER/WORKSPACE, granteeId, tier） |
+> **注**：原 `web/catalog/` 和 `web/share/` 已迁移至 `agent/catalog/` 和 `agent/sharing/`（见 8.0 节）。
 
 #### `web/marketplace/` — 能力市场 (6 个)
 
@@ -1038,19 +1076,7 @@ Agent 在对话中可调用以下工具（由 [DataAgentToolkit.java](file:///e:
 | [TemplateRegistry.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/template/TemplateRegistry.java) | `web/template/` | 模板注册表 |
 | [UsageStore.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/usage/UsageStore.java) | `web/usage/` | 用量统计存储 |
 
-#### `web/ai/` — AI 辅助 (2 个)
-
-| 文件 | 职责 |
-|------|------|
-| [AgentDraftController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/ai/AgentDraftController.java) | POST `/api/agents/draft` — AI 辅助生成 Agent 配置 |
-| [AgentDraftService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/ai/AgentDraftService.java) | 调用 LLM 根据一句话描述生成 Agent 草稿 |
-
-#### `web/audit/` — 审计 (2 个)
-
-| 文件 | 职责 |
-|------|------|
-| [ActivityEvent.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/audit/ActivityEvent.java) | 活动事件数据结构 |
-| [AgentActivityStore.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/audit/AgentActivityStore.java) | 活动日志存储 |
+> **注**：原 `web/ai/` 和 `web/audit/` 已迁移至 `agent/catalog/draft/` 和 `agent/activity/`（见 8.0 节）。
 
 ---
 
@@ -1149,29 +1175,31 @@ Agent 在对话中可调用以下工具（由 [DataAgentToolkit.java](file:///e:
 ```
 agentscope-dataagent/
 ├── src/main/java/io/agentscope/dataagent/
-│   ├── runtime/                          # 核心运行时
+│   ├── agent/                            # Agent 领域层 (DDD, 21 个文件)
+│   │   ├── catalog/                      # Agent 目录 + 生命周期 (7 个)
+│   │   │   └── draft/                    # AI 草稿生成 (4 个)
+│   │   ├── sharing/                      # 权限与共享 (3 个)
+│   │   ├── content/                      # 内容管理: 工作区/技能/工具/绑定 (4 个)
+│   │   └── activity/                     # 活动日志 (3 个)
+│   ├── runtime/                          # 核心运行时 (37 个文件)
 │   │   ├── DataAgentBootstrap.java       # 编排核心
-│   │   ├── channel/webhook/              # Webhook 通道 (7 个文件)
-│   │   ├── config/                       # 配置解析 (9 个文件)
-│   │   ├── marketplace/                  # 市场适配器 (8 个文件)
+│   │   ├── channel/webhook/              # Webhook 通道 (7 个)
+│   │   ├── config/                       # 配置解析 (9 个)
+│   │   ├── marketplace/                  # 市场适配器 (8 个)
 │   │   ├── middleware/                   # 自定义中间件 (1 个)
 │   │   ├── outbound/                     # 出站消息 (4 个)
-│   │   ├── session/                      # 会话管理 (7 个)
-│   ├── tools/data/                       # 数据分析工具 (9 个)
-│   ├── web/                              # Web 层
+│   │   └── session/                      # 会话管理 (7 个)
+│   ├── tools/data/                       # 数据分析工具 (10 个)
+│   ├── web/                              # Web 层 (52 个文件)
 │   │   ├── DataAgentApp.java             # Spring Boot 入口
-│   │   ├── ai/                           # AI 辅助 (2 个)
-│   │   ├── api/                          # REST Controller (14 个)
-│   │   ├── audit/                        # 审计 (2 个)
+│   │   ├── api/                          # 通用 Controller (8 个)
 │   │   ├── auth/                         # 认证 (4 个)
-│   │   ├── catalog/                      # Agent 目录 (4 个)
 │   │   ├── config/                       # Spring 配置 (3 个)
 │   │   ├── identity/                     # 身份链接 (1 个)
 │   │   ├── marketplace/                  # 贡献/审批 (6 个)
 │   │   ├── persistence/jpa/              # JPA 持久化 (14 个)
 │   │   ├── scaffold/                     # 首次启动脚手架 (1 个)
 │   │   ├── session/                      # 会话生命周期 (3 个)
-│   │   ├── share/                        # Agent 共享与权限 (3 个)
 │   │   ├── template/                     # 模板管理 (2 个)
 │   │   ├── toolbus/                      # 工具事件总线 (2 个)
 │   │   ├── usage/                        # 用量统计 (1 个)
@@ -1179,24 +1207,28 @@ agentscope-dataagent/
 │   │   └── workspace/                    # Sandbox + 文件系统 (5 个)
 ├── src/main/resources/
 │   ├── application.yml                   # Spring Boot 主配置
-│   ├── application-dev.yml               # H2 dev profile
 │   ├── application-mysql.yml             # MySQL profile
-│   ├── data-h2.sql                       # H2 用户种子数据
-│   ├── data-analytics.sql                # 电商测试数据库种子
-│   ├── prompts/agent-draft.md            # AI Draft 提示词
-│   └── shared/agents/data-agent/         # 共享技能/子代理
-│       ├── skills/
-│       │   ├── chart-rendering/SKILL.md
-│       │   └── sql-analysis/SKILL.md
-│       └── subagents/
-│           ├── data-explorer.md
-│           └── report-writer.md
+│   ├── application-prod.yml              # 生产 profile
+│   ├── application-redis.yml             # Redis profile
+│   ├── catalog/mcp-servers.json          # MCP 服务目录
+│   ├── data-analytics-mysql.sql          # 电商测试数据库种子
+│   ├── logback-spring.xml                # 日志配置
+│   ├── prompts/
+│   │   ├── agent-draft.md                # AI Draft 提示词
+│   │   └── system.md                     # Agent 系统提示词
+│   ├── shared/agents/data-agent/         # 共享技能/子代理
+│   │   ├── skills/
+│   │   │   ├── chart-rendering/SKILL.md
+│   │   │   └── sql-analysis/SKILL.md
+│   │   └── subagents/
+│   │       ├── data-explorer.md
+│   │       └── report-writer.md
+│   └── workspace-template/               # 工作区模板
+│       └── agentscope.json
 ├── docs/
-│   ├── 2.0-upgrade-guide.md              # 2.0 升级指南
-│   ├── agent-definition.md               # Agent 定义方式
-│   ├── cluster-deploy.md                 # 分布式部署指南
-│   ├── 聊天链路协作详解.md                # 聊天链路文档
-│   └── project-overview.md               # 本文档
+│   ├── project-overview.md               # 本文档
+│   ├── 使用测试.md                        # 用户测试指南
+│   └── 聊天链路协作详解.md                # 聊天链路文档
 ├── frontend/                             # React 前端源码
 └── pom.xml                               # Maven 项目定义
 ```
@@ -1263,7 +1295,7 @@ java -jar target/agentscope-dataagent-*-exec.jar
 
 | 文件 | 看什么 |
 |------|--------|
-| [application.yml](file:///e:/demo/agentscope-dataagent/src/main/resources/application.yml) | 默认 H2 零依赖启动。同文件内含 `mysql` 和 `redis` profile（`---` 分隔），一个文件搞定所有环境 |
+| [application.yml](file:///e:/demo/agentscope-dataagent/src/main/resources/application.yml) | 默认 MySQL 启动。同文件内含 `redis` profile（`---` 分隔），另有 `application-mysql.yml`/`application-prod.yml`/`application-redis.yml` 独立 profile 文件 |
 | [DataAgentConfig.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/config/DataAgentConfig.java) | **全项目最重要文件**——组装 DataAgentBootstrap，注册 Model Bean，`configureAllAgents()` 加 Plan Mode/Compaction/Memory/Permission/Subagents |
 
 ### Step 2 — 启动管线（10 分钟）
@@ -1281,16 +1313,16 @@ java -jar target/agentscope-dataagent-*-exec.jar
 |------|--------|
 | [ChatController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/ChatController.java) | **入口**。`POST /stream` 是核心——把一个用户消息变成 SSE 事件流：token → tool_call → tool_result → done |
 | [DataAgentToolkit.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/tools/data/DataAgentToolkit.java) | Agent 实际调用的四个工具：`list_data_sources` / `describe_table` / `run_sql_preview` / `render_chart` |
-| [AnalyticsDataConfig.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/tools/data/AnalyticsDataConfig.java) | 独立的 H2 分析数据库 + DataSourceRegistry |
+| [AnalyticsDataConfig.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/tools/data/AnalyticsDataConfig.java) | 独立的 MySQL 分析数据库 + DataSourceRegistry |
 | [OutboundTool.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/outbound/OutboundTool.java) | Agent 向 IM 通道推送消息的 `outbound_send` 工具 |
 
 ### Step 4 — 权限与分享（10 分钟）
 
 | 文件 | 看什么 |
 |------|--------|
-| [AgentAclService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/share/AgentAclService.java) | Tier 三级(CLONE<RUN<EDIT) + Scope 三种(global/user/share)。`tierFor()` 算用户最高权限 |
-| [AgentAccessGuard.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/share/AgentAccessGuard.java) | `guard.require(userId, agentId, tier)` 两道门：可见性(404) + 权限级别(403) |
-| [AgentCatalogService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/catalog/AgentCatalogService.java) | `grantShare()`/`revokeShare()` 实现，upsert 语义 |
+| [AgentAclService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/sharing/AgentAclService.java) | Tier 三级(CLONE<RUN<EDIT) + Scope 三种(global/user/share)。`tierFor()` 算用户最高权限 |
+| [AgentAccessGuard.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/sharing/AgentAccessGuard.java) | `guard.require(userId, agentId, tier)` 两道门：可见性(404) + 权限级别(403) |
+| [AgentCatalogService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentCatalogService.java) | `grantShare()`/`revokeShare()` 实现，upsert 语义。另见 [AgentLifecycleService](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentLifecycleService.java)（运行时生命周期） |
 
 ### Step 5 — 高级功能（选读）
 
@@ -1853,7 +1885,19 @@ hey -z 60s -c 50 -m POST \
 
 ---
 
-## 十九、近期变更 (2026.07.02)
+## 十九、近期变更
+
+### DDD 领域收拢重构 (2026.07.06)
+
+| 模块 | 变更 | 效果 |
+|------|------|------|
+| **Agent 领域包** | 17 个 Agent*.java 从 9 个散乱的 web/ 子包迁移到 `agent/` 下 5 个 DDD 子包：catalog/、catalog/draft/、sharing/、content/、activity/ | 业务内聚、职责清晰 |
+| **AgentCatalogService 拆分** | 从 1075 行上帝类拆为 AgentCatalogService（CRUD+共享）+ AgentLifecycleService（运行时构建/注册/缓存/失效），零循环依赖 | 单一职责、可维护性 |
+| **DTO 提取** | AgentDraft、NamedFile、AgentCreateRequest 从内部 record 提取为独立文件 | 跨层复用、编译解耦 |
+| **空包清理** | 删除 web/ai/、web/audit/、web/catalog/、web/share/ 4 个空目录 | 目录整洁 |
+| **资源文件补回** | 新建 `prompts/agent-draft.md`（LLM 提示词模板）和 `catalog/mcp-servers.json`（MCP 服务目录） | 消除启动 WARN |
+
+### 历史变更 (2026.07.02)
 
 ### 本次更新
 
