@@ -31,13 +31,14 @@ import io.agentscope.core.message.UserMessage;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.runtime.session.SessionAgentManager;
 import io.agentscope.dataagent.runtime.session.SessionEntry;
-import io.agentscope.dataagent.web.audit.ActivityEvent;
-import io.agentscope.dataagent.web.audit.AgentActivityStore;
-import io.agentscope.dataagent.web.catalog.AgentCatalogService;
-import io.agentscope.dataagent.web.catalog.AgentDefinition;
+import io.agentscope.dataagent.agent.activity.ActivityEvent;
+import io.agentscope.dataagent.agent.activity.AgentActivityStore;
+import io.agentscope.dataagent.agent.catalog.AgentCatalogService;
+import io.agentscope.dataagent.agent.catalog.AgentDefinition;
+import io.agentscope.dataagent.agent.catalog.AgentLifecycleService;
 import io.agentscope.dataagent.web.identity.IdentityLinkStore;
-import io.agentscope.dataagent.web.share.AgentAccessGuard;
-import io.agentscope.dataagent.web.share.AgentAclService.Tier;
+import io.agentscope.dataagent.agent.sharing.AgentAccessGuard;
+import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
 import io.agentscope.dataagent.web.usage.UsageStore;
 import io.agentscope.harness.agent.gateway.channel.InboundMessage;
 import io.agentscope.harness.agent.gateway.channel.Peer;
@@ -79,6 +80,7 @@ public class ChatController {
     private final ChatUiChannel chatUiChannel;
     private final SessionAgentManager sessionAgentManager;
     private final AgentCatalogService catalogService;
+    private final AgentLifecycleService lifecycleService;
     private final IdentityLinkStore identityLinks;
     private final UsageStore usageStore;
     private final AgentAccessGuard guard;
@@ -98,10 +100,12 @@ public class ChatController {
             IdentityLinkStore identityLinks,
             UsageStore usageStore,
             AgentAccessGuard guard,
-            AgentActivityStore activity) {
+            AgentActivityStore activity,
+            AgentLifecycleService lifecycleService) {
         this.chatUiChannel = chatUiChannel;
         this.sessionAgentManager = builderBootstrap.sessionAgentManager();
         this.catalogService = catalogService;
+        this.lifecycleService = lifecycleService;
         this.identityLinks = identityLinks;
         this.usageStore = usageStore;
         this.guard = guard;
@@ -341,7 +345,7 @@ public class ChatController {
     private String resolveGateKey(String userId, String agentId, String conversationId) {
         if (agentId == null || agentId.isBlank()) return null;
         try {
-            String gatewayAgentId = catalogService.resolveGatewayAgentId(userId, agentId);
+            String gatewayAgentId = lifecycleService.resolveGatewayAgentId(userId, agentId);
             InboundMessage probe =
                     InboundMessage.builder(ChatUiChannel.CHANNEL_ID, Peer.direct(userId), List.of())
                             .preferredAgentId(gatewayAgentId)
@@ -491,7 +495,7 @@ public class ChatController {
             // 无 Agent 覆盖，也无会话作用域——纯绑定驱动路由。
             inbound = InboundMessage.dm(ChatUiChannel.CHANNEL_ID, userId, List.of(userMsg));
         } else {
-            String gatewayAgentId = catalogService.resolveGatewayAgentId(userId, agentId);
+            String gatewayAgentId = lifecycleService.resolveGatewayAgentId(userId, agentId);
             inbound =
                     InboundMessage.builder(
                                     ChatUiChannel.CHANNEL_ID, Peer.direct(userId), List.of(userMsg))
@@ -533,7 +537,7 @@ public class ChatController {
             inbound = InboundMessage.dm(ChatUiChannel.CHANNEL_ID, userId, List.of(userMsg));
         } else {
             // 情况B：指定了 Agent → 精确投递给这个 Agent
-            String gatewayAgentId = catalogService.resolveGatewayAgentId(userId, agentId);
+            String gatewayAgentId = lifecycleService.resolveGatewayAgentId(userId, agentId);
             inbound =
                     InboundMessage.builder(
                                     ChatUiChannel.CHANNEL_ID, Peer.direct(userId), List.of(userMsg))  //Peer.direct(userId)发送者身份，Agent 需要知道是谁在跟它说话

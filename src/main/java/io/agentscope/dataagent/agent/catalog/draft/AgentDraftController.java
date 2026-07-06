@@ -13,9 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.ai;
+package io.agentscope.dataagent.agent.catalog.draft;
 
-import io.agentscope.dataagent.web.catalog.AgentCatalogService.AgentDraft;
+import io.agentscope.dataagent.agent.catalog.draft.AgentDraft;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PostMapping;

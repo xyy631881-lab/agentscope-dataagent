@@ -28,7 +28,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 
 /**
- * Persistent representation of one {@link io.agentscope.dataagent.web.share.AgentShareGrant}.
+ * Persistent representation of one {@link io.agentscope.dataagent.agent.sharing.AgentShareGrant}.
  *
  * <p>Owned by an {@link AgentEntity} via a {@code @ManyToOne} relationship with a hard foreign
  * key. {@code orphanRemoval=true} on the owning side ensures that removing a grant from the

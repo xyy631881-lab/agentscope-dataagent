@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.api;
+package io.agentscope.dataagent.agent.content;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -24,13 +24,14 @@ import io.agentscope.core.skill.repository.AgentSkillRepositoryInfo;
 import io.agentscope.dataagent.runtime.marketplace.DataAgentMarketplace;
 import io.agentscope.dataagent.runtime.marketplace.MarketSkillContent;
 import io.agentscope.dataagent.runtime.marketplace.UserMarketplaceRegistry;
-import io.agentscope.dataagent.web.audit.ActivityEvent;
-import io.agentscope.dataagent.web.audit.AgentActivityStore;
-import io.agentscope.dataagent.web.catalog.AgentCatalogService;
-import io.agentscope.dataagent.web.catalog.AgentDefinition;
-import io.agentscope.dataagent.web.catalog.UserAgentDefinitionStore;
-import io.agentscope.dataagent.web.share.AgentAccessGuard;
-import io.agentscope.dataagent.web.share.AgentAclService.Tier;
+import io.agentscope.dataagent.agent.activity.ActivityEvent;
+import io.agentscope.dataagent.agent.activity.AgentActivityStore;
+import io.agentscope.dataagent.agent.catalog.AgentCatalogService;
+import io.agentscope.dataagent.agent.catalog.AgentDefinition;
+import io.agentscope.dataagent.agent.catalog.AgentLifecycleService;
+import io.agentscope.dataagent.agent.catalog.UserAgentDefinitionStore;
+import io.agentscope.dataagent.agent.sharing.AgentAccessGuard;
+import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
 import io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
@@ -109,6 +110,7 @@ public class AgentSkillsController {
     private final AgentAccessGuard guard;
     private final AgentActivityStore activity;
     private final AgentCatalogService catalogService;
+    private final AgentLifecycleService lifecycleService;
     private final WorkspaceManagerFactory workspaceFactory;
     private final UserMarketplaceRegistry marketplaceRegistry;
 
@@ -117,10 +119,12 @@ public class AgentSkillsController {
             AgentActivityStore activity,
             AgentCatalogService catalogService,
             WorkspaceManagerFactory workspaceFactory,
-            UserMarketplaceRegistry marketplaceRegistry) {
+            UserMarketplaceRegistry marketplaceRegistry,
+            AgentLifecycleService lifecycleService) {
         this.guard = guard;
         this.activity = activity;
         this.catalogService = catalogService;
+        this.lifecycleService = lifecycleService;
         this.workspaceFactory = workspaceFactory;
         this.marketplaceRegistry = marketplaceRegistry;
     }
@@ -211,7 +215,7 @@ public class AgentSkillsController {
                             ActivityEvent.Action.EDIT_FILE,
                             "skills/" + name,
                             null);
-                    catalogService.invalidateUca(ctx.ownerId(), agentId);
+                    lifecycleService.invalidateUca(ctx.ownerId(), agentId);
                     return readWorkspaceSkill(wsm.getFilesystem(), name);
                 });
     }
@@ -239,7 +243,7 @@ public class AgentSkillsController {
                             ActivityEvent.Action.DELETE_FILE,
                             "skills/" + name,
                             null);
-                    catalogService.invalidateUca(ctx.ownerId(), agentId);
+                    lifecycleService.invalidateUca(ctx.ownerId(), agentId);
                 });
     }
 
@@ -404,7 +408,7 @@ public class AgentSkillsController {
                                     "source", "repository",
                                     "repoType", meta.repoType(),
                                     "originalName", meta.originalName()));
-                    catalogService.invalidateUca(ctx.ownerId(), agentId);
+                    lifecycleService.invalidateUca(ctx.ownerId(), agentId);
                     return readWorkspaceSkill(fs, targetName);
                 });
     }
@@ -499,7 +503,7 @@ public class AgentSkillsController {
                                     "marketplaceId", req.marketplaceId(),
                                     "marketplaceType", meta.repoType(),
                                     "originalName", meta.originalName()));
-                    catalogService.invalidateUca(ctx.ownerId(), agentId);
+                    lifecycleService.invalidateUca(ctx.ownerId(), agentId);
                     return readWorkspaceSkill(fs, targetName);
                 });
     }

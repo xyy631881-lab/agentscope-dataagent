@@ -13,11 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.share;
+package io.agentscope.dataagent.agent.sharing;
 
-import io.agentscope.dataagent.web.catalog.AgentCatalogService;
-import io.agentscope.dataagent.web.catalog.AgentDefinition;
-import io.agentscope.dataagent.web.share.AgentAclService.Tier;
+import io.agentscope.dataagent.agent.catalog.AgentCatalogService;
+import io.agentscope.dataagent.agent.catalog.AgentDefinition;
+import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;

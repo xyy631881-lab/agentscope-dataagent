@@ -13,15 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.catalog;
+package io.agentscope.dataagent.agent.catalog;
 
-import io.agentscope.dataagent.web.audit.ActivityEvent;
-import io.agentscope.dataagent.web.audit.AgentActivityStore;
-import io.agentscope.dataagent.web.catalog.AgentCatalogService.AgentCreateRequest;
-import io.agentscope.dataagent.web.catalog.AgentCatalogService.ShareGrantRequest;
-import io.agentscope.dataagent.web.share.AgentAccessGuard;
-import io.agentscope.dataagent.web.share.AgentAclService;
-import io.agentscope.dataagent.web.share.AgentAclService.Tier;
+import io.agentscope.dataagent.agent.activity.ActivityEvent;
+import io.agentscope.dataagent.agent.activity.AgentActivityStore;
+import io.agentscope.dataagent.agent.catalog.AgentCreateRequest;
+import io.agentscope.dataagent.agent.catalog.AgentCatalogService.ShareGrantRequest;
+import io.agentscope.dataagent.agent.sharing.AgentAccessGuard;
+import io.agentscope.dataagent.agent.sharing.AgentAclService;
+import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
@@ -37,6 +37,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
+import io.agentscope.dataagent.agent.catalog.draft.AgentDraft;
 
 /**
  * REST controller for the agent catalog.

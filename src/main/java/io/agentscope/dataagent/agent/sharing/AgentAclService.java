@@ -13,9 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.share;
+package io.agentscope.dataagent.agent.sharing;
 
-import io.agentscope.dataagent.web.catalog.AgentDefinition;
+import io.agentscope.dataagent.agent.catalog.AgentDefinition;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.stereotype.Service;

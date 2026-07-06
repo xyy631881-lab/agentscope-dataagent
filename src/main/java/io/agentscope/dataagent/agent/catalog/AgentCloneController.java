@@ -13,15 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.api;
+package io.agentscope.dataagent.agent.catalog;
 
-import io.agentscope.dataagent.web.audit.ActivityEvent;
-import io.agentscope.dataagent.web.audit.AgentActivityStore;
-import io.agentscope.dataagent.web.catalog.AgentCatalogService;
-import io.agentscope.dataagent.web.catalog.AgentCatalogService.StoredEntryAndDefinition;
-import io.agentscope.dataagent.web.catalog.AgentDefinition;
-import io.agentscope.dataagent.web.share.AgentAccessGuard;
-import io.agentscope.dataagent.web.share.AgentAclService.Tier;
+import io.agentscope.dataagent.agent.activity.ActivityEvent;
+import io.agentscope.dataagent.agent.activity.AgentActivityStore;
+import io.agentscope.dataagent.agent.catalog.AgentCatalogService;
+import io.agentscope.dataagent.agent.catalog.AgentCatalogService.StoredEntryAndDefinition;
+import io.agentscope.dataagent.agent.catalog.AgentDefinition;
+import io.agentscope.dataagent.agent.sharing.AgentAccessGuard;
+import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
 import io.agentscope.dataagent.web.util.WorkspaceCopier;
 import io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory;
 import java.util.Map;

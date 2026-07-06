@@ -22,7 +22,8 @@ import io.agentscope.dataagent.runtime.session.HistoryResult;
 import io.agentscope.dataagent.runtime.session.SessionAgentManager;
 import io.agentscope.dataagent.runtime.session.SessionEntry;
 import io.agentscope.dataagent.runtime.session.SessionKind;
-import io.agentscope.dataagent.web.catalog.AgentCatalogService;
+import io.agentscope.dataagent.agent.catalog.AgentCatalogService;
+import io.agentscope.dataagent.agent.catalog.AgentLifecycleService;
 import io.agentscope.dataagent.web.session.SessionReadStateStore;
 import io.agentscope.dataagent.web.session.SessionTurnParser;
 import io.agentscope.harness.agent.HarnessAgent;
@@ -76,15 +77,18 @@ public class SessionController {
     private final SessionAgentManager sessionAgentManager;
     private final SessionReadStateStore readStateStore;
     private final AgentCatalogService catalogService;
+    private final AgentLifecycleService lifecycleService;
 
     public SessionController(
             DataAgentBootstrap builderBootstrap,
             SessionReadStateStore readStateStore,
-            AgentCatalogService catalogService) {
+            AgentCatalogService catalogService,
+            AgentLifecycleService lifecycleService) {
         this.bootstrap = builderBootstrap;
         this.sessionAgentManager = builderBootstrap.sessionAgentManager();
         this.readStateStore = readStateStore;
         this.catalogService = catalogService;
+        this.lifecycleService = lifecycleService;
     }
 
     /**
@@ -114,7 +118,7 @@ public class SessionController {
         String userId = (String) auth.getPrincipal();
         return Mono.fromCallable(
                 () -> {
-                    String gatewayAgentId = catalogService.peekGatewayAgentId(userId, agentId);
+                    String gatewayAgentId = lifecycleService.peekGatewayAgentId(userId, agentId);
                     List<SessionEntry> matched =
                             sessionAgentManager.allSessions().stream()
                                     .filter(e -> Objects.equals(e.userId(), userId))
@@ -266,7 +270,7 @@ public class SessionController {
             throw new ResponseStatusException(
                     HttpStatus.NOT_FOUND, "AgentStateStore not found: " + key);
         }
-        String gatewayAgentId = catalogService.peekGatewayAgentId(userId, agentId);
+        String gatewayAgentId = lifecycleService.peekGatewayAgentId(userId, agentId);
         if (!Objects.equals(entry.userId(), userId)
                 || !sessionMatchesAgent(entry, gatewayAgentId)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Access denied");
@@ -280,7 +284,7 @@ public class SessionController {
      */
     private SessionEntry findSessionByConversationId(String agentId, String key, String userId) {
         if (key == null || key.isBlank()) return null;
-        String gatewayAgentId = catalogService.peekGatewayAgentId(userId, agentId);
+        String gatewayAgentId = lifecycleService.peekGatewayAgentId(userId, agentId);
         for (SessionEntry e : sessionAgentManager.allSessions()) {
             if (e.kind() != SessionKind.MAIN) continue;
             if (!Objects.equals(userId, e.userId())) continue;
@@ -374,7 +378,7 @@ public class SessionController {
      * ③ 最后兜底用 sessionAgentManager.history()（最旧的方式）
      */
     private String readSessionLogContent(String urlAgentId, SessionEntry entry) {
-        String gatewayAgentId = catalogService.peekGatewayAgentId(entry.userId(), urlAgentId);
+        String gatewayAgentId = lifecycleService.peekGatewayAgentId(entry.userId(), urlAgentId);
         HarnessAgent ha =
                 gatewayAgentId != null ? bootstrap.gateway().findAgent(gatewayAgentId) : null;
         if (ha != null) {

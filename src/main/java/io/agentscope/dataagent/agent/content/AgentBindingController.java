@@ -13,16 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.api;
+package io.agentscope.dataagent.agent.content;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import io.agentscope.dataagent.runtime.config.BindingConfigEntry;
 import io.agentscope.dataagent.runtime.config.ChannelConfigEntry;
-import io.agentscope.dataagent.web.audit.ActivityEvent;
-import io.agentscope.dataagent.web.audit.AgentActivityStore;
-import io.agentscope.dataagent.web.catalog.AgentDefinition;
-import io.agentscope.dataagent.web.share.AgentAccessGuard;
-import io.agentscope.dataagent.web.share.AgentAclService.Tier;
+import io.agentscope.dataagent.agent.activity.ActivityEvent;
+import io.agentscope.dataagent.agent.activity.AgentActivityStore;
+import io.agentscope.dataagent.agent.catalog.AgentDefinition;
+import io.agentscope.dataagent.agent.sharing.AgentAccessGuard;
+import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
+import io.agentscope.dataagent.web.api.BindingPersistence;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;

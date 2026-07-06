@@ -16,7 +16,7 @@
 package io.agentscope.dataagent.web.persistence.jpa;
 
 import io.agentscope.dataagent.web.auth.UserStore;
-import io.agentscope.dataagent.web.catalog.UserAgentDefinitionStore;
+import io.agentscope.dataagent.agent.catalog.UserAgentDefinitionStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.domain.EntityScan;

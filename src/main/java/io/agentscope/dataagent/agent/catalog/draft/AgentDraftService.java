@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.ai;
+package io.agentscope.dataagent.agent.catalog.draft;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.message.ContentBlock;
@@ -22,7 +22,7 @@ import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.UserMessage;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.Model;
-import io.agentscope.dataagent.web.catalog.AgentCatalogService.AgentDraft;
+import io.agentscope.dataagent.agent.catalog.draft.AgentDraft;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -38,6 +38,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+import io.agentscope.dataagent.agent.catalog.draft.NamedFile;
 
 /**
  * AI 辅助的起始 Agent 配置草稿。给定一句话描述，使用低温度提示调用配置的

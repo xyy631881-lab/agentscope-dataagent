@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.share;
+package io.agentscope.dataagent.agent.sharing;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -31,7 +31,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * </ul>
  *
  * <p>Grants live on the agent definition (see
- * {@link io.agentscope.dataagent.web.catalog.AgentDefinition#shares()}) and are evaluated by
+ * {@link io.agentscope.dataagent.agent.catalog.AgentDefinition#shares()}) and are evaluated by
  * {@link AgentAclService}. The {@code createdAt}/{@code createdBy} fields exist for the activity
  * log; they are never used in permission decisions.
  */

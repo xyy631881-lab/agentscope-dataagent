@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.api;
+package io.agentscope.dataagent.agent.content;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -25,13 +25,14 @@ import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ToolSchema;
-import io.agentscope.dataagent.web.audit.ActivityEvent;
-import io.agentscope.dataagent.web.audit.AgentActivityStore;
-import io.agentscope.dataagent.web.catalog.AgentCatalogService;
-import io.agentscope.dataagent.web.catalog.AgentDefinition;
-import io.agentscope.dataagent.web.catalog.UserAgentDefinitionStore;
-import io.agentscope.dataagent.web.share.AgentAccessGuard;
-import io.agentscope.dataagent.web.share.AgentAclService.Tier;
+import io.agentscope.dataagent.agent.activity.ActivityEvent;
+import io.agentscope.dataagent.agent.activity.AgentActivityStore;
+import io.agentscope.dataagent.agent.catalog.AgentCatalogService;
+import io.agentscope.dataagent.agent.catalog.AgentDefinition;
+import io.agentscope.dataagent.agent.catalog.AgentLifecycleService;
+import io.agentscope.dataagent.agent.catalog.UserAgentDefinitionStore;
+import io.agentscope.dataagent.agent.sharing.AgentAccessGuard;
+import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
 import io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.tools.McpServerConfig;
@@ -142,6 +143,7 @@ public class AgentToolsController {
     private final AgentAccessGuard guard;
     private final AgentActivityStore activity;
     private final AgentCatalogService catalogService;
+    private final AgentLifecycleService lifecycleService;
     private final WorkspaceManagerFactory workspaceFactory;
     private final List<McpCatalogEntry> mcpCatalog;
 
@@ -149,10 +151,12 @@ public class AgentToolsController {
             AgentAccessGuard guard,
             AgentActivityStore activity,
             AgentCatalogService catalogService,
-            WorkspaceManagerFactory workspaceFactory) {
+            WorkspaceManagerFactory workspaceFactory,
+            AgentLifecycleService lifecycleService) {
         this.guard = guard;
         this.activity = activity;
         this.catalogService = catalogService;
+        this.lifecycleService = lifecycleService;
         this.workspaceFactory = workspaceFactory;
         this.mcpCatalog = loadMcpCatalog();
     }
@@ -282,7 +286,7 @@ public class AgentToolsController {
                                             body.getMcpServers() != null
                                                     ? body.getMcpServers().size()
                                                     : 0));
-                    catalogService.invalidateUca(ownerId, agentId);
+                    lifecycleService.invalidateUca(ownerId, agentId);
                     return body;
                 });
     }
