@@ -1,0 +1,55 @@
+[
+  {
+    "id": "filesystem",
+    "name": "Filesystem",
+    "description": "Access local files and directories for reading, writing, and searching.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-filesystem",
+      "/tmp"
+    ],
+    "docsUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem"
+  },
+  {
+    "id": "sqlite",
+    "name": "SQLite",
+    "description": "Query and manage SQLite databases with read/write access.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-sqlite",
+      "--db-path",
+      "/tmp/data.db"
+    ],
+    "docsUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite"
+  },
+  {
+    "id": "brave-search",
+    "name": "Brave Search",
+    "description": "Web search via Brave Search API for up-to-date information.",
+    "transport": "http",
+    "url": "https://api.search.brave.com",
+    "requiredEnv": [
+      "BRAVE_API_KEY"
+    ],
+    "docsUrl": "https://brave.com/search/api/"
+  },
+  {
+    "id": "github",
+    "name": "GitHub",
+    "description": "Interact with GitHub repositories, issues, pull requests, and more.",
+    "transport": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@modelcontextprotocol/server-github"
+    ],
+    "requiredEnv": [
+      "GITHUB_PERSONAL_ACCESS_TOKEN"
+    ],
+    "docsUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/github"
+  }
+]
