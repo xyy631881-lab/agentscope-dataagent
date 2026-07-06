@@ -21,8 +21,7 @@ import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.runtime.config.AgentConfigEntry;
 import io.agentscope.dataagent.runtime.config.SkillRepositorySupport;
 import io.agentscope.dataagent.runtime.outbound.OutboundTool;
-import io.agentscope.dataagent.web.toolbus.ToolEventBus;
-import io.agentscope.dataagent.web.toolbus.ToolNotificationMiddleware;
+import io.agentscope.dataagent.runtime.AgentRuntimeConfigurer;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.gateway.HarnessGateway;
 import java.nio.file.Path;
@@ -65,7 +64,7 @@ public class AgentLifecycleService {
     private final DataAgentBootstrap builderBootstrap;
     private final UserAgentDefinitionStore store;
     private final Model model;
-    private final ToolEventBus toolEventBus;
+    private final AgentRuntimeConfigurer runtimeConfigurer;
     private final io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory workspaceManagerFactory;
 
     /**
@@ -78,12 +77,12 @@ public class AgentLifecycleService {
             DataAgentBootstrap builderBootstrap,
             UserAgentDefinitionStore store,
             Optional<Model> modelOpt,
-            ToolEventBus toolEventBus,
+            AgentRuntimeConfigurer runtimeConfigurer,
             io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory workspaceManagerFactory) {
         this.builderBootstrap = builderBootstrap;
         this.store = store;
         this.model = modelOpt.orElse(null);
-        this.toolEventBus = toolEventBus;
+        this.runtimeConfigurer = runtimeConfigurer;
         this.workspaceManagerFactory = workspaceManagerFactory;
     }
 
@@ -276,8 +275,8 @@ public class AgentLifecycleService {
         ucaToolkit.registerTool(new OutboundTool(builderBootstrap.channelManager()));
         b.toolkit(ucaToolkit);
 
-        // Inject ToolNotificationMiddleware so user-custom agents also publish tool-call events.
-        b.middleware(new ToolNotificationMiddleware(toolEventBus));
+        // Apply unified runtime config (Plan Mode, Compaction, Memory, Subagents, Permissions, Sandbox, etc.)
+        runtimeConfigurer.accept(b);
 
         HarnessAgent agent = b.build();
         HarnessGateway gateway = builderBootstrap.gateway();

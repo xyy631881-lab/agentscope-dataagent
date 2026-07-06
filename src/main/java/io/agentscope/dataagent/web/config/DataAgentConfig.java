@@ -17,40 +17,27 @@ package io.agentscope.dataagent.web.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.model.Model;
-import io.agentscope.core.model.ModelRegistry;
 import io.agentscope.core.model.OllamaChatModel;
-import io.agentscope.core.permission.PermissionBehavior;
-import io.agentscope.core.permission.PermissionContextState;
-import io.agentscope.core.permission.PermissionRule;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.extensions.redis.state.RedisAgentStateStore;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
+import io.agentscope.dataagent.runtime.AgentRuntimeConfigurer;
 import io.agentscope.dataagent.runtime.config.ChannelConfigEntry;
 import io.agentscope.dataagent.runtime.marketplace.GitDataAgentMarketplace;
 import io.agentscope.dataagent.runtime.marketplace.LocalApprovalMarketplace;
 import io.agentscope.dataagent.runtime.marketplace.NacosDataAgentMarketplace;
 import io.agentscope.dataagent.runtime.marketplace.UserMarketplaceRegistry.DataAgentMarketplaceFactoryRegistration;
-import io.agentscope.dataagent.web.toolbus.ToolEventBus;
-import io.agentscope.dataagent.web.toolbus.ToolNotificationMiddleware;
 import io.agentscope.dataagent.web.workspace.UserSandboxRegistry;
-import io.agentscope.harness.agent.IsolationScope;
-import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.gateway.channel.ChannelConfig;
 import io.agentscope.harness.agent.gateway.channel.DmScope;
 import io.agentscope.harness.agent.gateway.channel.chatui.ChatUiChannel;
-import io.agentscope.harness.agent.memory.MemoryConfig;
-import io.agentscope.harness.agent.memory.compaction.CompactionConfig;
-import io.agentscope.harness.agent.memory.compaction.ToolResultEvictionConfig;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
-import io.agentscope.harness.agent.sandbox.impl.docker.DockerFilesystemSpec;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClientOptions;
-import io.agentscope.harness.agent.subagent.WorkspaceMode;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.time.Duration;
 import java.util.Optional;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisURI;
@@ -65,10 +52,11 @@ import org.springframework.context.annotation.Configuration;
 /**
  * agentscope-dataagent web 模块的 Spring Boot 配置。
  *
- * <p>通俗说：这就是整个 DataAgent 的"总装车间"。
- * Spring 启动时会来这里取各种"零件"（Bean），这个类负责把这些零件装配好：
- * 大脑（模型）、记忆（Memory）、工具权限、子代理、沙箱文件系统……
- * 最后用 {@link DataAgentBootstrap} 把整车点火启动。
+ * <p>这是整个 DataAgent 的"总装车间"。Spring 启动时来这里取各种"零件"（Bean），
+ * 这个类负责装配：大脑（模型）、记忆后端、运行时配置器、引导启动器、市场工厂等。
+ *
+ * <p>运行时能力配置（Plan Mode、Compaction、Memory、Subagents、Permissions、Sandbox）
+ * 已抽取到 {@link AgentRuntimeConfigurer}，全局 Agent 和用户自定义 Agent 共用同一套。
  *
  * <p>读取的配置都来自 application.yml 里的 {@code dataagent.*} 前缀。
  */
@@ -78,15 +66,12 @@ public class DataAgentConfig {
     private static final Logger log = LoggerFactory.getLogger(DataAgentConfig.class);
 
     // ===== 从 application.yml 读进来的"配置旋钮" =====
-    // Ollama 本地模型配置
     @Value("${dataagent.ollama.base-url:http://localhost:11434}")
     private String ollamaBaseUrl;
 
     @Value("${dataagent.ollama.model-name:qwen2.5:1.5b}")
     private String ollamaModelName;
 
-    // 主模型失败重试 2 次仍不行时，自动切到这个备用模型（2.0 fallbackModel 能力）。
-    // Ollama 本地模型无需备用，默认留空不启用 fallback。
     @Value("${dataagent.ollama.fallback-model-name:}")
     private String ollamaFallbackModelName;
 
@@ -101,16 +86,11 @@ public class DataAgentConfig {
     @Value("${dataagent.workspace:}")
     private String workspaceDir;
 
-    // ===== Redis 分布式状态后端 =====
-    // 连接参数（host/port/password/database）由 spring-boot-starter-data-redis 自动
-    // 配置，直接注入 RedisProperties 即可，不必再 @Value 一遍。
-    // 这里只保留 AgentScope 业务相关的 key 前缀。
     @Value("${dataagent.session.redis.key-prefix:dataagent:session:}")
     private String redisKeyPrefix;
 
     // -----------------------------------------------------------------
-    //  Model bean — 通过 OllamaChatModel 直接构建本地模型实例。
-    //  读取 application.yml 中 dataagent.ollama.* 配置。
+    //  Model bean
     // -----------------------------------------------------------------
 
     /**
@@ -118,39 +98,31 @@ public class DataAgentConfig {
      *
      * <p>Ollama 是本地推理引擎，无需 API Key，可运行各种开源模型。
      * 默认连接 http://localhost:11434，可通过 dataagent.ollama.base-url 配置。
-     *
-     * <p>备用模型(fallback)默认关闭，因为本地模型不存在云端 API 的限流/鉴权问题。
-     * 如有需要可通过 dataagent.ollama.fallback-model-name 启用。
+     * 备用模型(fallback)默认关闭；如有需要可通过 dataagent.ollama.fallback-model-name 启用。
      */
     @Bean
     @ConditionalOnMissingBean(Model.class)
     public Model ollamaModel() {
         log.info("初始化 Ollama 本地模型: model={}, baseUrl={}", ollamaModelName, ollamaBaseUrl);
-
-        // 构建 OllamaChatModel
-        // 注意：模型名如 "qwen2.5:1.5b" 中的 : 是 Ollama 的版本标签，不是提供商前缀
         return OllamaChatModel.builder()
                 .modelName(ollamaModelName)
                 .baseUrl(ollamaBaseUrl)
                 .build();
     }
 
+    // -----------------------------------------------------------------
+    //  StateStore bean (Redis 可选)
+    // -----------------------------------------------------------------
+
     /**
      * 装配"分布式记忆后端"——基于 Redis 的 AgentStateStore。
      *
-     * <p>触发条件（两个都满足才会创建）：
-     * <ul>
-     *   <li>application.yml 里 {@code dataagent.session.redis.enabled=true}；
-     *   <li>Spring 容器里还没有用户自定义的 {@link AgentStateStore} Bean（避免覆盖）。
-     * </ul>
+     * <p>触发条件：application.yml 里 {@code dataagent.session.redis.enabled=true}
+     * 且 Spring 容器里还没有自定义的 {@link AgentStateStore} Bean。
      *
      * <p>典型用法：启动时加 {@code --spring.profiles.active=dev,redis}，
      * application-redis.yml 会自动把 {@code dataagent.session.redis.enabled} 置为 true。
-     *
-     * <p>实现说明：连接参数（host/port/password/database）由 spring-boot-starter-data-redis
-     * 自动配置，注入 RedisProperties即可拿到，不必再 @Value 一遍。这里基于
-     * RedisProperties 拼一个 Lettuce {@link RedisClient} 传给 builder。Cluster 部署请改用
-     * {@code RedisClusterClient} 并调用 {@code .lettuceClusterClient(...)}。
+     * Cluster 部署请改用 {@code RedisClusterClient} 并调用 {@code .lettuceClusterClient(...)}。
      */
     @Bean
     @ConditionalOnMissingBean(AgentStateStore.class)
@@ -164,7 +136,6 @@ public class DataAgentConfig {
                 redisProps.getDatabase(),
                 redisKeyPrefix);
 
-        // 用 spring.data.redis.* 拼 RedisURI：host/port/database 必填，password 可选
         RedisURI.Builder uriBuilder =
                 RedisURI.builder()
                         .redis(redisProps.getHost(), redisProps.getPort())
@@ -181,16 +152,12 @@ public class DataAgentConfig {
     }
 
     // -----------------------------------------------------------------
-    //  ObjectMapper bean — Spring Boot WebFlux 不会自动配置
-    //  ObjectMapper（与 WebMVC 不同）。多个 bean
-    //  （MarketContributionService 等）需要它，因此我们在此提供默认实例。
+    //  ObjectMapper bean — WebFlux 不会自动配置
     // -----------------------------------------------------------------
 
     /**
-     * 装配 JSON 解析器 ObjectMapper。
-     *
-     * <p>为啥要手写一个？因为 Spring Boot WebFlux 不像 WebMVC 会自动塞一个进来，
-     * 而 MarketContributionService 这些 bean 又离不开它，所以这里兜底给一个默认实例。
+     * 装配 JSON 解析器 ObjectMapper。WebFlux 不像 WebMVC 会自动塞一个进来，
+     * 多个 bean 需要它，这里兜底给一个默认实例。
      */
     @Bean
     @ConditionalOnMissingBean
@@ -199,229 +166,80 @@ public class DataAgentConfig {
     }
 
     // -----------------------------------------------------------------
-    //  核心 bootstrap — model 作为方法参数注入（无字段级别的
-    //  @Autowired）以避免与上面的 ollamaModel() 产生循环依赖。
+    //  统一运行时配置器 — 全局 Agent 和用户自定义 Agent 共用
+    // -----------------------------------------------------------------
+
+    /**
+     * 装配统一运行时配置器。所有 Agent（全局 + 用户自定义）共用同一套能力配置：
+     * Plan Mode、Compaction、Memory、Subagents、Permissions、Sandbox 文件系统、
+     * State store、模型重试/fallback。
+     *
+     * <p>由 {@link DataAgentBootstrap.Builder#configureAllAgents} 和
+     * {@link io.agentscope.dataagent.agent.catalog.AgentLifecycleService} 分别在
+     * 全局 Agent 和用户自定义 Agent 的构建路径中调用。
+     */
+    @Bean
+    public AgentRuntimeConfigurer agentRuntimeConfigurer(
+            SandboxClient<DockerSandboxClientOptions> sandboxClient,
+            Optional<AgentStateStore> sessionOpt) {
+        AgentStateStore stateStore = sessionOpt.orElseGet(InMemoryAgentStateStore::new);
+        if (sessionOpt.isEmpty()) {
+            log.warn(
+                    "未配置分布式 AgentStateStore bean; 兜底使用 InMemoryAgentStateStore"
+                            + "（进程重启会丢状态）。多副本部署请启用 redis profile。");
+        }
+        return new AgentRuntimeConfigurer(
+                stateStore, sandboxClient, ollamaModelName, ollamaFallbackModelName);
+    }
+
+    // -----------------------------------------------------------------
+    //  核心 bootstrap — 总装主入口
     // -----------------------------------------------------------------
 
     /**
      * 总装主入口：搭出一个完整的 {@link DataAgentBootstrap} 并点火启动。
+     *
+     * <p>流程：解析工作目录 → 确保脚手架配置存在 → 创建 Builder →
+     * 设置模型 → 注册统一运行时配置器 → 构建 → 配置通道 → 启动。
      */
     @Bean
     public DataAgentBootstrap builderBootstrap(
             Optional<Model> modelOpt,
-            ToolEventBus toolEventBus,
-            SandboxClient<DockerSandboxClientOptions> sandboxClient,
-            UserSandboxRegistry userSandboxRegistry,
-            Optional<AgentStateStore> sessionOpt)
+            AgentRuntimeConfigurer agentRuntimeConfigurer,
+            UserSandboxRegistry userSandboxRegistry)
             throws IOException {
         Path cwd = resolveCwd();
         ensureAgentscopeConfig();
 
-        DataAgentBootstrap.Builder builder = DataAgentBootstrap.builder().cwd(cwd).userSandboxRegistry(userSandboxRegistry);
+        DataAgentBootstrap.Builder builder =
+                DataAgentBootstrap.builder().cwd(cwd).userSandboxRegistry(userSandboxRegistry);
 
         if (modelOpt.isPresent()) {
             builder.model(modelOpt.get());
         } else {
             log.warn(
-                    "未配置 model。请检查 dataagent.ollama 配置"
-                            + " 或在 application.yml 中配置 dataagent.ollama.* 配置项。"
-                            + " 或提供自定义 Model bean。在可用 model 之前，Agent 调用将失败。");
+                    "未配置 model。请检查 dataagent.ollama 配置或提供自定义 Model bean。"
+                            + "在可用 model 之前，Agent 调用将失败。");
         }
 
-        // sessionOpt 是注入进来的 Optional<AgentStateStore>。
-        // 如果有人在 Spring 容器里注册了分布式存储 Bean（比如 Redis），就用那个；没有的话，兜底用一个纯内存的 InMemoryAgentStateStore。
-        AgentStateStore stateStore = sessionOpt.orElseGet(InMemoryAgentStateStore::new);
-        if (sessionOpt.isEmpty()) {
-            log.warn(
-                    "未配置分布式 AgentStateStore bean ({}); 兜底使用"
-                            + " InMemoryAgentStateStore（进程重启会丢状态）。"
-                            + " 多副本部署请启用 redis profile："
-                            + " --spring.profiles.active=dev,redis，"
-                            + " 或自行提供 AgentStateStore bean。",
-                    AgentStateStore.class.getName());
-        }
-
-        // 把所有"配件"一个个挂上去，平台基础设施：工具事件中间件、状态存储、Docker 沙箱文件系统（按用户隔离），
-        // #6 模型容错：失败自动重试 2 次
-        // #5 Plan Mode：复杂任务先规划再执行，规划阶段只读
-        // #3 记忆压缩：对话超 30 条触发压缩，保留最近 10 条 + 摘要
-        // 长期记忆：每 10 分钟限流刷新一次，落到 MEMORY.md
-        // #2 子代理：注册 code-reviewer（不暴露给用户）和 report-writer（暴露思考过程）
-        // #9 权限系统：默认 ALLOW，但 run_sql_preview 这类敏感操作要 ASK 用户确认
-        builder.configureAllAgents(
-                b -> {
-                    // ---- 平台基础设施 ----
-                    b.middleware(new ToolNotificationMiddleware(toolEventBus));
-                    b.stateStore(stateStore);
-                    b.filesystem(
-                            new DockerFilesystemSpec()
-                                    .client(sandboxClient)
-                                    .isolationScope(IsolationScope.USER));
-
-                    // ---- #6 模型容错: 主模型失败重试 + fallback 自动切换 ----
-                    // 主模型失败自动重试 2 次；如果配置了 fallback 模型，仍不行则切换。
-                    // 本地 Ollama 模型默认不启用 fallback（无云端限流问题）。
-                    b.maxRetries(2);
-                    if (ollamaFallbackModelName != null && !ollamaFallbackModelName.isBlank()) {
-                        b.fallbackModel("ollama:" + ollamaFallbackModelName);
-                    }
-
-                    // ---- #5 Plan Mode: 复杂分析任务先规划再执行 ----
-                    // Agent 获得 plan_enter / plan_write / plan_exit 工具，
-                    // 规划阶段只读，需用户确认后才执行。
-                    b.enablePlanMode();
-
-                    // ---- #3 内置记忆压缩  ----
-                    // 当对话累积 30 条以上消息时触发压缩，保留最近 10 条 +
-                    // 压缩摘要，防止 context window 溢出。
-                    b.compaction(
-                            CompactionConfig.builder()
-                                    .triggerMessages(30)
-                                    .keepMessages(10)
-                                    .build());
-
-                    // ---- 大工具结果卸载 ----
-                    // 数据分析场景下 SQL 查询可能返回几万行数据，单条结果超 80K 字符时
-                    // 自动落盘到工作区，context 里只留首尾 2K 字符 + read_file 路径提示。
-                    // read_file/write_file/grep 等小结果工具默认排除。
-                    b.toolResultEviction(ToolResultEvictionConfig.defaults());
-
-                    // 长期记忆管道: 每 10 分钟限流刷新一次，
-                    // 将对话要点合并到 MEMORY.md + memory/YYYY-MM-DD.md
-                    b.memory(
-                            MemoryConfig.builder()
-                                    .flushTrigger(
-                                            MemoryConfig.FlushTrigger.throttled(
-                                                    Duration.ofMinutes(10)))
-                                    .build());
-
-                    // ---- #2 声明内置子代理 ----
-                    // 每个子代理以 Markdown 文件声明在 workspace/subagents/ 下，
-                    // 或以编程方式在此处声明。2.0 SubagentsMiddleware 自动提供
-                    // agent_spawn / agent_send / agent_list 等工具。
-
-                    // 代码审查子代理: agent_spawn agent_id="code-reviewer" task="..."
-                    b.subagent(
-                            SubagentDeclaration.builder()
-                                    .name("code-reviewer")
-                                    .description("Code review specialist. Reviews data-analysis scripts, SQL, and chart definitions. "
-                                            + "Returns structured findings with severity levels.")
-                                    .model("ollama:" + ollamaModelName)
-                                    .maxIters(5)
-                                    .exposeToUser(false)
-                                    .workspaceMode(WorkspaceMode.ISOLATED)
-                                    .build());
-
-                    // 研究报告子代理: agent_spawn agent_id="report-writer" task="... "
-                    b.subagent(
-                            SubagentDeclaration.builder()
-                                    .name("report-writer")
-                                    .description("Report writer. Composes data-analysis reports in Markdown. "
-                                            + "Takes findings and chart descriptions, produces polished narrative.")
-                                    .model(ollamaModelName)
-                                    .maxIters(8)
-                                    .exposeToUser(true)  // 用户可看到子代理的思考过程
-                                    .workspaceMode(WorkspaceMode.ISOLATED)
-                                    .build());
-
-                    // ---- 权限系统: 对敏感工具启用用户确认 ----
-                    // 默认所有工具 ALLOW，对 SQL 执行类工具要求用户确认。
-                    PermissionContextState permCtx =
-                            PermissionContextState.builder()
-                                    .addAllowRule(
-                                            "default",
-                                            new PermissionRule(
-                                                    "list_data_sources",
-                                                    null,
-                                                    PermissionBehavior.ALLOW,
-                                                    "default"))
-                                    .addAllowRule(
-                                            "default",
-                                            new PermissionRule(
-                                                    "describe_table",
-                                                    null,
-                                                    PermissionBehavior.ALLOW,
-                                                    "default"))
-                                    .addAllowRule(
-                                            "default",
-                                            new PermissionRule(
-                                                    "render_chart",
-                                                    null,
-                                                    PermissionBehavior.ALLOW,
-                                                    "default"))
-                                    .addAllowRule(
-                                            "default",
-                                            new PermissionRule(
-                                                    "outbound_send",
-                                                    null,
-                                                    PermissionBehavior.ALLOW,
-                                                    "default"))
-                                    .addAllowRule(
-                                            "default",
-                                            new PermissionRule(
-                                                    "agent_spawn",
-                                                    null,
-                                                    PermissionBehavior.ALLOW,
-                                                    "default"))
-                                    .addAllowRule(
-                                            "default",
-                                            new PermissionRule(
-                                                    "agent_send",
-                                                    null,
-                                                    PermissionBehavior.ALLOW,
-                                                    "default"))
-                                    .addAllowRule(
-                                            "default",
-                                            new PermissionRule(
-                                                    "agent_list",
-                                                    null,
-                                                    PermissionBehavior.ALLOW,
-                                                    "default"))
-                                    // SQL 执行需要用户确认
-                                    .addAskRule(
-                                            "sql_execution",
-                                            new PermissionRule(
-                                                    "run_sql_preview",
-                                                    null,
-                                                    PermissionBehavior.ASK,
-                                                    "sql_execution"))
-                                    // 内存写入操作自动允许（2.0 内置工具）
-                                    .addAllowRule(
-                                            "default",
-                                            new PermissionRule(
-                                                    "memory_search",
-                                                    null,
-                                                    PermissionBehavior.ALLOW,
-                                                    "default"))
-                                    .addAllowRule(
-                                            "default",
-                                            new PermissionRule(
-                                                    "memory_get",
-                                                    null,
-                                                    PermissionBehavior.ALLOW,
-                                                    "default"))
-                                    .build();
-                    b.permissionContext(permCtx);
-                });
+        // 关键：注册统一运行时配置器，所有 Agent 构建时都会应用这套配置
+        builder.configureAllAgents(agentRuntimeConfigurer);
 
         DataAgentBootstrap bootstrap = builder.build();
 
-        // 尝试从 agentscope.json 读取 channel 配置，
-        // bootstrap.loadedConfig() 就是之前 build 阶段加载的 agentscope.json。如果 json 里写了 channels.chatui 配置块，就用它；没写就 null
+        // 从 agentscope.json 读取 channel 配置，没有就用默认
         ChannelConfigEntry ce =
                 bootstrap.loadedConfig().getChannels() != null
                         ? bootstrap.loadedConfig().getChannels().get(ChatUiChannel.CHANNEL_ID)
                         : null;
-        // 构造 channel 的配置对象
         ChannelConfig chatuiCfg =
                 ce != null
-                        ? ce.toChannelConfig(ChatUiChannel.CHANNEL_ID)  // 有配置 → 用 json 里的
+                        ? ce.toChannelConfig(ChatUiChannel.CHANNEL_ID)
                         : ChannelConfig.builder(ChatUiChannel.CHANNEL_ID)
-                                .dmScope(DmScope.PER_PEER)  // DmScope.PER_PEER 是关键：每个登录用户（peer）获得独立的 Agent 会话和 workspace
-                                .build();  // 没配置 → 默认每人一个独立会话
-        // 创建通道实例
+                                .dmScope(DmScope.PER_PEER)
+                                .build();
         ChatUiChannel webChannel = ChatUiChannel.create(chatuiCfg);
-        bootstrap.start(webChannel);  // 整车点火
+        bootstrap.start(webChannel);
 
         log.info(
                 "DataAgentBootstrap 已初始化: cwd={}, chatui dmScope={}, bindings={}",
@@ -430,6 +248,10 @@ public class DataAgentConfig {
                 chatuiCfg.bindings().size());
         return bootstrap;
     }
+
+    // -----------------------------------------------------------------
+    //  市场工厂注册
+    // -----------------------------------------------------------------
 
     /**
      * 注册"本地市场"工厂——从工作目录的 shared/.../skills 拉取 skill。
@@ -474,7 +296,7 @@ public class DataAgentConfig {
 
     /**
      * 注册"Nacos 市场"工厂——从 Nacos 配置中心拉 skill 定义。
-     * 必须提供 serverAddr；其他鉴权字段（namespaceId/username/password/accessKey/secretKey）可选。
+     * 必须提供 serverAddr；其他鉴权字段可选。
      */
     @Bean
     public DataAgentMarketplaceFactoryRegistration nacosMarketplaceFactory() {
@@ -497,12 +319,9 @@ public class DataAgentConfig {
                 });
     }
 
-    /** 小工具：从 props Map 里安全地取一个字符串，没有就返回 null。 */
-    private static String stringProp(java.util.Map<String, Object> props, String key) {
-        if (props == null) return null;
-        Object v = props.get(key);
-        return v == null ? null : v.toString();
-    }
+    // -----------------------------------------------------------------
+    //  其他 Bean
+    // -----------------------------------------------------------------
 
     /**
      * 装配"身份关联库"——把外部用户身份和 DataAgent 内部身份关联起来，
@@ -517,7 +336,7 @@ public class DataAgentConfig {
 
     /**
      * 从 bootstrap 的 ChannelManager 里把 chatui 通道拿出来暴露成 Bean，
-     * 方便别处直接注入使用。拿不到就抛异常，说明前面启动有问题。
+     * 方便别处直接注入使用。
      */
     @Bean
     public ChatUiChannel chatUiChannel(DataAgentBootstrap bootstrap) {
@@ -546,12 +365,8 @@ public class DataAgentConfig {
     /**
      * 首次启动时生成一份默认的 agentscope.json 脚手架。
      *
-     * <p><b>2.0 风格说明</b>：这是"脚手架"，不是"必需品"。生成后用户可以：
-     * <ul>
-     *   <li>直接删掉这份 JSON，然后通过 Web 界面重新配置；</li>
-     *   <li>手工编辑这份 JSON 调整 agent / channel；</li>
-     *   <li>保留不动，开箱即用。</li>
-     * </ul>
+     * <p>这是"脚手架"，不是"必需品"。生成后用户可以：
+     * 直接删掉然后通过 Web 界面重新配置、手工编辑、或保留不动开箱即用。
      * 已经存在则绝不覆盖。
      */
     private void ensureAgentscopeConfig() throws IOException {
@@ -559,13 +374,12 @@ public class DataAgentConfig {
         Path workspaceRoot = DataAgentBootstrap.DEFAULT_WORKSPACE_ROOT;
 
         if (Files.exists(configFile)) {
-            return;  // 已有配置，绝不覆盖
+            return;
         }
 
         Files.createDirectories(configFile.getParent());
         Files.createDirectories(workspaceRoot);
 
-        // 生成的 JSON 带 _comment 说明字段，方便用户理解可改可删
         String agentsJson =
                 """
                 {
@@ -599,7 +413,7 @@ public class DataAgentConfig {
 
     /**
      * 解析系统提示词：如果值以 "classpath:" 开头，就从 classpath 资源里读全文；
-     * 否则就当普通字符串原样返回。读资源失败也兜底返回原值，不让启动挂掉。
+     * 否则就当普通字符串原样返回。读资源失败也兜底返回原值。
      */
     private static String resolvePrompt(String prompt) {
         if (prompt == null || !prompt.startsWith("classpath:")) {
@@ -613,7 +427,14 @@ public class DataAgentConfig {
                             .readAllBytes(),
                     java.nio.charset.StandardCharsets.UTF_8);
         } catch (Exception e) {
-            return prompt; // fallback: return raw value
+            return prompt;
         }
+    }
+
+    /** 从 props Map 里安全地取一个字符串，没有就返回 null。 */
+    private static String stringProp(java.util.Map<String, Object> props, String key) {
+        if (props == null) return null;
+        Object v = props.get(key);
+        return v == null ? null : v.toString();
     }
 }
