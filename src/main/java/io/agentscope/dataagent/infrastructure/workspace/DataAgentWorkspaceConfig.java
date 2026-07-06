@@ -17,7 +17,6 @@ package io.agentscope.dataagent.infrastructure.workspace;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.agentscope.dataagent.web.persistence.jpa.SandboxLifecycleRepository;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClient;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClientOptions;
@@ -86,7 +85,7 @@ public class DataAgentWorkspaceConfig {
     @Bean
     public UserSandboxRegistry userSandboxRegistry(
             SandboxClient<DockerSandboxClientOptions> sandboxClient,
-            SandboxLifecycleRepository lifecycleRepo) {
+            SandboxLifecycleObserver lifecycleObserver) {
         Path sharedRoot = resolveCwd().resolve("shared");
         Duration idleTtl = Duration.ofMinutes(idleTtlMinutes);
         Duration evictionPoll = Duration.ofSeconds(evictionPollSeconds);
@@ -95,7 +94,7 @@ public class DataAgentWorkspaceConfig {
                 sharedRoot,
                 idleTtl,
                 evictionPoll);
-        return new UserSandboxRegistry(sandboxClient, sharedRoot, idleTtl, evictionPoll, lifecycleRepo);
+        return new UserSandboxRegistry(sandboxClient, sharedRoot, idleTtl, evictionPoll, lifecycleObserver);
     }
 
     private Path resolveCwd() {

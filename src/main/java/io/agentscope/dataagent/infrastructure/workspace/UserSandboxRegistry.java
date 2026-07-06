@@ -15,9 +15,6 @@
  */
 package io.agentscope.dataagent.infrastructure.workspace;
 
-import io.agentscope.dataagent.web.persistence.jpa.SandboxLifecycleRecord;
-import io.agentscope.dataagent.web.persistence.jpa.SandboxLifecycleRecord.Status;
-import io.agentscope.dataagent.web.persistence.jpa.SandboxLifecycleRepository;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
@@ -31,7 +28,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,7 +57,7 @@ public final class UserSandboxRegistry {
     private final SandboxClient<DockerSandboxClientOptions> client;
     private final Path hostWorkspaceRoot;
     private final Duration idleTtl;
-    private final SandboxLifecycleRepository lifecycleRepo;
+    private final SandboxLifecycleObserver lifecycleObserver;
     //entries —— 主缓存表，key 是 (userId, agentId)，value 是容器 Entry，ConcurrentHashMap 保证多线程安全。
     private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
     private final ScheduledExecutorService evictor;
@@ -75,19 +71,19 @@ public final class UserSandboxRegistry {
      *     skip projection entirely (every container starts empty).
      * @param idleTtl how long a sandbox may sit unused before {@link #evictIdle()} closes it
      * @param evictionPollInterval how often the background scheduler checks for idle sandboxes
-     * @param lifecycleRepo optional repository for persisting sandbox lifecycle records;
-     *     may be {@code null} in test/legacy contexts
+     * @param lifecycleObserver observer that persists sandbox lifecycle events to DB;
+     *     handles all DB interaction so the registry can focus on container pooling
      */
     public UserSandboxRegistry(
             SandboxClient<DockerSandboxClientOptions> client,
             Path hostWorkspaceRoot,
             Duration idleTtl,
             Duration evictionPollInterval,
-            SandboxLifecycleRepository lifecycleRepo) {
+            SandboxLifecycleObserver lifecycleObserver) {
         this.client = Objects.requireNonNull(client, "client");
         this.hostWorkspaceRoot = hostWorkspaceRoot;
         this.idleTtl = Objects.requireNonNull(idleTtl, "idleTtl");
-        this.lifecycleRepo = lifecycleRepo;
+        this.lifecycleObserver = lifecycleObserver;
         long pollMs =
                 Math.max(
                         1_000L,
@@ -253,30 +249,19 @@ public final class UserSandboxRegistry {
     }
 
     /**
-     * 将沙箱生命周期记录持久化到 DB。
-     * 记录容器 ID、用户、Agent、镜像等信息供调度器跟踪。
-     * 为什么需要 DB 记录？ 因为 entries 是纯内存的，应用重启后内存清空，
-     * 但 Docker 容器可能还活着。DB 记录让重启后的应用能识别"孤儿容器"并精确清理，而不是无脑扫全部。
+     * 通知观察者记录沙箱生命周期。
+     * 从 DockerSandboxState 提取容器信息，委托给 lifecycleObserver 持久化到 DB。
+     * Registry 本身不再直接操作 DB——这是框架适配层和项目审计层的分界。
      */
     private void recordLifecycle(Key key, Sandbox sandbox) {
-        if (lifecycleRepo == null) {
-            return;
-        }
         try {
             DockerSandboxState state = (DockerSandboxState) sandbox.getState();
-            SandboxLifecycleRecord record = new SandboxLifecycleRecord();
-            record.setUserId(key.userId());
-            record.setAgentId(key.agentId());
-            record.setContainerId(state.getContainerId());
-            record.setContainerName(state.getContainerName());
-            record.setImage(state.getImage());
-            record.setStatus(Status.ACTIVE);
-            record.setLastHeartbeat(LocalDateTime.now());
-            record.setCreatedAt(LocalDateTime.now());
-            record.setTtlMinutes(30);
-            lifecycleRepo.save(record);
-            log.info("[sandbox-lifecycle] 已记录沙箱生命周期: userId={}, containerId={}",
-                    key.userId(), state.getContainerId());
+            lifecycleObserver.onCreated(
+                    key.userId(),
+                    key.agentId(),
+                    state.getContainerId(),
+                    state.getContainerName(),
+                    state.getImage());
         } catch (Exception e) {
             log.warn("[sandbox-lifecycle] 记录生命周期失败: {}", e.getMessage());
         }
@@ -332,18 +317,8 @@ public final class UserSandboxRegistry {
                     e.getMessage(),
                     e);
         }
-        // 更新 DB 生命周期记录
-        if (lifecycleRepo != null) {
-            try {
-                lifecycleRepo.findByUserIdAndStatus(key.userId(), Status.ACTIVE)
-                        .ifPresent(record -> {
-                            record.setStatus(Status.CLOSED);
-                            lifecycleRepo.save(record);
-                        });
-            } catch (Exception e) {
-                log.warn("[sandbox-lifecycle] 更新生命周期状态失败: {}", e.getMessage());
-            }
-        }
+        // 委托给观察者更新 DB 生命周期记录
+        lifecycleObserver.onClosed(key.userId(), key.agentId());
     }
 
     private static void validateSegment(String label, String value) {
