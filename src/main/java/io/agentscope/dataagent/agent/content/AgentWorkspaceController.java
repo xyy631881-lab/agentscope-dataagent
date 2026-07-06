@@ -24,7 +24,6 @@ import io.agentscope.dataagent.agent.catalog.AgentCatalogService;
 import io.agentscope.dataagent.agent.catalog.AgentDefinition;
 import io.agentscope.dataagent.agent.sharing.AgentAccessGuard;
 import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
-import io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.model.FileInfo;
 import io.agentscope.harness.agent.filesystem.model.FileUploadResponse;
@@ -35,9 +34,7 @@ import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
 import io.agentscope.harness.agent.subagent.AgentSpecLoader;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
-import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -86,19 +83,19 @@ public class AgentWorkspaceController {
 
     private final DataAgentBootstrap builderBootstrap;
     private final AgentCatalogService catalogService;
-    private final WorkspaceManagerFactory workspaceManagerFactory;
+    private final WorkspaceResolutionService resolutionService;
     private final AgentAccessGuard guard;
     private final AgentActivityStore activity;
 
     public AgentWorkspaceController(
             DataAgentBootstrap builderBootstrap,
             AgentCatalogService catalogService,
-            WorkspaceManagerFactory workspaceManagerFactory,
+            WorkspaceResolutionService resolutionService,
             AgentAccessGuard guard,
             AgentActivityStore activity) {
         this.builderBootstrap = builderBootstrap;
         this.catalogService = catalogService;
-        this.workspaceManagerFactory = workspaceManagerFactory;
+        this.resolutionService = resolutionService;
         this.guard = guard;
         this.activity = activity;
     }
@@ -112,7 +109,7 @@ public class AgentWorkspaceController {
         String userId = (String) auth.getPrincipal();
 
                     guard.require(userId, agentId, Tier.RUN);
-                    WorkspaceContext ctx = resolveContext(userId, agentId);
+                    var ctx = resolutionService.resolve(userId, agentId);
                     return summarize(agentId, ctx);
     }
 
@@ -124,7 +121,7 @@ public class AgentWorkspaceController {
         String userId = (String) auth.getPrincipal();
 
                     guard.require(userId, agentId, Tier.EDIT);
-                    WorkspaceContext ctx = resolveContext(userId, agentId);
+                    var ctx = resolutionService.resolve(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
                     RuntimeContext rc = RuntimeContext.empty();
                     // skills/, subagents/, memory/ are virtual via composite routes — no mkdir
@@ -149,7 +146,7 @@ public class AgentWorkspaceController {
         String userId = (String) auth.getPrincipal();
 
                     guard.require(userId, agentId, Tier.RUN);
-                    WorkspaceContext ctx = resolveContext(userId, agentId);
+                    var ctx = resolutionService.resolve(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
                     RuntimeContext rc = RuntimeContext.empty();
                     String memoryContent = null;
@@ -186,7 +183,7 @@ public class AgentWorkspaceController {
         String userId = (String) auth.getPrincipal();
 
                     guard.require(userId, agentId, Tier.RUN);
-                    WorkspaceContext ctx = resolveContext(userId, agentId);
+                    var ctx = resolutionService.resolve(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
                     return collectChildrenFs(fs, "/", recursive ? 6 : 1);
     }
@@ -198,7 +195,7 @@ public class AgentWorkspaceController {
 
                     guard.require(userId, agentId, Tier.RUN);
                     String rel = validateRelPath(path);
-                    WorkspaceContext ctx = resolveContext(userId, agentId);
+                    var ctx = resolutionService.resolve(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
                     RuntimeContext rc = RuntimeContext.empty();
                     if (!fs.exists(rc, rel)) {
@@ -230,7 +227,7 @@ public class AgentWorkspaceController {
 
                     guard.require(userId, agentId, Tier.EDIT);
                     String rel = validateRelPath(path);
-                    WorkspaceContext ctx = resolveContext(userId, agentId);
+                    var ctx = resolutionService.resolve(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
                     RuntimeContext rc = RuntimeContext.empty();
                     if (isDirectoryEntry(fs, rc, rel)) {
@@ -266,7 +263,7 @@ public class AgentWorkspaceController {
 
                     guard.require(userId, agentId, Tier.EDIT);
                     String rel = validateRelPath(path);
-                    WorkspaceContext ctx = resolveContext(userId, agentId);
+                    var ctx = resolutionService.resolve(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
                     RuntimeContext rc = RuntimeContext.empty();
                     boolean isDir = "dir".equalsIgnoreCase(type);
@@ -300,7 +297,7 @@ public class AgentWorkspaceController {
                     guard.require(userId, agentId, Tier.EDIT);
                     String fromRel = validateRelPath(req.from());
                     String toRel = validateRelPath(req.to());
-                    WorkspaceContext ctx = resolveContext(userId, agentId);
+                    var ctx = resolutionService.resolve(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
                     RuntimeContext rc = RuntimeContext.empty();
                     if (!fs.exists(rc, fromRel)) {
@@ -336,7 +333,7 @@ public class AgentWorkspaceController {
 
                     guard.require(userId, agentId, Tier.EDIT);
                     String rel = validateRelPath(path);
-                    WorkspaceContext ctx = resolveContext(userId, agentId);
+                    var ctx = resolutionService.resolve(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
                     RuntimeContext rc = RuntimeContext.empty();
                     if (!fs.exists(rc, rel)) {
@@ -367,7 +364,7 @@ public class AgentWorkspaceController {
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
         guard.require(userId, agentId, Tier.EDIT);
-        WorkspaceContext ctx = resolveContext(userId, agentId);
+        var ctx = resolutionService.resolve(userId, agentId);
         String dirRel = validateRelPath(path);
         String filename = sanitiseFilename(file.getOriginalFilename());
         String targetRel = (dirRel.isEmpty() ? "" : dirRel + "/") + filename;
@@ -411,7 +408,7 @@ public class AgentWorkspaceController {
         String userId = (String) auth.getPrincipal();
 
                     guard.require(userId, agentId, Tier.RUN);
-                    WorkspaceContext ctx = resolveContext(userId, agentId);
+                    var ctx = resolutionService.resolve(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
                     RuntimeContext rc = RuntimeContext.empty();
                     LsResult ls = fs.ls(rc, "/subagents");
@@ -454,7 +451,7 @@ public class AgentWorkspaceController {
                                 HttpStatus.BAD_REQUEST, "description is required");
                     }
                     validateSubagentName(name);
-                    WorkspaceContext ctx = resolveContext(userId, agentId);
+                    var ctx = resolutionService.resolve(userId, agentId);
                     String markdown = renderSubagentMarkdown(req);
                     ctx.manager()
                             .writeUtf8WorkspaceRelative(
@@ -512,7 +509,7 @@ public class AgentWorkspaceController {
                                     source.sysPrompt(),
                                     req.sourceAgentId());
                     String markdown = renderSubagentMarkdown(upsert);
-                    WorkspaceContext ctx = resolveContext(userId, agentId);
+                    var ctx = resolutionService.resolve(userId, agentId);
                     ctx.manager()
                             .writeUtf8WorkspaceRelative(
                                     RuntimeContext.empty(),
@@ -536,7 +533,7 @@ public class AgentWorkspaceController {
 
                     guard.require(userId, agentId, Tier.EDIT);
                     validateSubagentName(name);
-                    WorkspaceContext ctx = resolveContext(userId, agentId);
+                    var ctx = resolutionService.resolve(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
                     String path = "subagents/" + name + ".md";
                     if (!fs.exists(RuntimeContext.empty(), path)) {
@@ -553,36 +550,6 @@ public class AgentWorkspaceController {
     // -----------------------------------------------------------------
     //  Internal helpers
     // -----------------------------------------------------------------
-
-    /**
-     * Resolves the (workspace path, {@link WorkspaceManager}) tuple for an agent.
-     *
-     * <p>Both SCOPE_USER and global agents route through a {@link WorkspaceManager} backed by the
-     * per-{@code (userId, agentId)} Docker sandbox supplied by {@link WorkspaceManagerFactory}.
-     * Shared seed content (AGENTS.md, skills/, subagents/, knowledge/) is read-only-projected into
-     * every sandbox at start; user writes stay inside the container.
-     */
-    private WorkspaceContext resolveContext(String userId, String agentId) {
-        AgentDefinition def =
-                catalogService
-                        .findVisible(userId, agentId)
-                        .orElseThrow(
-                                () ->
-                                        new ResponseStatusException(
-                                                HttpStatus.NOT_FOUND,
-                                                "Agent not found or not accessible: " + agentId));
-        if (AgentDefinition.SCOPE_USER.equals(def.scope())) {
-            String ownerId = def.ownerId() != null ? def.ownerId() : userId;
-            WorkspaceManager wm =
-                    workspaceManagerFactory.forAgent(ownerId, agentId, def.workspacePath());
-            return new WorkspaceContext(wm.getWorkspace().normalize(), wm, ownerId);
-        }
-        WorkspaceManager wm =
-                workspaceManagerFactory.forGlobalAgent(userId, agentId, def.workspacePath());
-        return new WorkspaceContext(wm.getWorkspace().normalize(), wm, userId);
-    }
-
-    private record WorkspaceContext(Path workspace, WorkspaceManager manager, String ownerId) {}
 
     /**
      * Validates a caller-supplied workspace-relative path. Rejects null/blank, absolute paths,
@@ -725,7 +692,7 @@ public class AgentWorkspaceController {
      * (MEMORY.md, memory/, sessions/, skills/, subagents/) is correctly reflected — disk-only
      * probes would miss everything stored in the {@link BaseStore}.
      */
-    private WorkspaceSummary summarize(String agentId, WorkspaceContext ctx) {
+    private WorkspaceSummary summarize(String agentId, WorkspaceResolutionService.ResolvedWorkspace ctx) {
         AbstractFilesystem fs = ctx.manager().getFilesystem();
         RuntimeContext rc = RuntimeContext.empty();
         boolean agentsMdExists = fs.exists(rc, "AGENTS.md");

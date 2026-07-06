@@ -27,12 +27,9 @@ import io.agentscope.dataagent.runtime.marketplace.UserMarketplaceRegistry;
 import io.agentscope.dataagent.agent.activity.ActivityEvent;
 import io.agentscope.dataagent.agent.activity.AgentActivityStore;
 import io.agentscope.dataagent.agent.catalog.AgentCatalogService;
-import io.agentscope.dataagent.agent.catalog.AgentDefinition;
 import io.agentscope.dataagent.agent.catalog.AgentLifecycleService;
-import io.agentscope.dataagent.agent.catalog.UserAgentDefinitionStore;
 import io.agentscope.dataagent.agent.sharing.AgentAccessGuard;
 import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
-import io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.model.FileInfo;
@@ -45,7 +42,6 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
@@ -109,21 +105,21 @@ public class AgentSkillsController {
     private final AgentActivityStore activity;
     private final AgentCatalogService catalogService;
     private final AgentLifecycleService lifecycleService;
-    private final WorkspaceManagerFactory workspaceFactory;
+    private final WorkspaceResolutionService resolutionService;
     private final UserMarketplaceRegistry marketplaceRegistry;
 
     public AgentSkillsController(
             AgentAccessGuard guard,
             AgentActivityStore activity,
             AgentCatalogService catalogService,
-            WorkspaceManagerFactory workspaceFactory,
+            WorkspaceResolutionService resolutionService,
             UserMarketplaceRegistry marketplaceRegistry,
             AgentLifecycleService lifecycleService) {
         this.guard = guard;
         this.activity = activity;
         this.catalogService = catalogService;
         this.lifecycleService = lifecycleService;
-        this.workspaceFactory = workspaceFactory;
+        this.resolutionService = resolutionService;
         this.marketplaceRegistry = marketplaceRegistry;
     }
 
@@ -137,7 +133,7 @@ public class AgentSkillsController {
         String userId = (String) auth.getPrincipal();
 
                     guard.require(userId, agentId, Tier.RUN);
-                    AbstractFilesystem fs = resolveFilesystem(userId, agentId);
+                    AbstractFilesystem fs = resolutionService.resolveFilesystem(userId, agentId);
                     LsResult ls = fs.ls(null, "/skills");
                     if (ls == null || !ls.isSuccess() || ls.entries() == null) {
                 return List.<WorkspaceSkillInfo>of();
@@ -151,7 +147,7 @@ public class AgentSkillsController {
                 if (skill != null) out.add(skill);
                     }
                     out.sort(Comparator.comparing(WorkspaceSkillInfo::name));
-                    return out;
+                    return out;
     }
 
     @GetMapping("/workspace/{name}")
@@ -161,7 +157,7 @@ public class AgentSkillsController {
 
                     guard.require(userId, agentId, Tier.RUN);
                     validateSkillName(name);
-                    AbstractFilesystem fs = resolveFilesystem(userId, agentId);
+                    AbstractFilesystem fs = resolutionService.resolveFilesystem(userId, agentId);
                     String markdown = readUtf8(fs, "/skills/" + name + "/SKILL.md");
                     if (markdown == null) {
                 throw new ResponseStatusException(
@@ -169,7 +165,7 @@ public class AgentSkillsController {
                     }
                     Map<String, String> resources = collectResources(fs, name);
                     String description = parseFrontMatterField(markdown, DESCRIPTION_LINE);
-                    return new WorkspaceSkillDetail(name, description, markdown, resources);
+                    return new WorkspaceSkillDetail(name, description, markdown, resources);
     }
 
     @PutMapping("/workspace/{name}")
@@ -180,14 +176,14 @@ public class AgentSkillsController {
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
 
-                    AgentDefinition def = guard.require(userId, agentId, Tier.EDIT);
+                    guard.require(userId, agentId, Tier.EDIT);
                     validateSkillName(name);
                     if (req == null || req.markdown() == null || req.markdown().isBlank()) {
                 throw new ResponseStatusException(
                         HttpStatus.BAD_REQUEST, "markdown is required");
                     }
-                    OwnerCtx ctx = resolveOwner(userId, agentId, def);
-                    WorkspaceManager wsm = ctx.workspaceManager();
+                    var ctx = resolutionService.resolve(userId, agentId);
+                    WorkspaceManager wsm = ctx.manager();
                     wsm.writeUtf8WorkspaceRelative(
                     RuntimeContext.empty(), "skills/" + name + "/SKILL.md", req.markdown());
                     if (req.resources() != null) {
@@ -209,7 +205,7 @@ public class AgentSkillsController {
                     "skills/" + name,
                     null);
                     lifecycleService.invalidateUca(ctx.ownerId(), agentId);
-                    return readWorkspaceSkill(wsm.getFilesystem(), name);
+                    return readWorkspaceSkill(wsm.getFilesystem(), name);
     }
 
     @DeleteMapping("/workspace/{name}")
@@ -218,10 +214,10 @@ public class AgentSkillsController {
             @PathVariable String agentId, @PathVariable String name, Authentication auth) {
         String userId = (String) auth.getPrincipal();
 
-                    AgentDefinition def = guard.require(userId, agentId, Tier.EDIT);
+                    guard.require(userId, agentId, Tier.EDIT);
                     validateSkillName(name);
-                    OwnerCtx ctx = resolveOwner(userId, agentId, def);
-                    AbstractFilesystem fs = ctx.workspaceManager().getFilesystem();
+                    var ctx = resolutionService.resolve(userId, agentId);
+                    AbstractFilesystem fs = ctx.manager().getFilesystem();
                     if (!fs.exists(null, "/skills/" + name)) {
                 throw new ResponseStatusException(
                         HttpStatus.NOT_FOUND, "Skill not found: " + name);
@@ -234,7 +230,7 @@ public class AgentSkillsController {
                     ActivityEvent.Action.DELETE_FILE,
                     "skills/" + name,
                     null);
-                    lifecycleService.invalidateUca(ctx.ownerId(), agentId);
+                    lifecycleService.invalidateUca(ctx.ownerId(), agentId);
     }
 
     // -----------------------------------------------------------------
@@ -252,7 +248,7 @@ public class AgentSkillsController {
                     for (int i = 0; i < repos.size(); i++) {
                 out.add(toRepositoryInfo(i, repos.get(i)));
                     }
-                    return out;
+                    return out;
     }
 
     @GetMapping("/repositories/{index}/skills")
@@ -285,7 +281,7 @@ public class AgentSkillsController {
                 }
                     }
                     out.sort(Comparator.comparing(MarketSkillInfo::name));
-                    return out;
+                    return out;
     }
 
     @GetMapping("/repositories/{index}/skills/{name}")
@@ -318,7 +314,7 @@ public class AgentSkillsController {
                     skill.getSkillContent(),
                     skill.getResources() != null
                             ? new LinkedHashMap<>(skill.getResources())
-                            : Map.of());
+                            : Map.of());
     }
 
     @PostMapping("/workspace/install")
@@ -330,7 +326,7 @@ public class AgentSkillsController {
                 throw new ResponseStatusException(
                         HttpStatus.BAD_REQUEST, "skillName is required");
                     }
-                    AgentDefinition def = guard.require(userId, agentId, Tier.EDIT);
+                    guard.require(userId, agentId, Tier.EDIT);
                     validateSkillName(req.skillName());
                     AgentSkillRepository repo = repoAt(userId, agentId, req.repoIndex());
                     AgentSkill skill;
@@ -352,8 +348,8 @@ public class AgentSkillsController {
                             : skill.getName();
                     validateSkillName(targetName);
 
-                    OwnerCtx ctx = resolveOwner(userId, agentId, def);
-                    AbstractFilesystem fs = ctx.workspaceManager().getFilesystem();
+                    var ctx = resolutionService.resolve(userId, agentId);
+                    AbstractFilesystem fs = ctx.manager().getFilesystem();
                     if (fs.exists(null, "/skills/" + targetName)
                     && !Boolean.TRUE.equals(req.overwrite())) {
                 throw new ResponseStatusException(
@@ -369,7 +365,7 @@ public class AgentSkillsController {
                         HttpStatus.BAD_GATEWAY,
                         "Repository returned empty SKILL.md for: " + req.skillName());
                     }
-                    WorkspaceManager wsm = ctx.workspaceManager();
+                    WorkspaceManager wsm = ctx.manager();
                     wsm.writeUtf8WorkspaceRelative(
                     RuntimeContext.empty(), "skills/" + targetName + "/SKILL.md", markdown);
                     writeResources(wsm, targetName, skill.getResources());
@@ -392,7 +388,7 @@ public class AgentSkillsController {
                             "repoType", meta.repoType(),
                             "originalName", meta.originalName()));
                     lifecycleService.invalidateUca(ctx.ownerId(), agentId);
-                    return readWorkspaceSkill(fs, targetName);
+                    return readWorkspaceSkill(fs, targetName);
     }
 
     @PostMapping("/workspace/marketplace-install")
@@ -412,7 +408,7 @@ public class AgentSkillsController {
                 throw new ResponseStatusException(
                         HttpStatus.BAD_REQUEST, "skillName is required");
                     }
-                    AgentDefinition def = guard.require(userId, agentId, Tier.EDIT);
+                    guard.require(userId, agentId, Tier.EDIT);
                     validateSkillName(req.skillName());
                     // 404 (not 403) for cross-user lookups so we don't leak the existence of
                     // another user's marketplace ids.
@@ -444,8 +440,8 @@ public class AgentSkillsController {
                             : content.name();
                     validateSkillName(targetName);
 
-                    OwnerCtx ctx = resolveOwner(userId, agentId, def);
-                    AbstractFilesystem fs = ctx.workspaceManager().getFilesystem();
+                    var ctx = resolutionService.resolve(userId, agentId);
+                    AbstractFilesystem fs = ctx.manager().getFilesystem();
                     if (fs.exists(null, "/skills/" + targetName)
                     && !Boolean.TRUE.equals(req.overwrite())) {
                 throw new ResponseStatusException(
@@ -460,7 +456,7 @@ public class AgentSkillsController {
                         HttpStatus.BAD_GATEWAY,
                         "Marketplace returned empty SKILL.md for: " + req.skillName());
                     }
-                    WorkspaceManager wsm = ctx.workspaceManager();
+                    WorkspaceManager wsm = ctx.manager();
                     wsm.writeUtf8WorkspaceRelative(
                     RuntimeContext.empty(),
                     "skills/" + targetName + "/SKILL.md",
@@ -485,7 +481,7 @@ public class AgentSkillsController {
                             "marketplaceType", meta.repoType(),
                             "originalName", meta.originalName()));
                     lifecycleService.invalidateUca(ctx.ownerId(), agentId);
-                    return readWorkspaceSkill(fs, targetName);
+                    return readWorkspaceSkill(fs, targetName);
     }
 
     // -----------------------------------------------------------------
@@ -517,36 +513,6 @@ public class AgentSkillsController {
         String location = info != null ? info.getLocation() : "";
         boolean writable = info != null ? info.isWritable() : repo.isWriteable();
         return new RepositoryInfo(index, type, location, writable, repo.getSource());
-    }
-
-    private OwnerCtx resolveOwner(String userId, String agentId, AgentDefinition def) {
-        if (catalogService.isGlobal(agentId)) {
-            // Globals never reach the EDIT-tier code paths via the ACL (admin-managed), but be
-            // defensive: route writes to the user's own namespace if somehow reached.
-            return new OwnerCtx(userId, workspaceFactory.forGlobalAgent(userId, agentId));
-        }
-        String ownerId =
-                def != null && def.ownerId() != null
-                ? def.ownerId()
-                : catalogService.findOwnerOf(agentId).orElse(userId);
-        Optional<UserAgentDefinitionStore.StoredEntry> entry =
-                catalogService.findStoredEntry(agentId);
-        String workspacePath =
-                entry.map(UserAgentDefinitionStore.StoredEntry::workspacePath).orElse(null);
-        return new OwnerCtx(ownerId, workspaceFactory.forAgent(ownerId, agentId, workspacePath));
-    }
-
-    /** Read-only filesystem for browsing — RUN-tier callers, no owner mutation. */
-    private AbstractFilesystem resolveFilesystem(String userId, String agentId) {
-        if (catalogService.isGlobal(agentId)) {
-            return workspaceFactory.forGlobalAgent(userId, agentId).getFilesystem();
-        }
-        String ownerId = catalogService.findOwnerOf(agentId).orElse(userId);
-        Optional<UserAgentDefinitionStore.StoredEntry> entry =
-                catalogService.findStoredEntry(agentId);
-        String workspacePath =
-                entry.map(UserAgentDefinitionStore.StoredEntry::workspacePath).orElse(null);
-        return workspaceFactory.forAgent(ownerId, agentId, workspacePath).getFilesystem();
     }
 
     private static void writeResources(
@@ -732,9 +698,6 @@ public class AgentSkillsController {
         }
         return normalized;
     }
-
-    /** (ownerId, workspaceManager) tuple — owner is whose namespace the writes land in. */
-    private record OwnerCtx(String ownerId, WorkspaceManager workspaceManager) {}
 
     private record SkillSize(long totalBytes, int resourceCount) {}
 

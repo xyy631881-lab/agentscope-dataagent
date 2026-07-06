@@ -30,10 +30,8 @@ import io.agentscope.dataagent.agent.activity.AgentActivityStore;
 import io.agentscope.dataagent.agent.catalog.AgentCatalogService;
 import io.agentscope.dataagent.agent.catalog.AgentDefinition;
 import io.agentscope.dataagent.agent.catalog.AgentLifecycleService;
-import io.agentscope.dataagent.agent.catalog.UserAgentDefinitionStore;
 import io.agentscope.dataagent.agent.sharing.AgentAccessGuard;
 import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
-import io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.tools.McpServerConfig;
 import io.agentscope.harness.agent.tools.ToolsConfig;
@@ -46,7 +44,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -143,20 +140,20 @@ public class AgentToolsController {
     private final AgentActivityStore activity;
     private final AgentCatalogService catalogService;
     private final AgentLifecycleService lifecycleService;
-    private final WorkspaceManagerFactory workspaceFactory;
+    private final WorkspaceResolutionService resolutionService;
     private final List<McpCatalogEntry> mcpCatalog;
 
     public AgentToolsController(
             AgentAccessGuard guard,
             AgentActivityStore activity,
             AgentCatalogService catalogService,
-            WorkspaceManagerFactory workspaceFactory,
-            AgentLifecycleService lifecycleService) {
+            AgentLifecycleService lifecycleService,
+            WorkspaceResolutionService resolutionService) {
         this.guard = guard;
         this.activity = activity;
         this.catalogService = catalogService;
         this.lifecycleService = lifecycleService;
-        this.workspaceFactory = workspaceFactory;
+        this.resolutionService = resolutionService;
         this.mcpCatalog = loadMcpCatalog();
     }
 
@@ -169,12 +166,12 @@ public class AgentToolsController {
         String userId = (String) auth.getPrincipal();
 
                     guard.require(userId, agentId, Tier.RUN);
-                    return introspect(userId, agentId);
+                    return introspect(userId, agentId);
     }
 
     private ActiveToolsResponse introspect(String userId, String agentId) {
         List<String> warnings = new ArrayList<>();
-        WorkspaceManager wsm = resolveWorkspaceManager(userId, agentId);
+        WorkspaceManager wsm = resolutionService.resolveManager(userId, agentId);
         try {
             HarnessAgent agent =
                     HarnessAgent.builder()
@@ -235,9 +232,9 @@ public class AgentToolsController {
         String userId = (String) auth.getPrincipal();
 
                     guard.require(userId, agentId, Tier.RUN);
-                    WorkspaceManager wsm = resolveWorkspaceManager(userId, agentId);
+                    WorkspaceManager wsm = resolutionService.resolveManager(userId, agentId);
                     ToolsConfig cfg = readConfig(wsm);
-                    return cfg != null ? cfg : new ToolsConfig();
+                    return cfg != null ? cfg : new ToolsConfig();
     }
 
     @PutMapping("/config")
@@ -251,7 +248,7 @@ public class AgentToolsController {
                     }
                     AgentDefinition def = guard.require(userId, agentId, Tier.EDIT);
                     validate(body);
-                    WorkspaceManager wsm = resolveWorkspaceManager(userId, agentId);
+                    WorkspaceManager wsm = resolutionService.resolveManager(userId, agentId);
                     String json;
                     try {
                         json = MAPPER.writeValueAsString(body);
@@ -281,7 +278,7 @@ public class AgentToolsController {
                                                     ? body.getMcpServers().size()
                                                     : 0));
                     lifecycleService.invalidateUca(ownerId, agentId);
-                    return body;
+                    return body;
     }
 
     private ToolsConfig readConfig(WorkspaceManager wsm) {
@@ -369,7 +366,7 @@ public class AgentToolsController {
         String userId = (String) auth.getPrincipal();
 
                     guard.require(userId, agentId, Tier.RUN);
-                    return BUILTIN_TOOLS;
+                    return BUILTIN_TOOLS;
     }
 
     @GetMapping("/catalog/mcp-servers")
@@ -378,31 +375,12 @@ public class AgentToolsController {
         String userId = (String) auth.getPrincipal();
 
                     guard.require(userId, agentId, Tier.RUN);
-                    return mcpCatalog;
+                    return mcpCatalog;
     }
 
     // -----------------------------------------------------------------
     //  Helpers
     // -----------------------------------------------------------------
-
-    /**
-     * Builds the {@link WorkspaceManager} the agent would use at run time. For globals the user is
-     * passed as both userId and agentId-owner — only runtime data routes are per-(userId, agentId);
-     * the shared workspace content is read from the local disk root. For user-custom agents we look
-     * up the owner via {@link AgentCatalogService#findOwnerOf} so a shared-in user's writes still
-     * land in the original namespace (which is what the agent's HarnessGateway registration uses).
-     */
-    private WorkspaceManager resolveWorkspaceManager(String userId, String agentId) {
-        if (catalogService.isGlobal(agentId)) {
-            return workspaceFactory.forGlobalAgent(userId, agentId);
-        }
-        String ownerId = catalogService.findOwnerOf(agentId).orElse(userId);
-        Optional<UserAgentDefinitionStore.StoredEntry> entry =
-                catalogService.findStoredEntry(agentId);
-        String workspacePath =
-                entry.map(UserAgentDefinitionStore.StoredEntry::workspacePath).orElse(null);
-        return workspaceFactory.forAgent(ownerId, agentId, workspacePath);
-    }
 
     private static List<McpCatalogEntry> loadMcpCatalog() {
         ClassPathResource r = new ClassPathResource("catalog/mcp-servers.json");
