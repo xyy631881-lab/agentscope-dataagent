@@ -1,6 +1,16 @@
 # agentscope-dataagent 项目完整文档
 
 > 版本：2.0.0-SNAPSHOT | 更新时间：2026-07-06
+>
+> **近期重构（2026-07-06）**：
+> - WebFlux → Spring MVC 迁移（SseEmitter 替代 Flux<ServerSentEvent>）
+> - 提取 conversation 域：SessionAgentManager/SessionStore/SessionReadStateStore → ConversationService + JPA (SessionEntity)
+> - 提取 SandboxLifecycleObserver：UserSandboxRegistry 降级为纯容器池
+> - 拆分 DataAgentConfig：440行 → 4个 @ConfigurationProperties + 4个 @Configuration 类
+> - 提取 WorkspaceResolutionService：消除 3 个 Controller 的重复工作空间解析逻辑
+> - 扩展贡献系统：新增 MCP_SERVER 目标类型 + 市场生命周期审计动作
+>
+> **注意**：本文档已更新对已删除的 SessionAgentManager/SessionStore 等类的引用，相关章节已标注删除或替换说明。
 
 ---
 
@@ -21,12 +31,12 @@ dataagent 是一个**多租户、自进化的企业数据分析 Agent 平台**�
 
 | 层 | 技术 |
 |---|---|
-| 框架 | Spring Boot 3 + WebFlux (响应式) |
+| 框架 | Spring Boot 3 + Spring MVC (Tomcat/Servlet) |
 | AI 引擎 | AgentScope 2.0 HarnessAgent (ReAct + Plan Mode + SubagentsMiddleware) |
 | LLM | DashScope (qwen-max) / 可替换 |
 | 沙箱 | Docker (DockerFilesystemSpec, USER 隔离) |
-| 持久化 | 嵌入式 H2 (默认) → MySQL/PostgreSQL (生产) |
-| 分布式 | 可选 Redis (AgentState 兜底 + RemoteFilesystem) |
+| 持久化 | MySQL (默认) + JPA/Hibernate |
+| 分布式 | Redis (AgentStateStore + 会话状态) |
 | 前端 | React SPA (TypeScript + Vite) |
 | 通信 | SSE 流式 + JWT 认证 + REST API |
 
@@ -190,10 +200,12 @@ java -jar target\agentscope-dataagent-2.0.0-SNAPSHOT-exec.jar
 └─────────────────────┬────────────────────────────────────┘
                       ▼
 ┌──────────────────────────────────────────────────────────┐
-│  Spring Boot WebFlux                                      │
+│  Spring Boot MVC (Tomcat)                                │
 │  ┌────────────────────────────────────────────────────┐  │
 │  │ web/config/                                         │  │
-│  │   DataAgentConfig ── 组装 HarnessAgent + Channel    │  │
+│  │   DataAgentConfig ── @ConfigurationProperties 注册  │  │
+│  │   ModelConfig / StateStoreConfig ── 模型 + 状态存储  │  │
+│  │   BootstrapConfig / MarketplaceConfig ── 引导 + 市场 │  │
 │  │   SecurityConfig ── JWT + Spring Security          │  │
 │  │   WebConfig ── CORS                                 │  │
 │  └────────────────────────────────────────────────────┘  │
@@ -203,6 +215,10 @@ java -jar target\agentscope-dataagent-2.0.0-SNAPSHOT-exec.jar
 │  │   sharing/ ── ACL + 权限 + 共享授权                  │  │
 │  │   content/ ── 工作区 + 技能 + 工具 + 绑定            │  │
 │  │   activity/ ── 活动日志                              │  │
+│  └────────────────────────────────────────────────────┘  │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ conversation/ ── 会话域 (JPA: SessionEntity 等)     │  │
+│  │   ConversationService ── 会话 CRUD + 收件箱 + 重置  │  │
 │  └────────────────────────────────────────────────────┘  │
 │  ┌────────────────────────────────────────────────────┐  │
 │  │ web/api/  ── 对话/会话/通道/市场 Controller           │  │
@@ -241,8 +257,8 @@ java -jar target\agentscope-dataagent-2.0.0-SNAPSHOT-exec.jar
 │  ┌────────────────────────────────────────────────────┐  │
 │  │ DataAgentBootstrap ── 编排 Agent + Channel 组装     │  │
 │  │ AgentRuntimeConfigurer ── 统一运行时能力配置          │  │
-│  │ session/SessionAgentManager ── MAIN session 管理    │  │
-│  │ session/SessionStore ── JSON 持久化                 │  │
+│  │ conversation/ ── 会话域 (JPA: SessionEntity +        │  │
+│  │   ConversationService + SessionController)           │  │
 │  │ outbound/ ── 向 IM 通道主动推送消息                   │  │
 │  │ channel/webhook/ ── HTTP Webhook 通道               │  │
 │  │ middleware/ ── 自定义 Middleware                     │  │
@@ -1004,7 +1020,7 @@ Agent 在对话中可调用以下工具（由 [DataAgentToolkit.java](file:///e:
 
 | 文件 | 路径前缀 | 职责 |
 |------|----------|------|
-| [ChatController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/ChatController.java) | `/api/agents/{agentId}/chat` | **核心对话端点**。POST `/stream` (SSE 流式)、POST `/send` (同步)、GET `/session` (会话检查)。**注意**：`stream()` 不调用 SessionAgentManager，会话创建/复用由 harness 框架内部处理；`currentSession()` 才调用 `findByGateKey()` |
+| [ChatController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/ChatController.java) | `/api/agents/{agentId}/chat` | **核心对话端点**。POST `/stream` (SSE 流式)、POST `/send` (同步)、GET `/session` (会话检查)。**注意**：`stream()` 不查会话，会话创建/复用由 harness 框架内部处理；`currentSession()` 通过 `ConversationService` 查询会话 |
 | [SessionController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/SessionController.java) | `/api/agents/{agentId}/sessions` | Session 列表、历史消息、reset/delete、标记已读 |
 | [BindingPersistence.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/BindingPersistence.java) | — | Agent-通道绑定持久化层 |
 | [ChannelDirectoryController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/ChannelDirectoryController.java) | `/api/channels` | 通道目录 |
@@ -1059,13 +1075,14 @@ Agent 在对话中可调用以下工具（由 [DataAgentToolkit.java](file:///e:
 | `JpaUserAgentDefinitionStore.java` | JPA 实现的 UserAgentDefinitionStore |
 | `JpaUserStore.java` | JPA 实现的 UserStore（含 `seedDefaultAdmin()` 注入 admin/admin） |
 
-#### `web/session/` — 会话管理 (3 个)
+#### `web/session/` — 会话管理 (2 个)
 
 | 文件 | 职责 |
 |------|------|
 | [SessionLifecycleScheduler.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/session/SessionLifecycleScheduler.java) | 定时任务：每分钟检查空闲超时会话（默认 30 分钟）自动重置、每日定时重置所有会话、每 5 分钟清理过期/超量会话 |
-| [SessionReadStateStore.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/session/SessionReadStateStore.java) | 用户阅读状态追踪（已读/未读红点） |
 | [SessionTurnParser.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/session/SessionTurnParser.java) | 把 harness 框架写入的 JSONL 日志翻译成结构化对话轮次 |
+
+> **注**：原 `SessionReadStateStore.java` 已在会话域提取重构中删除，已读状态追踪功能由 `conversation/` 包的 `ConversationService` 承担。
 
 #### `web/` 其他文件 (9 个)
 
@@ -1107,17 +1124,12 @@ Agent 在对话中可调用以下工具（由 [DataAgentToolkit.java](file:///e:
 | [DataAgentBootstrap.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/DataAgentBootstrap.java) | **编排核心**。组装 Agent + Session + Channel + Gateway 全链路 |
 | [AgentRuntimeConfigurer.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/AgentRuntimeConfigurer.java) | **统一运行时配置器**。实现 `Consumer<HarnessAgent.Builder>`，被 DataAgentBootstrap（全局 Agent）和 AgentLifecycleService（用户自定义 Agent）共用。配置：StateStore、DockerFilesystemSpec (USER 隔离)、maxRetries=2 + fallback、Plan Mode、Compaction (trigger=30, keep=10)、ToolResultEviction、Memory (throttled flush)、SubagentDeclarations (code-reviewer + report-writer)、PermissionContextState (ALLOW/ASK 规则) |
 
-#### `runtime/session/` — 会话管理 (7 个)
+#### `runtime/session/` — ~~会话管理 (7 个)~~ 已删除
 
-| 文件 | 职责 |
-|------|------|
-| [SessionAgentManager.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/session/SessionAgentManager.java) | **会话查询/管理中枢**（但不创建会话）。四个内存索引。提供查询、重置、删除、过期清理 |
-| [SessionStore.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/session/SessionStore.java) | `sessions.json` 的读写引擎。临时文件+原子重命名保证写入安全 |
-| `SessionEntry.java` | 一条会话档案的 Record |
-| `SessionKind.java` | 会话类型枚举：MAIN / SUBAGENT |
-| `HistoryResult.java` | 读取历史的结果包装 Record |
-| `AgentManagerConfig.java` | 维护策略配置 |
-| `SessionMaintenanceConfig.java` | 过期清理规则 |
+> **整组已删除**（会话域提取重构）。`SessionAgentManager`、`SessionStore`、`SessionEntry`、
+> `SessionKind`、`HistoryResult`、`AgentManagerConfig`、`SessionMaintenanceConfig` 全部移除，
+> 功能由 `conversation/` 包的 `ConversationService` + JPA `SessionEntity` 承接。
+> 会话持久化从 JSON 文件（`sessions.json`）改为 MySQL 表。
 
 #### `runtime/outbound/` — 出站消息 (4 个)
 
@@ -1324,8 +1336,8 @@ java -jar target/agentscope-dataagent-*-exec.jar
 
 | 文件 | 看什么 |
 |------|--------|
-| [DataAgentBootstrap.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/DataAgentBootstrap.java) | 从 `agentscope.json` 构建 HarnessAgent → 创建 Gateway → 绑定 Channel → 初始化 SessionAgentManager |
-| [SessionAgentManager.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/session/SessionAgentManager.java) | 会话查询/管理中枢（但不创建会话）。按 gateKey 索引查 session、reset 会话、维护清理 |
+| [DataAgentBootstrap.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/DataAgentBootstrap.java) | 从 `agentscope.json` 构建 HarnessAgent → 创建 Gateway → 绑定 Channel |
+| [ConversationService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/conversation/ConversationService.java) | 会话查询/管理服务。基于 JPA `SessionEntity`，提供查询、重置、删除（取代已删除的 SessionAgentManager） |
 | [UserSandboxRegistry.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/infrastructure/workspace/UserSandboxRegistry.java) | Docker 沙箱容器池。按 `(userId, agentId)` 懒创建/复用/回收 |
 | [SecurityConfig.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/config/SecurityConfig.java) | JWT 过滤器链、`/api/` 路径权限 |
 
@@ -1473,7 +1485,7 @@ createAndStart()
 
 ### 15.1 核心架构：两个接口各司其职
 
-| 接口 | 方法 | 职责 | 是否调用 SessionAgentManager |
+| 接口 | 方法 | 职责 | 是否调用 ConversationService |
 |------|------|------|---------------------------|
 | `GET /session` | `currentSession()` | 前端探测"有没有进行中的对话" | ✅ 调用 `findByGateKey()` |
 | `POST /stream` | `stream()` | 发送消息，触发 Agent 处理 | ❌ 不调用，会话创建由 harness 框架内部处理 |
@@ -1482,18 +1494,20 @@ createAndStart()
 - `currentSession()` → 算 key → 查会话 → 返回"有/无"（纯查询）
 - `stream()` → 直接发消息 → Gateway 自动处理会话（黑盒）
 
-### 15.2 SessionAgentManager 的真实定位
+### 15.2 ConversationService 的真实定位
 
-**SessionAgentManager 没有任何 `create()`/`register()`/`add()` 方法。** 它是会话的"消费者和管理者"，不是"生产者"。
+**ConversationService 是会话的"消费者和管理者"，不是"生产者"。** 它没有 `create()`/`register()`/`add()` 方法——会话创建由 harness 框架在 `dispatchStream` 内部完成。
 
 | 角色 | 组件 | 职责 |
 |------|------|------|
-| **会话生产者** | harness 框架 | 创建会话、直接写 `sessions.json`、写聊天日志 |
-| **会话消费者/管理者** | SessionAgentManager | 查询、重置、删除、过期清理（启动时从 `sessions.json` 加载数据） |
+| **会话生产者** | harness 框架 | 创建会话、写聊天日志（JSONL） |
+| **会话消费者/管理者** | ConversationService | 查询、重置、删除（基于 JPA `SessionEntity`，数据在 MySQL） |
 
 **数据流**：
 ```
-harness 框架（运行时）──直接写──→ sessions.json ──启动时加载──→ SessionAgentManager（内存索引）
+harness 框架（运行时）──写 JSONL 日志──→ SessionTurnParser 解析
+                                          ↓
+MySQL (SessionEntity) ←── ConversationService 读写 ──→ SessionController
 ```
 
 ### 15.3 用微信类比理解
@@ -1502,10 +1516,9 @@ harness 框架（运行时）──直接写──→ sessions.json ──启动
 |------|--------------|---------|
 | `ChatController` (stream/send) | 发消息/接电话 | **聊天能力**（harness 提供） |
 | `SessionController` | 聊天列表 + 聊天记录 + 删除聊天 | **会话管理 UI** |
-| `SessionAgentManager` | 后台的聊天记录数据库 | **会话数据层** |
-| `SessionStore` | 聊天记录存到手机本地 | **持久化层** |
+| `ConversationService` | 后台的聊天记录数据库 | **会话数据层**（JPA + MySQL） |
+| `SessionEntity` (JPA) | 聊天记录存到云端 | **持久化层**（MySQL 表） |
 | `SessionTurnParser` | 把聊天记录格式化展示 | **日志解析器** |
-| `SessionReadStateStore` | 未读红点提醒 | **已读状态跟踪** |
 | `SessionLifecycleScheduler` | 自动清理过期聊天 | **定时任务** |
 
 **如果你只关心"怎么发消息、怎么收到回复"，那确实不需要任何 Session* 文件。但如果你想做一个完整的聊天产品（有历史记录、有聊天列表、能删除、能重置），那就必须要有这套基础设施。**
@@ -1525,8 +1538,7 @@ harness 框架（运行时）──直接写──→ sessions.json ──启动
 | SandboxLifecycleRecord | ✅ 已支持 | 容器生命周期记录在 MySQL，跨副本可见 |
 | SandboxHeartbeatController | ✅ 已支持 | 心跳上报到共享 DB |
 | **UserSandboxRegistry** | ❌ 纯内存 | `ConcurrentHashMap<Key, Entry>` 副本间不共享，会**为同一用户重复创建容器** |
-| **SessionAgentManager** | ❌ 纯内存 | 4 个 ConcurrentHashMap（sessionsByKey/labelToSessionKey/gateKeyToSessionKey/childrenByParent）跨副本不一致 |
-| **SessionStore (sessions.json)** | ❌ 本地文件 | 无文件锁，多副本并发写互相覆盖 |
+| **ConversationService** | ✅ 已支持 | 会话数据在 MySQL（`SessionEntity` JPA），跨副本天然共享 |
 | **SandboxReaperService** | ❌ 无分布式锁 | 每副本都跑 `@Scheduled` 清理，会重复 `docker rm` + 误杀其他副本活跃容器 |
 | **SharedSandboxFilesystem** | ❌ 绑定单容器 | 持有单个 `Sandbox` 实例，跨副本无法访问容器文件 |
 | **sticky session** | ⚠️ 仅文档约束 | 代码零实现，依赖外部 LB 配置 userId 亲和 |
@@ -1616,7 +1628,7 @@ spec:
 
 | 风险 | 触发场景 | 缓解措施 |
 |---|---|---|
-| **副本下线后用户重路由** | 副本 A 挂了，LB 把 alice 路由到副本 B。B 没有 alice 的内存状态，会重新创建容器+会话 | 副本重启后从 MySQL+Redis 恢复（SessionStore 加载 sessions.json、SandboxLifecycleRecord 查 DB）；用户感知是"会话重置" |
+| **副本下线后用户重路由** | 副本 A 挂了，LB 把 alice 路由到副本 B。B 没有 alice 的内存状态，会重新创建容器+会话 | 副本重启后从 MySQL+Redis 恢复（ConversationService 查 MySQL SessionEntity、SandboxLifecycleRecord 查 DB）；会话数据不丢失 |
 | **SandboxReaperService 误杀** | 副本 A 重启时 `cleanupOnStartup()` 扫 DB 把心跳>1分钟的 ACTIVE 容器全 `docker rm -f`，可能杀掉副本 B 正在用的容器 | **临时缓解**：注释掉 `cleanupOnStartup()` 或加 `instance_id` 字段过滤；**根本解决**：加 ShedLock 分布式锁 |
 
 ### 16.4 要真正支持多副本需做的改造（未来路线图）
@@ -1626,9 +1638,9 @@ spec:
 | 优先级 | 组件 | 改造方案 | 工作量 |
 |---|---|---|---|
 | P0 | SandboxReaperService | 加 ShedLock 分布式锁 + `SandboxLifecycleRecord` 加 `owner_pod` 字段 | 小 |
-| P0 | SessionStore | 从 JSON 文件改为 JPA 表（复用 MySQL） | 中 |
+| ~~P0~~ | ~~SessionStore~~ | ~~从 JSON 文件改为 JPA 表~~ ✅ **已完成**（会话域提取重构：`SessionEntity` + JPA + MySQL） | — |
 | P1 | UserSandboxRegistry | entries 从内存 ConcurrentHashMap 改为 Redis Hash | 大 |
-| P1 | SessionAgentManager | 4 个内存索引改为 Redis Hash + Sorted Set | 大 |
+| ~~P1~~ | ~~SessionAgentManager~~ | ~~4 个内存索引改为 Redis~~ ✅ **已完成**（删除 `SessionAgentManager`，`ConversationService` 基于 MySQL 天然跨副本共享） | — |
 | P3 | SharedSandboxFilesystem | 跨副本容器寻址（或保证 sticky） | 大 |
 
 ---
@@ -1805,7 +1817,7 @@ TOKEN_B=$(curl -s -X POST http://localhost:8082/api/auth/login \
 curl "http://localhost:8082/api/agents/data-agent/chat/session?sessionKey=$SESSION_KEY" \
   -H "Authorization: Bearer $TOKEN_B"
 # 预期：存在（AgentState 在 Redis 共享）
-# 但会话注册表（SessionAgentManager）在副本 B 内存里没有 → 可能返回不存在
+# 会话数据在 MySQL（ConversationService 查 SessionEntity）→ 跨副本一致，不会丢失
 ```
 
 **步骤 3：验证已知风险——容器重复创建**
@@ -1949,7 +1961,7 @@ hey -z 60s -c 50 -m POST \
 | 模块 | 变更 | 效果 |
 |------|------|------|
 | 子代理系统 | 删除自建 SessionsTool(579行)+AnnounceDispatcher(318行)，改用 2.0 SubagentsMiddleware | 子代理原生支持 |
-| Session 管理 | SessionAgentManager 955→270 行，session/ 目录 19→7 文件 | 仅保留注册表 |
+| Session 管理 | SessionAgentManager 955→270 行，session/ 目录 19→7 文件 → 后续完全删除，由 `conversation/` 包（ConversationService + JPA SessionEntity）取代 | 会话数据从 JSON 文件迁移到 MySQL |
 | SSE 事件流 | 3 个 ConcurrentHashMap → 1 个 ToolBuffer | 代码量 -60% |
 | Session 查找 | O(n) 扫描 → O(1) gateKeyToSessionKey 索引 | 性能提升 |
 

@@ -7,7 +7,7 @@ spring:
   profiles:
     default: mysql,redis    # 默认启用 mysql + redis profile：MySQL 数据源 + Redis 分布式 AgentStateStore
   jpa:
-    open-in-view: false  # 关掉懒加载（WebFlux 必须关）
+    open-in-view: false  # 关掉懒加载（避免 Controller 层意外触发 N+1 查询）
     hibernate:
       ddl-auto: validate          # 主配置默认 validate；mysql profile 覆写为 update
     properties:
