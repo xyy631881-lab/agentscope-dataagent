@@ -20,7 +20,7 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
-import io.agentscope.dataagent.web.workspace.UserSandboxRegistry;
+import io.agentscope.dataagent.infrastructure.workspace.UserSandboxRegistry;
 import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxContext;

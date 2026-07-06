@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.api;
+package io.agentscope.dataagent.web.admin;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import io.agentscope.dataagent.web.auth.UserStore;

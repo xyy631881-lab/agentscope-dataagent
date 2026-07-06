@@ -33,7 +33,7 @@ import io.agentscope.dataagent.agent.catalog.AgentLifecycleService;
 import io.agentscope.dataagent.agent.catalog.UserAgentDefinitionStore;
 import io.agentscope.dataagent.agent.sharing.AgentAccessGuard;
 import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
-import io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory;
+import io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.tools.McpServerConfig;
 import io.agentscope.harness.agent.tools.ToolsConfig;

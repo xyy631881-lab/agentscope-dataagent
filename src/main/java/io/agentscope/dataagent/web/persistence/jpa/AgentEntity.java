@@ -38,7 +38,7 @@ import java.util.List;
  *
  * <p>{@code owner_id} is a soft foreign key to {@link UserEntity#getUserId()}. JPA does not
  * manage cascading deletes; the application-level
- * {@link io.agentscope.dataagent.web.api.AdminUserController#delete} flow takes responsibility
+ * {@link io.agentscope.dataagent.web.admin.AdminUserController#delete} flow takes responsibility
  * for revoking grants and removing the agents owned by a deleted user. The schema keeps
  * {@code owner_id} as an indexed plain column so deployments may add a database-level
  * {@code FOREIGN KEY ... ON DELETE CASCADE} via migration scripts when desired.
@@ -85,7 +85,7 @@ public class AgentEntity {
      * User-supplied workspace path for this agent (verbatim, may be {@code null}). When non-null,
      * absolute paths are used as-is on disk; relative paths resolve under
      * {@code ${cwd}/.agentscope/}. When {@code null}, the agent id is used in place of the path.
-     * See {@link io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory#resolveAgentDataPath}
+     * See {@link io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory#resolveAgentDataPath}
      * for the full resolution rules. Authoritative — runtime code reads this column to locate
      * per-agent data on disk.
      */

@@ -65,7 +65,7 @@ public class AgentLifecycleService {
     private final UserAgentDefinitionStore store;
     private final Model model;
     private final AgentRuntimeConfigurer runtimeConfigurer;
-    private final io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory workspaceManagerFactory;
+    private final io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory workspaceManagerFactory;
 
     /**
      * In-flight cache of dynamically-registered gateway agent IDs. Key: {@code {userId}/{agentId}},
@@ -78,7 +78,7 @@ public class AgentLifecycleService {
             UserAgentDefinitionStore store,
             Optional<Model> modelOpt,
             AgentRuntimeConfigurer runtimeConfigurer,
-            io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory workspaceManagerFactory) {
+            io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory workspaceManagerFactory) {
         this.builderBootstrap = builderBootstrap;
         this.store = store;
         this.model = modelOpt.orElse(null);

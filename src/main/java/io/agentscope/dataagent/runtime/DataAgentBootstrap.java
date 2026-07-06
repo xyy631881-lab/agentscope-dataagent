@@ -25,7 +25,7 @@ import io.agentscope.dataagent.runtime.config.ChannelConfigEntry;
 import io.agentscope.dataagent.runtime.config.ChannelTypeRegistry;
 import io.agentscope.dataagent.runtime.config.SkillRepositorySupport;
 import io.agentscope.harness.agent.gateway.HarnessGateway;
-import io.agentscope.dataagent.web.workspace.UserSandboxRegistry;
+import io.agentscope.dataagent.infrastructure.workspace.UserSandboxRegistry;
 import io.agentscope.dataagent.runtime.outbound.OutboundTool;
 import io.agentscope.dataagent.runtime.session.AgentManagerConfig;
 import io.agentscope.dataagent.runtime.session.SessionAgentManager;

@@ -16,7 +16,7 @@
 package io.agentscope.dataagent.runtime.marketplace;
 
 import io.agentscope.dataagent.runtime.config.MarketplaceConfigEntry;
-import io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory;
+import io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory;
 import jakarta.annotation.PreDestroy;
 import java.util.ArrayList;
 import java.util.Collection;

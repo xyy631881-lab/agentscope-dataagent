@@ -23,7 +23,7 @@ import io.agentscope.dataagent.web.scaffold.WorkspaceScaffolder;
 import io.agentscope.dataagent.agent.sharing.AgentAclService;
 import io.agentscope.dataagent.agent.sharing.AgentShareGrant;
 import io.agentscope.dataagent.web.template.TemplateRegistry;
-import io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory;
+import io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory;
 import io.agentscope.harness.agent.HarnessAgent;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;

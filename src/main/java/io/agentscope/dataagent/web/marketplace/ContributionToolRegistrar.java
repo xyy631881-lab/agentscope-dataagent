@@ -16,7 +16,7 @@
 package io.agentscope.dataagent.web.marketplace;
 
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
-import io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory;
+import io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory;
 import io.agentscope.harness.agent.HarnessAgent;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;

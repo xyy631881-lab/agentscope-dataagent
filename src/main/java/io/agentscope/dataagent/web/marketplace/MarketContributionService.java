@@ -21,7 +21,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.web.persistence.jpa.ContributionEntity;
 import io.agentscope.dataagent.web.persistence.jpa.ContributionRepository;
-import io.agentscope.dataagent.web.workspace.UserSandboxRegistry;
+import io.agentscope.dataagent.infrastructure.workspace.UserSandboxRegistry;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;

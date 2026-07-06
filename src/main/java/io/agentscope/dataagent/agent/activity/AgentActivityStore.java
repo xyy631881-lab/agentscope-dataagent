@@ -18,7 +18,7 @@ package io.agentscope.dataagent.agent.activity;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.dataagent.web.auth.UserStore;
 import io.agentscope.dataagent.agent.catalog.UserAgentDefinitionStore;
-import io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory;
+import io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.model.FileInfo;
 import io.agentscope.harness.agent.filesystem.model.GlobResult;

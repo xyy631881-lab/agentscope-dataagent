@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.workspace;
+package io.agentscope.dataagent.infrastructure.workspace;
 
 import io.agentscope.dataagent.web.persistence.jpa.SandboxLifecycleRecord;
 import io.agentscope.dataagent.web.persistence.jpa.SandboxLifecycleRecord.Status;

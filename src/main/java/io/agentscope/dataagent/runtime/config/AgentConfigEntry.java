@@ -77,7 +77,7 @@ public class AgentConfigEntry {
     /**
      * 分层 Skill 仓库。每个条目按顺序追加到 Agent 的有效
      * 因此较早的条目在 Skill 名称冲突时优先。{@code workspace/skills/} 覆盖层是隐式的，
-     * 由 {@link io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory} 自动添加——
+     * 由 {@link io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory} 自动添加——
      * 请勿在此列出。
      */
     @JsonProperty("skillRepositories")

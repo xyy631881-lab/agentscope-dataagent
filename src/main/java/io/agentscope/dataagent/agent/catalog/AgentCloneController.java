@@ -23,7 +23,7 @@ import io.agentscope.dataagent.agent.catalog.AgentDefinition;
 import io.agentscope.dataagent.agent.sharing.AgentAccessGuard;
 import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
 import io.agentscope.dataagent.web.util.WorkspaceCopier;
-import io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory;
+import io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

@@ -28,7 +28,7 @@ import io.agentscope.dataagent.runtime.marketplace.GitDataAgentMarketplace;
 import io.agentscope.dataagent.runtime.marketplace.LocalApprovalMarketplace;
 import io.agentscope.dataagent.runtime.marketplace.NacosDataAgentMarketplace;
 import io.agentscope.dataagent.runtime.marketplace.UserMarketplaceRegistry.DataAgentMarketplaceFactoryRegistration;
-import io.agentscope.dataagent.web.workspace.UserSandboxRegistry;
+import io.agentscope.dataagent.infrastructure.workspace.UserSandboxRegistry;
 import io.agentscope.harness.agent.gateway.channel.ChannelConfig;
 import io.agentscope.harness.agent.gateway.channel.DmScope;
 import io.agentscope.harness.agent.gateway.channel.chatui.ChatUiChannel;

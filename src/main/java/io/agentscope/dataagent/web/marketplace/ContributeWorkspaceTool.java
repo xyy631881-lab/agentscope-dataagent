@@ -19,7 +19,7 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
 import io.agentscope.dataagent.web.persistence.jpa.ContributionEntity;
-import io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory;
+import io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import java.nio.file.Paths;
 import java.util.ArrayList;

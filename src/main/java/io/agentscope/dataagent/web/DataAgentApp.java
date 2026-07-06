@@ -15,7 +15,7 @@
  */
 package io.agentscope.dataagent.web;
 
-import io.agentscope.dataagent.web.api.SandboxReaperService;
+import io.agentscope.dataagent.web.sandbox.SandboxReaperService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;

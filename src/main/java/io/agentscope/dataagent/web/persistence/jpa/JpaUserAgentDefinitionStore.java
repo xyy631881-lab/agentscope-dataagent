@@ -21,7 +21,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.dataagent.runtime.config.SkillRepositoryConfigEntry;
 import io.agentscope.dataagent.agent.catalog.UserAgentDefinitionStore;
 import io.agentscope.dataagent.agent.sharing.AgentShareGrant;
-import io.agentscope.dataagent.web.workspace.WorkspaceManagerFactory;
+import io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
