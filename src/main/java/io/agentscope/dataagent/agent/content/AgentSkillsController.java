@@ -62,7 +62,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * Per-agent skills management for the platform. Mirrors claw's {@code AgentSkillsController} in
@@ -91,7 +90,6 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/agents/{agentId}/skills")
 public class AgentSkillsController {
-
     private static final Logger log = LoggerFactory.getLogger(AgentSkillsController.class);
 
     private static final Pattern FRONT_MATTER =
@@ -134,117 +132,109 @@ public class AgentSkillsController {
     // -----------------------------------------------------------------
 
     @GetMapping("/workspace")
-    public Mono<List<WorkspaceSkillInfo>> listWorkspaceSkills(
+    public List<WorkspaceSkillInfo> listWorkspaceSkills(
             @PathVariable String agentId, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
                     AbstractFilesystem fs = resolveFilesystem(userId, agentId);
                     LsResult ls = fs.ls(null, "/skills");
                     if (ls == null || !ls.isSuccess() || ls.entries() == null) {
-                        return List.<WorkspaceSkillInfo>of();
+                return List.<WorkspaceSkillInfo>of();
                     }
                     List<WorkspaceSkillInfo> out = new ArrayList<>();
                     for (FileInfo info : ls.entries()) {
-                        if (!info.isDirectory()) continue;
-                        String dirName = leafName(info.path());
-                        if (dirName.isBlank()) continue;
-                        WorkspaceSkillInfo skill = readWorkspaceSkill(fs, dirName);
-                        if (skill != null) out.add(skill);
+                if (!info.isDirectory()) continue;
+                String dirName = leafName(info.path());
+                if (dirName.isBlank()) continue;
+                WorkspaceSkillInfo skill = readWorkspaceSkill(fs, dirName);
+                if (skill != null) out.add(skill);
                     }
                     out.sort(Comparator.comparing(WorkspaceSkillInfo::name));
-                    return out;
-                });
+                    return out;
     }
 
     @GetMapping("/workspace/{name}")
-    public Mono<WorkspaceSkillDetail> getWorkspaceSkill(
+    public WorkspaceSkillDetail getWorkspaceSkill(
             @PathVariable String agentId, @PathVariable String name, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
                     validateSkillName(name);
                     AbstractFilesystem fs = resolveFilesystem(userId, agentId);
                     String markdown = readUtf8(fs, "/skills/" + name + "/SKILL.md");
                     if (markdown == null) {
-                        throw new ResponseStatusException(
-                                HttpStatus.NOT_FOUND, "SKILL.md missing for: " + name);
+                throw new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "SKILL.md missing for: " + name);
                     }
                     Map<String, String> resources = collectResources(fs, name);
                     String description = parseFrontMatterField(markdown, DESCRIPTION_LINE);
-                    return new WorkspaceSkillDetail(name, description, markdown, resources);
-                });
+                    return new WorkspaceSkillDetail(name, description, markdown, resources);
     }
 
     @PutMapping("/workspace/{name}")
-    public Mono<WorkspaceSkillInfo> upsertWorkspaceSkill(
+    public WorkspaceSkillInfo upsertWorkspaceSkill(
             @PathVariable String agentId,
             @PathVariable String name,
             @RequestBody WorkspaceSkillUpsertRequest req,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     AgentDefinition def = guard.require(userId, agentId, Tier.EDIT);
                     validateSkillName(name);
                     if (req == null || req.markdown() == null || req.markdown().isBlank()) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_REQUEST, "markdown is required");
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "markdown is required");
                     }
                     OwnerCtx ctx = resolveOwner(userId, agentId, def);
                     WorkspaceManager wsm = ctx.workspaceManager();
                     wsm.writeUtf8WorkspaceRelative(
-                            RuntimeContext.empty(), "skills/" + name + "/SKILL.md", req.markdown());
+                    RuntimeContext.empty(), "skills/" + name + "/SKILL.md", req.markdown());
                     if (req.resources() != null) {
-                        for (Map.Entry<String, String> e : req.resources().entrySet()) {
-                            String key = e.getKey();
-                            if (key == null || key.isBlank()) continue;
-                            String safe = sanitiseRelativePath(key);
-                            wsm.writeUtf8WorkspaceRelative(
-                                    RuntimeContext.empty(),
-                                    "skills/" + name + "/" + safe,
-                                    e.getValue() != null ? e.getValue() : "");
-                        }
+                for (Map.Entry<String, String> e : req.resources().entrySet()) {
+                    String key = e.getKey();
+                    if (key == null || key.isBlank()) continue;
+                    String safe = sanitiseRelativePath(key);
+                    wsm.writeUtf8WorkspaceRelative(
+                            RuntimeContext.empty(),
+                            "skills/" + name + "/" + safe,
+                            e.getValue() != null ? e.getValue() : "");
+                }
                     }
                     activity.record(
-                            ctx.ownerId(),
-                            agentId,
-                            activity.actor(userId),
-                            ActivityEvent.Action.EDIT_FILE,
-                            "skills/" + name,
-                            null);
+                    ctx.ownerId(),
+                    agentId,
+                    activity.actor(userId),
+                    ActivityEvent.Action.EDIT_FILE,
+                    "skills/" + name,
+                    null);
                     lifecycleService.invalidateUca(ctx.ownerId(), agentId);
-                    return readWorkspaceSkill(wsm.getFilesystem(), name);
-                });
+                    return readWorkspaceSkill(wsm.getFilesystem(), name);
     }
 
     @DeleteMapping("/workspace/{name}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public Mono<Void> deleteWorkspaceSkill(
+    public void deleteWorkspaceSkill(
             @PathVariable String agentId, @PathVariable String name, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromRunnable(
-                () -> {
+
                     AgentDefinition def = guard.require(userId, agentId, Tier.EDIT);
                     validateSkillName(name);
                     OwnerCtx ctx = resolveOwner(userId, agentId, def);
                     AbstractFilesystem fs = ctx.workspaceManager().getFilesystem();
                     if (!fs.exists(null, "/skills/" + name)) {
-                        throw new ResponseStatusException(
-                                HttpStatus.NOT_FOUND, "Skill not found: " + name);
+                throw new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Skill not found: " + name);
                     }
                     fs.delete(null, "/skills/" + name);
                     activity.record(
-                            ctx.ownerId(),
-                            agentId,
-                            activity.actor(userId),
-                            ActivityEvent.Action.DELETE_FILE,
-                            "skills/" + name,
-                            null);
-                    lifecycleService.invalidateUca(ctx.ownerId(), agentId);
-                });
+                    ctx.ownerId(),
+                    agentId,
+                    activity.actor(userId),
+                    ActivityEvent.Action.DELETE_FILE,
+                    "skills/" + name,
+                    null);
+                    lifecycleService.invalidateUca(ctx.ownerId(), agentId);
     }
 
     // -----------------------------------------------------------------
@@ -252,260 +242,250 @@ public class AgentSkillsController {
     // -----------------------------------------------------------------
 
     @GetMapping("/repositories")
-    public Mono<List<RepositoryInfo>> listRepositories(
+    public List<RepositoryInfo> listRepositories(
             @PathVariable String agentId, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
                     List<AgentSkillRepository> repos = repositoriesFor(userId, agentId);
                     List<RepositoryInfo> out = new ArrayList<>();
                     for (int i = 0; i < repos.size(); i++) {
-                        out.add(toRepositoryInfo(i, repos.get(i)));
+                out.add(toRepositoryInfo(i, repos.get(i)));
                     }
-                    return out;
-                });
+                    return out;
     }
 
     @GetMapping("/repositories/{index}/skills")
-    public Mono<List<MarketSkillInfo>> listRepositorySkills(
+    public List<MarketSkillInfo> listRepositorySkills(
             @PathVariable String agentId, @PathVariable int index, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
                     AgentSkillRepository repo = repoAt(userId, agentId, index);
                     List<AgentSkill> skills;
                     try {
-                        skills = repo.getAllSkills();
+                skills = repo.getAllSkills();
                     } catch (RuntimeException e) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_GATEWAY,
-                                "Repository read failed: " + e.getMessage());
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_GATEWAY,
+                        "Repository read failed: " + e.getMessage());
                     }
                     List<MarketSkillInfo> out = new ArrayList<>();
                     if (skills != null) {
-                        for (AgentSkill s : skills) {
-                            if (s == null) continue;
-                            out.add(
-                                    new MarketSkillInfo(
-                                            s.getName(),
-                                            s.getDescription(),
-                                            s.getSource(),
-                                            s.getResources() != null
-                                                    ? s.getResources().size()
-                                                    : 0));
-                        }
+                for (AgentSkill s : skills) {
+                    if (s == null) continue;
+                    out.add(
+                            new MarketSkillInfo(
+                                    s.getName(),
+                                    s.getDescription(),
+                                    s.getSource(),
+                                    s.getResources() != null
+                                            ? s.getResources().size()
+                                            : 0));
+                }
                     }
                     out.sort(Comparator.comparing(MarketSkillInfo::name));
-                    return out;
-                });
+                    return out;
     }
 
     @GetMapping("/repositories/{index}/skills/{name}")
-    public Mono<MarketSkillDetail> getRepositorySkill(
+    public MarketSkillDetail getRepositorySkill(
             @PathVariable String agentId,
             @PathVariable int index,
             @PathVariable String name,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
                     validateSkillName(name);
                     AgentSkillRepository repo = repoAt(userId, agentId, index);
                     AgentSkill skill;
                     try {
-                        skill = repo.getSkill(name);
+                skill = repo.getSkill(name);
                     } catch (RuntimeException e) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_GATEWAY,
-                                "Repository read failed: " + e.getMessage());
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_GATEWAY,
+                        "Repository read failed: " + e.getMessage());
                     }
                     if (skill == null) {
-                        throw new ResponseStatusException(
-                                HttpStatus.NOT_FOUND, "Skill not found in repository: " + name);
+                throw new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Skill not found in repository: " + name);
                     }
                     return new MarketSkillDetail(
-                            skill.getName(),
-                            skill.getDescription(),
-                            skill.getSource(),
-                            skill.getSkillContent(),
-                            skill.getResources() != null
-                                    ? new LinkedHashMap<>(skill.getResources())
-                                    : Map.of());
-                });
+                    skill.getName(),
+                    skill.getDescription(),
+                    skill.getSource(),
+                    skill.getSkillContent(),
+                    skill.getResources() != null
+                            ? new LinkedHashMap<>(skill.getResources())
+                            : Map.of());
     }
 
     @PostMapping("/workspace/install")
-    public Mono<WorkspaceSkillInfo> installFromRepository(
+    public WorkspaceSkillInfo installFromRepository(
             @PathVariable String agentId, @RequestBody InstallRequest req, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     if (req == null || req.skillName() == null || req.skillName().isBlank()) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_REQUEST, "skillName is required");
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "skillName is required");
                     }
                     AgentDefinition def = guard.require(userId, agentId, Tier.EDIT);
                     validateSkillName(req.skillName());
                     AgentSkillRepository repo = repoAt(userId, agentId, req.repoIndex());
                     AgentSkill skill;
                     try {
-                        skill = repo.getSkill(req.skillName());
+                skill = repo.getSkill(req.skillName());
                     } catch (RuntimeException e) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_GATEWAY,
-                                "Repository read failed: " + e.getMessage());
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_GATEWAY,
+                        "Repository read failed: " + e.getMessage());
                     }
                     if (skill == null) {
-                        throw new ResponseStatusException(
-                                HttpStatus.NOT_FOUND,
-                                "Skill not found in repository: " + req.skillName());
+                throw new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Skill not found in repository: " + req.skillName());
                     }
                     String targetName =
-                            (req.targetName() != null && !req.targetName().isBlank())
-                                    ? req.targetName()
-                                    : skill.getName();
+                    (req.targetName() != null && !req.targetName().isBlank())
+                            ? req.targetName()
+                            : skill.getName();
                     validateSkillName(targetName);
 
                     OwnerCtx ctx = resolveOwner(userId, agentId, def);
                     AbstractFilesystem fs = ctx.workspaceManager().getFilesystem();
                     if (fs.exists(null, "/skills/" + targetName)
-                            && !Boolean.TRUE.equals(req.overwrite())) {
-                        throw new ResponseStatusException(
-                                HttpStatus.CONFLICT,
-                                "Workspace skill already exists: " + targetName);
+                    && !Boolean.TRUE.equals(req.overwrite())) {
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT,
+                        "Workspace skill already exists: " + targetName);
                     }
                     if (fs.exists(null, "/skills/" + targetName)) {
-                        fs.delete(null, "/skills/" + targetName);
+                fs.delete(null, "/skills/" + targetName);
                     }
                     String markdown = skill.getSkillContent();
                     if (markdown == null || markdown.isBlank()) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_GATEWAY,
-                                "Repository returned empty SKILL.md for: " + req.skillName());
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_GATEWAY,
+                        "Repository returned empty SKILL.md for: " + req.skillName());
                     }
                     WorkspaceManager wsm = ctx.workspaceManager();
                     wsm.writeUtf8WorkspaceRelative(
-                            RuntimeContext.empty(), "skills/" + targetName + "/SKILL.md", markdown);
+                    RuntimeContext.empty(), "skills/" + targetName + "/SKILL.md", markdown);
                     writeResources(wsm, targetName, skill.getResources());
                     AgentSkillRepositoryInfo repoInfo = repo.getRepositoryInfo();
                     SkillMarketplaceMeta meta =
-                            new SkillMarketplaceMeta(
-                                    repoInfo != null ? repoInfo.getType() : "unknown",
-                                    repoInfo != null ? repoInfo.getLocation() : "",
-                                    skill.getName(),
-                                    Instant.now().toString());
+                    new SkillMarketplaceMeta(
+                            repoInfo != null ? repoInfo.getType() : "unknown",
+                            repoInfo != null ? repoInfo.getLocation() : "",
+                            skill.getName(),
+                            Instant.now().toString());
                     writeInstallMeta(wsm, targetName, meta);
                     activity.record(
-                            ctx.ownerId(),
-                            agentId,
-                            activity.actor(userId),
-                            ActivityEvent.Action.CREATE_FILE,
-                            "skills/" + targetName,
-                            Map.of(
-                                    "source", "repository",
-                                    "repoType", meta.repoType(),
-                                    "originalName", meta.originalName()));
+                    ctx.ownerId(),
+                    agentId,
+                    activity.actor(userId),
+                    ActivityEvent.Action.CREATE_FILE,
+                    "skills/" + targetName,
+                    Map.of(
+                            "source", "repository",
+                            "repoType", meta.repoType(),
+                            "originalName", meta.originalName()));
                     lifecycleService.invalidateUca(ctx.ownerId(), agentId);
-                    return readWorkspaceSkill(fs, targetName);
-                });
+                    return readWorkspaceSkill(fs, targetName);
     }
 
     @PostMapping("/workspace/marketplace-install")
-    public Mono<WorkspaceSkillInfo> installFromMarketplace(
+    public WorkspaceSkillInfo installFromMarketplace(
             @PathVariable String agentId,
             @RequestBody MarketplaceInstallRequest req,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     if (req == null
-                            || req.marketplaceId() == null
-                            || req.marketplaceId().isBlank()) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_REQUEST, "marketplaceId is required");
+                    || req.marketplaceId() == null
+                    || req.marketplaceId().isBlank()) {
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "marketplaceId is required");
                     }
                     if (req.skillName() == null || req.skillName().isBlank()) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_REQUEST, "skillName is required");
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "skillName is required");
                     }
                     AgentDefinition def = guard.require(userId, agentId, Tier.EDIT);
                     validateSkillName(req.skillName());
                     // 404 (not 403) for cross-user lookups so we don't leak the existence of
                     // another user's marketplace ids.
                     DataAgentMarketplace mp =
-                            marketplaceRegistry
-                                    .find(userId, req.marketplaceId())
-                                    .orElseThrow(
-                                            () ->
-                                                    new ResponseStatusException(
-                                                            HttpStatus.NOT_FOUND,
-                                                            "Marketplace not registered: "
-                                                                    + req.marketplaceId()));
+                    marketplaceRegistry
+                            .find(userId, req.marketplaceId())
+                            .orElseThrow(
+                                    () ->
+                                            new ResponseStatusException(
+                                                    HttpStatus.NOT_FOUND,
+                                                    "Marketplace not registered: "
+                                                            + req.marketplaceId()));
                     MarketSkillContent content;
                     try {
-                        content = mp.fetch(req.skillName());
+                content = mp.fetch(req.skillName());
                     } catch (RuntimeException e) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_GATEWAY,
-                                "Marketplace fetch failed: " + e.getMessage());
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_GATEWAY,
+                        "Marketplace fetch failed: " + e.getMessage());
                     }
                     if (content == null) {
-                        throw new ResponseStatusException(
-                                HttpStatus.NOT_FOUND,
-                                "Skill not found in marketplace: " + req.skillName());
+                throw new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Skill not found in marketplace: " + req.skillName());
                     }
                     String targetName =
-                            (req.targetName() != null && !req.targetName().isBlank())
-                                    ? req.targetName()
-                                    : content.name();
+                    (req.targetName() != null && !req.targetName().isBlank())
+                            ? req.targetName()
+                            : content.name();
                     validateSkillName(targetName);
 
                     OwnerCtx ctx = resolveOwner(userId, agentId, def);
                     AbstractFilesystem fs = ctx.workspaceManager().getFilesystem();
                     if (fs.exists(null, "/skills/" + targetName)
-                            && !Boolean.TRUE.equals(req.overwrite())) {
-                        throw new ResponseStatusException(
-                                HttpStatus.CONFLICT,
-                                "Workspace skill already exists: " + targetName);
+                    && !Boolean.TRUE.equals(req.overwrite())) {
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT,
+                        "Workspace skill already exists: " + targetName);
                     }
                     if (fs.exists(null, "/skills/" + targetName)) {
-                        fs.delete(null, "/skills/" + targetName);
+                fs.delete(null, "/skills/" + targetName);
                     }
                     if (content.markdown() == null || content.markdown().isBlank()) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_GATEWAY,
-                                "Marketplace returned empty SKILL.md for: " + req.skillName());
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_GATEWAY,
+                        "Marketplace returned empty SKILL.md for: " + req.skillName());
                     }
                     WorkspaceManager wsm = ctx.workspaceManager();
                     wsm.writeUtf8WorkspaceRelative(
-                            RuntimeContext.empty(),
-                            "skills/" + targetName + "/SKILL.md",
-                            content.markdown());
+                    RuntimeContext.empty(),
+                    "skills/" + targetName + "/SKILL.md",
+                    content.markdown());
                     writeResources(wsm, targetName, content.resources());
                     SkillMarketplaceMeta meta =
-                            new SkillMarketplaceMeta(
-                                    mp.type(),
-                                    mp.displayLocation(),
-                                    content.name(),
-                                    Instant.now().toString());
+                    new SkillMarketplaceMeta(
+                            mp.type(),
+                            mp.displayLocation(),
+                            content.name(),
+                            Instant.now().toString());
                     writeInstallMeta(wsm, targetName, meta);
                     activity.record(
-                            ctx.ownerId(),
-                            agentId,
-                            activity.actor(userId),
-                            ActivityEvent.Action.CREATE_FILE,
-                            "skills/" + targetName,
-                            Map.of(
-                                    "source", "marketplace",
-                                    "marketplaceId", req.marketplaceId(),
-                                    "marketplaceType", meta.repoType(),
-                                    "originalName", meta.originalName()));
+                    ctx.ownerId(),
+                    agentId,
+                    activity.actor(userId),
+                    ActivityEvent.Action.CREATE_FILE,
+                    "skills/" + targetName,
+                    Map.of(
+                            "source", "marketplace",
+                            "marketplaceId", req.marketplaceId(),
+                            "marketplaceType", meta.repoType(),
+                            "originalName", meta.originalName()));
                     lifecycleService.invalidateUca(ctx.ownerId(), agentId);
-                    return readWorkspaceSkill(fs, targetName);
-                });
+                    return readWorkspaceSkill(fs, targetName);
     }
 
     // -----------------------------------------------------------------
@@ -547,8 +527,8 @@ public class AgentSkillsController {
         }
         String ownerId =
                 def != null && def.ownerId() != null
-                        ? def.ownerId()
-                        : catalogService.findOwnerOf(agentId).orElse(userId);
+                ? def.ownerId()
+                : catalogService.findOwnerOf(agentId).orElse(userId);
         Optional<UserAgentDefinitionStore.StoredEntry> entry =
                 catalogService.findStoredEntry(agentId);
         String workspacePath =
@@ -635,7 +615,7 @@ public class AgentSkillsController {
                 "/skills/" + dirName + "/",
                 (relativePath, absolutePath) -> {
                     if (relativePath.equals("SKILL.md") || relativePath.equals(INSTALL_META_FILE)) {
-                        return;
+                return;
                     }
                     String content = readUtf8(fs, absolutePath);
                     out.put(relativePath, content != null ? content : "");
@@ -680,7 +660,7 @@ public class AgentSkillsController {
                 walk(fs, abs, relativeBase, visitor);
             } else {
                 String rel =
-                        abs.startsWith(relativeBase) ? abs.substring(relativeBase.length()) : name;
+                abs.startsWith(relativeBase) ? abs.substring(relativeBase.length()) : name;
                 visitor.visit(rel, abs);
             }
         }

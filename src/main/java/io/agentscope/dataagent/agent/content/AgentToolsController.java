@@ -61,7 +61,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * Agent 在平台多租户护栏下的工具管理端点。镜像
@@ -166,13 +165,11 @@ public class AgentToolsController {
     // -----------------------------------------------------------------
 
     @GetMapping("/active")
-    public Mono<ActiveToolsResponse> active(@PathVariable String agentId, Authentication auth) {
+    public ActiveToolsResponse active(@PathVariable String agentId, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
-                    return introspect(userId, agentId);
-                });
+                    return introspect(userId, agentId);
     }
 
     private ActiveToolsResponse introspect(String userId, String agentId) {
@@ -234,23 +231,20 @@ public class AgentToolsController {
     // -----------------------------------------------------------------
 
     @GetMapping("/config")
-    public Mono<ToolsConfig> getConfig(@PathVariable String agentId, Authentication auth) {
+    public ToolsConfig getConfig(@PathVariable String agentId, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
                     WorkspaceManager wsm = resolveWorkspaceManager(userId, agentId);
                     ToolsConfig cfg = readConfig(wsm);
-                    return cfg != null ? cfg : new ToolsConfig();
-                });
+                    return cfg != null ? cfg : new ToolsConfig();
     }
 
     @PutMapping("/config")
-    public Mono<ToolsConfig> putConfig(
+    public ToolsConfig putConfig(
             @PathVariable String agentId, @RequestBody ToolsConfig body, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     if (body == null) {
                         throw new ResponseStatusException(
                                 HttpStatus.BAD_REQUEST, "Request body is required");
@@ -287,8 +281,7 @@ public class AgentToolsController {
                                                     ? body.getMcpServers().size()
                                                     : 0));
                     lifecycleService.invalidateUca(ownerId, agentId);
-                    return body;
-                });
+                    return body;
     }
 
     private ToolsConfig readConfig(WorkspaceManager wsm) {
@@ -371,25 +364,21 @@ public class AgentToolsController {
     // -----------------------------------------------------------------
 
     @GetMapping("/catalog/builtins")
-    public Mono<List<BuiltinToolInfo>> catalogBuiltins(
+    public List<BuiltinToolInfo> catalogBuiltins(
             @PathVariable String agentId, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
-                    return BUILTIN_TOOLS;
-                });
+                    return BUILTIN_TOOLS;
     }
 
     @GetMapping("/catalog/mcp-servers")
-    public Mono<List<McpCatalogEntry>> catalogMcpServers(
+    public List<McpCatalogEntry> catalogMcpServers(
             @PathVariable String agentId, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
-                    return mcpCatalog;
-                });
+                    return mcpCatalog;
     }
 
     // -----------------------------------------------------------------

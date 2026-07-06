@@ -23,7 +23,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * AI 辅助的 Agent 草稿端点。
@@ -38,7 +37,6 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/agents")
 public class AgentDraftController {
-
     private final AgentDraftService service;
 
     public AgentDraftController(AgentDraftService service) {
@@ -46,10 +44,9 @@ public class AgentDraftController {
     }
 
     @PostMapping("/draft")
-    public Mono<AgentDraft> draft(@RequestBody DraftRequest req, Authentication auth) {
+    public AgentDraft draft(@RequestBody DraftRequest req, Authentication auth) {
         if (req == null || req.description() == null || req.description().isBlank()) {
-            return Mono.error(
-                    new ResponseStatusException(HttpStatus.BAD_REQUEST, "description 是必填项"));
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "description 是必填项");
         }
         return service.draft(req.description());
     }

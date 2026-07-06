@@ -30,7 +30,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * User-facing REST surface for nominating workspace artifacts for promotion to the shared
@@ -47,7 +46,6 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/me/contributions")
 public class MarketContributionController {
-
     private final MarketContributionService service;
     private final WorkspaceManagerFactory workspaceFactory;
 
@@ -58,61 +56,56 @@ public class MarketContributionController {
     }
 
     @PostMapping
-    public Mono<ContributionView> submit(@RequestBody SubmitRequest req, Authentication auth) {
+    public ContributionView submit(@RequestBody SubmitRequest req, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     try {
-                        ContributionEntity saved =
-                                service.submit(
-                                        userId,
-                                        req.sourceAgentId(),
-                                        req.targetAgentId(),
-                                        req.targetType(),
-                                        req.targetPath(),
-                                        req.rationale(),
-                                        req.payload());
-                        return ContributionView.from(saved);
+                ContributionEntity saved =
+                        service.submit(
+                                userId,
+                                req.sourceAgentId(),
+                                req.targetAgentId(),
+                                req.targetType(),
+                                req.targetPath(),
+                                req.rationale(),
+                                req.payload());
+                return ContributionView.from(saved);
                     } catch (IllegalArgumentException e) {
-                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
-                    }
-                });
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+                    }
     }
 
     @PostMapping("/from-workspace")
-    public Mono<ContributionView> submitFromWorkspace(
+    public ContributionView submitFromWorkspace(
             @RequestBody FromWorkspaceRequest req, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     try {
-                        List<FileEntry> payload =
-                                harvestFromUserSandbox(
-                                        userId,
-                                        req.sourceAgentId(),
-                                        req.targetType(),
-                                        req.sourcePaths());
-                        ContributionEntity saved =
-                                service.submit(
-                                        userId,
-                                        req.sourceAgentId(),
-                                        req.targetAgentId(),
-                                        req.targetType(),
-                                        req.targetPath(),
-                                        req.rationale(),
-                                        payload);
-                        return ContributionView.from(saved);
+                List<FileEntry> payload =
+                        harvestFromUserSandbox(
+                                userId,
+                                req.sourceAgentId(),
+                                req.targetType(),
+                                req.sourcePaths());
+                ContributionEntity saved =
+                        service.submit(
+                                userId,
+                                req.sourceAgentId(),
+                                req.targetAgentId(),
+                                req.targetType(),
+                                req.targetPath(),
+                                req.rationale(),
+                                payload);
+                return ContributionView.from(saved);
                     } catch (IllegalArgumentException e) {
-                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
-                    }
-                });
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+                    }
     }
 
     @GetMapping
-    public Mono<List<ContributionView>> listMine(Authentication auth) {
+    public List<ContributionView> listMine(Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> service.listMine(userId).stream().map(ContributionView::from).toList());
+        return service.listMine(userId).stream().map(ContributionView::from).toList();
     }
 
     private List<FileEntry> harvestFromUserSandbox(
@@ -127,10 +120,10 @@ public class MarketContributionController {
         if (!isSkillBundle && sourcePaths.size() != 1) {
             throw new IllegalArgumentException(
                     "target_type "
-                            + targetType
-                            + " requires exactly one source path (got "
-                            + sourcePaths.size()
-                            + ")");
+                    + targetType
+                    + " requires exactly one source path (got "
+                    + sourcePaths.size()
+                    + ")");
         }
         WorkspaceManager wm = workspaceFactory.forAgent(userId, sourceAgentId);
         RuntimeContext rc = RuntimeContext.builder().userId(userId).build();

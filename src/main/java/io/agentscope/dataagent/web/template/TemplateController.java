@@ -24,7 +24,6 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * 浏览内置入门 Agent 模板的只读端点。
@@ -37,7 +36,6 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/templates")
 public class TemplateController {
-
     private final TemplateRegistry registry;
 
     public TemplateController(TemplateRegistry registry) {
@@ -45,19 +43,17 @@ public class TemplateController {
     }
 
     @GetMapping
-    public Mono<List<TemplateSummary>> list() {
-        return Mono.fromCallable(registry::list);
+    public List<TemplateSummary> list() {
+        return registry.list();
     }
 
     @GetMapping("/{id}")
-    public Mono<TemplateDetail> get(@PathVariable String id) {
-        return Mono.fromCallable(
-                () ->
-                        registry.get(id)
-                                .orElseThrow(
-                                        () ->
-                                                new ResponseStatusException(
-                                                        HttpStatus.NOT_FOUND,
-                                                        "Template not found: " + id)));
+    public TemplateDetail get(@PathVariable String id) {
+        return registry.get(id)
+                        .orElseThrow(
+                                () ->
+                                        new ResponseStatusException(
+                                                HttpStatus.NOT_FOUND,
+                                                "Template not found: " + id));
     }
 }

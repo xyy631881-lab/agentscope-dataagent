@@ -19,12 +19,16 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.MediaType;
-import org.springframework.web.reactive.function.server.RouterFunction;
-import org.springframework.web.reactive.function.server.RouterFunctions;
-import org.springframework.web.reactive.function.server.ServerResponse;
+import org.springframework.web.servlet.function.RouterFunction;
+import org.springframework.web.servlet.function.RouterFunctions;
+import org.springframework.web.servlet.function.ServerResponse;
 
 /**
- * React SPA 回退的 WebFlux 路由配置。
+ * React SPA 回退的 Spring MVC 路由配置。
+ *
+ * <p>从 WebFlux 迁移至 Spring MVC：仅包名变化
+ * {@code org.springframework.web.reactive.function.server} →
+ * {@code org.springframework.web.servlet.function}，API 完全一致。
  *
  * <p>任何满足以下条件的请求：
  * <ul>
@@ -53,7 +57,7 @@ public class WebConfig {
                         request ->
                                 ServerResponse.ok()
                                         .contentType(MediaType.TEXT_HTML)
-                                        .bodyValue(indexHtml))
+                                        .body(indexHtml))
                 .build();
     }
 }

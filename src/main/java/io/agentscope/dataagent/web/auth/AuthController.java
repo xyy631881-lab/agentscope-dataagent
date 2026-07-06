@@ -26,7 +26,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import reactor.core.publisher.Mono;
 
 /**
  * 认证端点的 REST 控制器。
@@ -39,7 +38,6 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
-
     private final UserStore userStore;
     private final JwtService jwtService;
     private final boolean aiAvailable;
@@ -62,54 +60,49 @@ public class AuthController {
             boolean isAdmin) {}
 
     @PostMapping("/login")
-    public Mono<ResponseEntity<LoginResponse>> login(@RequestBody LoginRequest req) {
-        return Mono.fromCallable(
-                () -> {
+    public ResponseEntity<LoginResponse> login(@RequestBody LoginRequest req) {
                     if (req.username() == null || req.password() == null) {
-                        return ResponseEntity.badRequest().<LoginResponse>build();
+                return ResponseEntity.badRequest().<LoginResponse>build();
                     }
                     return userStore
-                            .findByUsername(req.username())
-                            .filter(u -> userStore.verifyPassword(u, req.password()))
-                            .map(
-                                    u -> {
-                                        String token =
-                                                jwtService.generate(
-                                                        u.userId(), u.username(), u.roles());
-                                        return ResponseEntity.ok(
-                                                new LoginResponse(
-                                                        token,
-                                                        u.userId(),
-                                                        u.username(),
-                                                        u.roles()));
-                                    })
-                            .orElse(
-                                    ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-                                            .<LoginResponse>build());
-                });
+                    .findByUsername(req.username())
+                    .filter(u -> userStore.verifyPassword(u, req.password()))
+                    .map(
+                            u -> {
+                                String token =
+                                        jwtService.generate(
+                                                u.userId(), u.username(), u.roles());
+                                return ResponseEntity.ok(
+                                        new LoginResponse(
+                                                token,
+                                                u.userId(),
+                                                u.username(),
+                                                u.roles()));
+                            })
+                    .orElse(
+                            ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                                    .<LoginResponse>build());
     }
 
     @GetMapping("/me")
-    public Mono<MeResponse> me(Authentication auth) {
+    public MeResponse me(Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () ->
-                        userStore
-                                .findById(userId)
-                                .map(
-                                        u ->
-                                                new MeResponse(
-                                                        u.userId(),
-                                                        u.username(),
-                                                        u.roles(),
-                                                        aiAvailable,
-                                                        u.hasRole("admin")))
-                                .orElse(
+        return userStore
+                        .findById(userId)
+                        .map(
+                                u ->
                                         new MeResponse(
-                                                userId,
-                                                userId,
-                                                List.of("user"),
+                                                u.userId(),
+                                                u.username(),
+                                                u.roles(),
                                                 aiAvailable,
-                                                false)));
+                                                u.hasRole("admin")))
+                        .orElse(
+                                new MeResponse(
+                                        userId,
+                                        userId,
+                                        List.of("user"),
+                                        aiAvailable,
+                                        false));
     }
 }

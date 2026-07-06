@@ -29,7 +29,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * Admin REST surface for reviewing contributions and promoting them into the shared workspace.
@@ -48,7 +47,6 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/admin/contributions")
 public class ContributionApprovalController {
-
     private final MarketContributionService service;
 
     public ContributionApprovalController(MarketContributionService service) {
@@ -56,79 +54,71 @@ public class ContributionApprovalController {
     }
 
     @GetMapping
-    public Mono<List<ContributionView>> list(
+    public List<ContributionView> list(
             @RequestParam(value = "status", required = false) String status, Authentication auth) {
         requireAdmin(auth);
-        return Mono.fromCallable(
-                () ->
-                        service
-                                .listByStatus(
-                                        status == null || status.isBlank()
-                                                ? ContributionEntity.STATUS_PENDING
-                                                : status.toUpperCase())
-                                .stream()
-                                .map(ContributionView::from)
-                                .toList());
+        return service
+                        .listByStatus(
+                                status == null || status.isBlank()
+                                        ? ContributionEntity.STATUS_PENDING
+                                        : status.toUpperCase())
+                        .stream()
+                        .map(ContributionView::from)
+                        .toList();
     }
 
     @GetMapping("/{id}")
-    public Mono<ContributionDetailView> get(@PathVariable("id") long id, Authentication auth) {
+    public ContributionDetailView get(@PathVariable("id") long id, Authentication auth) {
         requireAdmin(auth);
-        return Mono.fromCallable(
-                () -> {
+
                     try {
-                        ContributionEntity e = service.get(id);
-                        return new ContributionDetailView(
-                                ContributionView.from(e),
-                                service.readOriginalPayload(e),
-                                service.readApprovedPayload(e));
+                ContributionEntity e = service.get(id);
+                return new ContributionDetailView(
+                        ContributionView.from(e),
+                        service.readOriginalPayload(e),
+                        service.readApprovedPayload(e));
                     } catch (IllegalArgumentException ex) {
-                        throw new ResponseStatusException(HttpStatus.NOT_FOUND, ex.getMessage());
-                    }
-                });
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, ex.getMessage());
+                    }
     }
 
     @PostMapping("/{id}/approve")
-    public Mono<ContributionView> approve(
+    public ContributionView approve(
             @PathVariable("id") long id, @RequestBody ReviewRequest req, Authentication auth) {
         requireAdmin(auth);
         String reviewer = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     try {
-                        return ContributionView.from(
-                                service.approve(id, reviewer, req.note(), req.approvedPayload()));
+                return ContributionView.from(
+                        service.approve(id, reviewer, req.note(), req.approvedPayload()));
                     } catch (IllegalArgumentException e) {
-                        throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
                     } catch (IllegalStateException e) {
-                        throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
-                    }
-                });
+                throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+                    }
     }
 
     @PostMapping("/{id}/reject")
-    public Mono<ContributionView> reject(
+    public ContributionView reject(
             @PathVariable("id") long id, @RequestBody ReviewRequest req, Authentication auth) {
         requireAdmin(auth);
         String reviewer = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     try {
-                        return ContributionView.from(service.reject(id, reviewer, req.note()));
+                return ContributionView.from(service.reject(id, reviewer, req.note()));
                     } catch (IllegalArgumentException e) {
-                        throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
                     } catch (IllegalStateException e) {
-                        throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
-                    }
-                });
+                throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+                    }
     }
 
     private static void requireAdmin(Authentication auth) {
         if (auth == null
                 || auth.getAuthorities() == null
                 || auth.getAuthorities().stream()
-                        .map(GrantedAuthority::getAuthority)
-                        .noneMatch("ROLE_ADMIN"::equals)) {
+                .map(GrantedAuthority::getAuthority)
+                .noneMatch("ROLE_ADMIN"::equals)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Admin role required");
         }
     }

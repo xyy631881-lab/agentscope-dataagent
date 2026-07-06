@@ -155,10 +155,10 @@
             <version>3.47.2.0</version>
         </dependency>
 
-        <!-- Spring Boot WebFlux (reactive HTTP + SSE) -->
+        <!-- Spring Boot MVC (servlet HTTP + SSE) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-webflux</artifactId>
+            <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
         <!--
@@ -230,11 +230,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>io.projectreactor</groupId>
-            <artifactId>reactor-test</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

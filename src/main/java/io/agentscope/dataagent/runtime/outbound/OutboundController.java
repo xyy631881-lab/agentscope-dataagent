@@ -24,7 +24,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * 由 Agent 发起/外部出站消息的 HTTP 入口。
@@ -42,7 +41,6 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/outbound")
 public class OutboundController {
-
     private final OutboundService outboundService;
 
     public OutboundController(DataAgentBootstrap bootstrap) {
@@ -50,43 +48,8 @@ public class OutboundController {
     }
 
     @PostMapping("/send")
-    public Mono<ResponseEntity<Map<String, Object>>> send(@RequestBody OutboundRequest req) {
-        return Mono.fromRunnable(() -> outboundService.send(req))
-                .thenReturn(ResponseEntity.ok(Map.<String, Object>of("status", "ok")))
-                .onErrorResume(
-                        ResponseStatusException.class,
-                        e ->
-                                Mono.just(
-                                        ResponseEntity.status(e.getStatusCode())
-                                                .body(
-                                                        Map.of(
-                                                                "status",
-                                                                "error",
-                                                                "error",
-                                                                e.getReason() == null
-                                                                        ? e.getMessage()
-                                                                        : e.getReason()))))
-                .onErrorResume(
-                        IllegalArgumentException.class,
-                        e ->
-                                Mono.just(
-                                        ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                                                .body(
-                                                        Map.of(
-                                                                "status",
-                                                                "error",
-                                                                "error",
-                                                                e.getMessage()))))
-                .onErrorResume(
-                        IllegalStateException.class,
-                        e ->
-                                Mono.just(
-                                        ResponseEntity.status(HttpStatus.NOT_FOUND)
-                                                .body(
-                                                        Map.of(
-                                                                "status",
-                                                                "error",
-                                                                "error",
-                                                                e.getMessage()))));
+    public ResponseEntity<Map<String, Object>> send(@RequestBody OutboundRequest req) {
+        outboundService.send(req);
+        return ResponseEntity.ok(Map.<String, Object>of("status", "ok"));
     }
 }

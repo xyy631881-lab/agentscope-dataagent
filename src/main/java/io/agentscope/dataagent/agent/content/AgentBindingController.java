@@ -40,7 +40,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * 每个 Agent 的 channel 绑定管理。
@@ -58,7 +57,6 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/agents/{agentId}/bindings")
 public class AgentBindingController {
-
     private final BindingPersistence persistence;
     private final AgentAccessGuard guard;
     private final AgentActivityStore activity;
@@ -71,72 +69,68 @@ public class AgentBindingController {
     }
 
     @GetMapping
-    public Mono<List<AgentBindingView>> list(@PathVariable String agentId, Authentication auth) {
+    public List<AgentBindingView> list(@PathVariable String agentId, Authentication auth) {
         String userId = (String) auth.getPrincipal();
         guard.require(userId, agentId, Tier.RUN);
-        return Mono.fromCallable(
-                () ->
-                        persistence.mutate(
-                                channels -> {
-                                    List<AgentBindingView> out = new ArrayList<>();
-                                    for (Map.Entry<String, ChannelConfigEntry> e :
-                                            channels.entrySet()) {
-                                        ChannelConfigEntry ch = e.getValue();
-                                        if (ch == null || ch.getBindings() == null) continue;
-                                        List<BindingConfigEntry> list = ch.getBindings();
-                                        for (int i = 0; i < list.size(); i++) {
-                                            BindingConfigEntry b = list.get(i);
-                                            if (b == null) continue;
-                                            if (!agentId.equals(b.getAgentId())) continue;
-                                            out.add(toView(e.getKey(), i, b));
-                                        }
-                                    }
-                                    return out;
-                                },
-                                List.of()));
+        return persistence.mutate(
+                        channels -> {
+                            List<AgentBindingView> out = new ArrayList<>();
+                            for (Map.Entry<String, ChannelConfigEntry> e :
+                                    channels.entrySet()) {
+                                ChannelConfigEntry ch = e.getValue();
+                                if (ch == null || ch.getBindings() == null) continue;
+                                List<BindingConfigEntry> list = ch.getBindings();
+                                for (int i = 0; i < list.size(); i++) {
+                                    BindingConfigEntry b = list.get(i);
+                                    if (b == null) continue;
+                                    if (!agentId.equals(b.getAgentId())) continue;
+                                    out.add(toView(e.getKey(), i, b));
+                                }
+                            }
+                            return out;
+                        },
+                        List.of());
     }
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Mono<AgentBindingView> add(
+    public AgentBindingView add(
             @PathVariable String agentId,
             @RequestBody BindingCreateRequest req,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
         AgentDefinition def = guard.require(userId, agentId, Tier.EDIT);
-        return Mono.fromCallable(
-                () -> {
+
                     if (req == null || req.channelId() == null || req.channelId().isBlank()) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_REQUEST, "channelId 是必填项");
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "channelId 是必填项");
                     }
                     AgentBindingView view =
-                            persistence.mutate(
-                                    channels -> {
-                                        ChannelConfigEntry ch =
-                                                persistence.orCreate(channels, req.channelId());
-                                        List<BindingConfigEntry> list =
-                                                persistence.mutableBindings(ch);
-                                        BindingConfigEntry entry = fromRequest(agentId, req);
-                                        list.add(entry);
-                                        return toView(req.channelId(), list.size() - 1, entry);
-                                    },
-                                    List.of(req.channelId()));
+                    persistence.mutate(
+                            channels -> {
+                                ChannelConfigEntry ch =
+                                        persistence.orCreate(channels, req.channelId());
+                                List<BindingConfigEntry> list =
+                                        persistence.mutableBindings(ch);
+                                BindingConfigEntry entry = fromRequest(agentId, req);
+                                list.add(entry);
+                                return toView(req.channelId(), list.size() - 1, entry);
+                            },
+                            List.of(req.channelId()));
                     if (def.ownerId() != null) {
-                        activity.record(
-                                def.ownerId(),
-                                agentId,
-                                activity.actor(userId),
-                                ActivityEvent.Action.BIND_CHANNEL,
-                                req.channelId(),
-                                null);
+                activity.record(
+                        def.ownerId(),
+                        agentId,
+                        activity.actor(userId),
+                        ActivityEvent.Action.BIND_CHANNEL,
+                        req.channelId(),
+                        null);
                     }
-                    return view;
-                });
+                    return view;
     }
 
     @PutMapping("/{index}")
-    public Mono<AgentBindingView> update(
+    public AgentBindingView update(
             @PathVariable String agentId,
             @PathVariable int index,
             @RequestParam("channelId") String channelId,
@@ -144,60 +138,8 @@ public class AgentBindingController {
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
         AgentDefinition def = guard.require(userId, agentId, Tier.EDIT);
-        return Mono.fromCallable(
-                () -> {
-                    AgentBindingView view =
-                            persistence.mutate(
-                                    channels -> {
-                                        ChannelConfigEntry ch = channels.get(channelId);
-                                        if (ch == null || ch.getBindings() == null) {
-                                            throw new ResponseStatusException(
-                                                    HttpStatus.NOT_FOUND,
-                                                    "Channel 没有绑定: " + channelId);
-                                        }
-                                        List<BindingConfigEntry> list =
-                                                persistence.mutableBindings(ch);
-                                        if (index < 0 || index >= list.size()) {
-                                            throw new ResponseStatusException(
-                                                    HttpStatus.NOT_FOUND,
-                                                    "绑定索引超出范围: " + index);
-                                        }
-                                        BindingConfigEntry existing = list.get(index);
-                                        if (existing == null
-                                                || !agentId.equals(existing.getAgentId())) {
-                                            throw new ResponseStatusException(
-                                                    HttpStatus.FORBIDDEN,
-                                                    "绑定不属于 Agent: " + agentId);
-                                        }
-                                        BindingConfigEntry updated = fromRequest(agentId, req);
-                                        list.set(index, updated);
-                                        return toView(channelId, index, updated);
-                                    },
-                                    List.of(channelId));
-                    if (def.ownerId() != null) {
-                        activity.record(
-                                def.ownerId(),
-                                agentId,
-                                activity.actor(userId),
-                                ActivityEvent.Action.EDIT_BINDING,
-                                channelId,
-                                null);
-                    }
-                    return view;
-                });
-    }
 
-    @DeleteMapping("/{index}")
-    @ResponseStatus(HttpStatus.NO_CONTENT)
-    public Mono<Void> delete(
-            @PathVariable String agentId,
-            @PathVariable int index,
-            @RequestParam("channelId") String channelId,
-            Authentication auth) {
-        String userId = (String) auth.getPrincipal();
-        AgentDefinition def = guard.require(userId, agentId, Tier.EDIT);
-        return Mono.fromRunnable(
-                () -> {
+                    AgentBindingView view =
                     persistence.mutate(
                             channels -> {
                                 ChannelConfigEntry ch = channels.get(channelId);
@@ -206,32 +148,80 @@ public class AgentBindingController {
                                             HttpStatus.NOT_FOUND,
                                             "Channel 没有绑定: " + channelId);
                                 }
-                                List<BindingConfigEntry> list = persistence.mutableBindings(ch);
+                                List<BindingConfigEntry> list =
+                                        persistence.mutableBindings(ch);
                                 if (index < 0 || index >= list.size()) {
                                     throw new ResponseStatusException(
                                             HttpStatus.NOT_FOUND,
                                             "绑定索引超出范围: " + index);
                                 }
                                 BindingConfigEntry existing = list.get(index);
-                                if (existing == null || !agentId.equals(existing.getAgentId())) {
+                                if (existing == null
+                                        || !agentId.equals(existing.getAgentId())) {
                                     throw new ResponseStatusException(
                                             HttpStatus.FORBIDDEN,
                                             "绑定不属于 Agent: " + agentId);
                                 }
-                                list.remove(index);
-                                return null;
+                                BindingConfigEntry updated = fromRequest(agentId, req);
+                                list.set(index, updated);
+                                return toView(channelId, index, updated);
                             },
                             List.of(channelId));
                     if (def.ownerId() != null) {
-                        activity.record(
-                                def.ownerId(),
-                                agentId,
-                                activity.actor(userId),
-                                ActivityEvent.Action.UNBIND_CHANNEL,
-                                channelId,
-                                null);
+                activity.record(
+                        def.ownerId(),
+                        agentId,
+                        activity.actor(userId),
+                        ActivityEvent.Action.EDIT_BINDING,
+                        channelId,
+                        null);
                     }
-                });
+                    return view;
+    }
+
+    @DeleteMapping("/{index}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(
+            @PathVariable String agentId,
+            @PathVariable int index,
+            @RequestParam("channelId") String channelId,
+            Authentication auth) {
+        String userId = (String) auth.getPrincipal();
+        AgentDefinition def = guard.require(userId, agentId, Tier.EDIT);
+
+                    persistence.mutate(
+                    channels -> {
+                        ChannelConfigEntry ch = channels.get(channelId);
+                        if (ch == null || ch.getBindings() == null) {
+                            throw new ResponseStatusException(
+                                    HttpStatus.NOT_FOUND,
+                                    "Channel 没有绑定: " + channelId);
+                        }
+                        List<BindingConfigEntry> list = persistence.mutableBindings(ch);
+                        if (index < 0 || index >= list.size()) {
+                            throw new ResponseStatusException(
+                                    HttpStatus.NOT_FOUND,
+                                    "绑定索引超出范围: " + index);
+                        }
+                        BindingConfigEntry existing = list.get(index);
+                        if (existing == null || !agentId.equals(existing.getAgentId())) {
+                            throw new ResponseStatusException(
+                                    HttpStatus.FORBIDDEN,
+                                    "绑定不属于 Agent: " + agentId);
+                        }
+                        list.remove(index);
+                        return null;
+                    },
+                    List.of(channelId));
+                    if (def.ownerId() != null) {
+                activity.record(
+                        def.ownerId(),
+                        agentId,
+                        activity.actor(userId),
+                        ActivityEvent.Action.UNBIND_CHANNEL,
+                        channelId,
+                        null);
+                    }
     }
 
     // -----------------------------------------------------------------

@@ -18,6 +18,11 @@ package io.agentscope.dataagent.web.config;
 import io.agentscope.dataagent.web.auth.JwtService;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import java.io.IOException;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,23 +31,21 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
-import org.springframework.security.config.web.server.SecurityWebFiltersOrder;
-import org.springframework.security.config.web.server.ServerHttpSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.core.context.ReactiveSecurityContextHolder;
-import org.springframework.security.web.server.SecurityWebFilterChain;
-import org.springframework.security.web.server.authentication.HttpStatusServerEntryPoint;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.HttpStatusEntryPoint;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
-import org.springframework.web.cors.reactive.CorsConfigurationSource;
-import org.springframework.web.cors.reactive.UrlBasedCorsConfigurationSource;
-import org.springframework.web.server.ServerWebExchange;
-import org.springframework.web.server.WebFilter;
-import org.springframework.web.server.WebFilterChain;
-import reactor.core.publisher.Mono;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * agentscope-dataagent web 应用程序的 WebFlux 安全配置。
+ * agentscope-dataagent web 应用程序的 Spring MVC 安全配置。
  *
  * <ul>
  *   <li>{@code POST /api/auth/login} — 公开（不需要令牌）
@@ -50,36 +53,45 @@ import reactor.core.publisher.Mono;
  *   <li>{@code /**} — 公开（提供 React SPA 静态文件）
  * </ul>
  *
- * <p>JWT 验证由 {@link JwtAuthFilter} 执行，该过滤器在安全过滤器链之前注册。
+ * <p>JWT 验证由 {@link JwtAuthFilter} 执行，该过滤器在
+ * {@link UsernamePasswordAuthenticationFilter} 之前注册。
  * CORS 配置允许 Vite 开发服务器（{@code http://localhost:5173}）以及同源请求。
+ *
+ * <p>从 WebFlux 迁移至 Spring MVC：{@code ServerHttpSecurity} → {@code HttpSecurity}，
+ * {@code WebFilter} → {@code OncePerRequestFilter}，
+ * {@code ReactiveSecurityContextHolder} → {@code SecurityContextHolder}。
  */
 @Configuration
-@EnableWebFluxSecurity
+@EnableWebSecurity
 public class SecurityConfig {
 
     @Bean
-    public SecurityWebFilterChain securityWebFilterChain(
-            ServerHttpSecurity http, JwtService jwtService) {
-        return http.csrf(ServerHttpSecurity.CsrfSpec::disable)
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http, JwtService jwtService) throws Exception {
+        return http
+                .csrf(csrf -> csrf.disable())
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
-                .authorizeExchange(
+                .sessionManagement(
+                        session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(
                         auth ->
-                                auth.pathMatchers(HttpMethod.POST, "/api/auth/login")
+                                auth.requestMatchers(HttpMethod.POST, "/api/auth/login")
                                         .permitAll()
-                                        .pathMatchers("/actuator/health", "/actuator/info")
+                                        .requestMatchers("/actuator/health", "/actuator/info")
                                         .permitAll()
-                                        .pathMatchers("/api/webhook/**")
+                                        .requestMatchers("/api/webhook/**")
                                         .permitAll()
-                                        .pathMatchers("/api/**")
+                                        .requestMatchers("/api/**")
                                         .authenticated()
-                                        .anyExchange()
+                                        .anyRequest()
                                         .permitAll())
                 .exceptionHandling(
                         ex ->
                                 ex.authenticationEntryPoint(
-                                        new HttpStatusServerEntryPoint(HttpStatus.UNAUTHORIZED)))
+                                        new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED)))
                 .addFilterBefore(
-                        new JwtAuthFilter(jwtService), SecurityWebFiltersOrder.AUTHENTICATION)
+                        new JwtAuthFilter(jwtService),
+                        UsernamePasswordAuthenticationFilter.class)
                 .build();
     }
 
@@ -95,8 +107,16 @@ public class SecurityConfig {
         return source;
     }
 
-    /** 从每个请求中提取并验证 JWT Bearer 令牌的 WebFilter。 */
-    static class JwtAuthFilter implements WebFilter {
+    /**
+     * 从每个请求中提取并验证 JWT Bearer 令牌的 Servlet Filter。
+     *
+     * <p>从 WebFlux {@code WebFilter} 迁移为 Spring MVC
+     * {@code OncePerRequestFilter}。区别：WebFilter 返回 {@code Mono<Void>}，
+     * 而 OncePerRequestFilter 是同步的——直接调用 {@code chain.doFilter()} 即可。
+     * 认证信息写入 {@link SecurityContextHolder}（线程局部变量），
+ * 而非 WebFlux 的 {@code ReactiveSecurityContextHolder}（React 上下文）。
+     */
+    static class JwtAuthFilter extends OncePerRequestFilter {
 
         private static final Logger log = LoggerFactory.getLogger(JwtAuthFilter.class);
 
@@ -107,10 +127,15 @@ public class SecurityConfig {
         }
 
         @Override
-        public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
-            String header = exchange.getRequest().getHeaders().getFirst("Authorization");
+        protected void doFilterInternal(
+                HttpServletRequest request,
+                HttpServletResponse response,
+                FilterChain filterChain)
+                throws ServletException, IOException {
+            String header = request.getHeader("Authorization");
             if (header == null || !header.startsWith("Bearer ")) {
-                return chain.filter(exchange);
+                filterChain.doFilter(request, response);
+                return;
             }
             String token = header.substring(7);
             try {
@@ -123,12 +148,11 @@ public class SecurityConfig {
                                 .toList();
                 UsernamePasswordAuthenticationToken auth =
                         new UsernamePasswordAuthenticationToken(userId, null, authorities);
-                return chain.filter(exchange)
-                        .contextWrite(ReactiveSecurityContextHolder.withAuthentication(auth));
+                SecurityContextHolder.getContext().setAuthentication(auth);
             } catch (JwtException e) {
                 log.debug("JWT 验证失败: {}", e.getMessage());
-                return chain.filter(exchange);
             }
+            filterChain.doFilter(request, response);
         }
     }
 }

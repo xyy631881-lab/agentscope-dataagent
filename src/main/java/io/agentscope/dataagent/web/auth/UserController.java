@@ -24,7 +24,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * REST controller for self-service user account operations.
@@ -36,7 +35,6 @@ import reactor.core.publisher.Mono;
  */
 @RestController
 public class UserController {
-
     private final UserStore userStore;
 
     public UserController(UserStore userStore) {
@@ -44,49 +42,45 @@ public class UserController {
     }
 
     @GetMapping("/api/user/profile")
-    public Mono<UserView> profile(Authentication auth) {
+    public UserView profile(Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () ->
-                        userStore
-                                .findById(userId)
-                                .map(u -> new UserView(u.userId(), u.username(), u.roles()))
-                                .orElseThrow(
-                                        () ->
-                                                new ResponseStatusException(
-                                                        HttpStatus.NOT_FOUND, "User not found")));
+        return userStore
+                        .findById(userId)
+                        .map(u -> new UserView(u.userId(), u.username(), u.roles()))
+                        .orElseThrow(
+                                () ->
+                                        new ResponseStatusException(
+                                                HttpStatus.NOT_FOUND, "User not found"));
     }
 
     @PostMapping("/api/user/change-password")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public Mono<Void> changePassword(@RequestBody ChangePasswordRequest req, Authentication auth) {
+    public void changePassword(@RequestBody ChangePasswordRequest req, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromRunnable(
-                () -> {
+
                     if (req.newPassword() == null || req.newPassword().length() < 6) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_REQUEST,
-                                "newPassword must be at least 6 characters");
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST,
+                        "newPassword must be at least 6 characters");
                     }
                     // Verify current password if provided
                     if (req.currentPassword() != null && !req.currentPassword().isBlank()) {
-                        UserStore.UserRecord user =
-                                userStore
-                                        .findById(userId)
-                                        .orElseThrow(
-                                                () ->
-                                                        new ResponseStatusException(
-                                                                HttpStatus.NOT_FOUND,
-                                                                "User not found"));
-                        if (!userStore.verifyPassword(user, req.currentPassword())) {
-                            throw new ResponseStatusException(
-                                    HttpStatus.UNAUTHORIZED, "Current password is incorrect");
-                        }
+                UserStore.UserRecord user =
+                        userStore
+                                .findById(userId)
+                                .orElseThrow(
+                                        () ->
+                                                new ResponseStatusException(
+                                                        HttpStatus.NOT_FOUND,
+                                                        "User not found"));
+                if (!userStore.verifyPassword(user, req.currentPassword())) {
+                    throw new ResponseStatusException(
+                            HttpStatus.UNAUTHORIZED, "Current password is incorrect");
+                }
                     }
                     if (userStore.updatePassword(userId, req.newPassword()).isEmpty()) {
-                        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
-                    }
-                });
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found");
+                    }
     }
 
     // -----------------------------------------------------------------

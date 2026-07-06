@@ -42,7 +42,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * 每个用户的 marketplace 管理。对 {@code dataagent_user_marketplace} 表中的行进行 CRUD
@@ -57,7 +56,6 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/me/marketplaces")
 public class MarketplacesController {
-
     private static final Pattern ID_PATTERN = Pattern.compile("[A-Za-z0-9._-]+");
 
     /** Property keys never echoed back in API responses; passwords leak through history otherwise. */
@@ -79,79 +77,71 @@ public class MarketplacesController {
     // -----------------------------------------------------------------
 
     @GetMapping("")
-    public Mono<List<MarketplaceSummary>> listMarketplaces(Authentication auth) {
+    public List<MarketplaceSummary> listMarketplaces(Authentication auth) {
         String userId = principalUser(auth);
-        return Mono.fromCallable(
-                () -> {
+
                     Map<String, MarketplaceConfigEntry> declared =
-                            persistence.loadAllForUser(userId);
+                    persistence.loadAllForUser(userId);
                     if (declared == null || declared.isEmpty()) return List.of();
                     List<MarketplaceSummary> out = new ArrayList<>(declared.size());
                     for (Map.Entry<String, MarketplaceConfigEntry> e : declared.entrySet()) {
-                        out.add(toSummary(e.getKey(), e.getValue()));
+                out.add(toSummary(e.getKey(), e.getValue()));
                     }
                     out.sort(Comparator.comparing(MarketplaceSummary::id));
-                    return out;
-                });
+                    return out;
     }
 
     @PostMapping("")
-    public Mono<MarketplaceSummary> createMarketplace(
+    public MarketplaceSummary createMarketplace(
             @RequestBody MarketplaceWriteRequest req, Authentication auth) {
         String userId = principalUser(auth);
-        return Mono.fromCallable(
-                () -> {
+
                     validateRequest(req, true);
                     String id = req.id().trim();
                     if (persistence.exists(userId, id)) {
-                        throw new ResponseStatusException(
-                                HttpStatus.CONFLICT, "Marketplace already exists: " + id);
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT, "Marketplace already exists: " + id);
                     }
                     MarketplaceConfigEntry entry = toConfigEntry(req);
                     persistence.insert(userId, id, entry);
-                    return toSummary(id, entry);
-                });
+                    return toSummary(id, entry);
     }
 
     @PutMapping("/{id}")
-    public Mono<MarketplaceSummary> updateMarketplace(
+    public MarketplaceSummary updateMarketplace(
             @PathVariable String id,
             @RequestBody MarketplaceWriteRequest req,
             Authentication auth) {
         String userId = principalUser(auth);
-        return Mono.fromCallable(
-                () -> {
+
                     validateId(id);
                     if (req == null) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_REQUEST, "request body is required");
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "request body is required");
                     }
                     if (!persistence.exists(userId, id)) {
-                        throw new ResponseStatusException(
-                                HttpStatus.NOT_FOUND, "Marketplace not found: " + id);
+                throw new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Marketplace not found: " + id);
                     }
                     // Body's id is ignored on PUT; the path id wins so a typo can't move the entry.
                     MarketplaceWriteRequest normalized =
-                            new MarketplaceWriteRequest(id, req.type(), req.properties());
+                    new MarketplaceWriteRequest(id, req.type(), req.properties());
                     validateRequest(normalized, false);
                     MarketplaceConfigEntry entry = toConfigEntry(normalized);
                     persistence.update(userId, id, entry);
-                    return toSummary(id, entry);
-                });
+                    return toSummary(id, entry);
     }
 
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public Mono<Void> deleteMarketplace(@PathVariable String id, Authentication auth) {
+    public void deleteMarketplace(@PathVariable String id, Authentication auth) {
         String userId = principalUser(auth);
-        return Mono.fromRunnable(
-                () -> {
+
                     validateId(id);
                     if (!persistence.delete(userId, id)) {
-                        throw new ResponseStatusException(
-                                HttpStatus.NOT_FOUND, "Marketplace not found: " + id);
-                    }
-                });
+                throw new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Marketplace not found: " + id);
+                    }
     }
 
     // -----------------------------------------------------------------
@@ -159,33 +149,29 @@ public class MarketplacesController {
     // -----------------------------------------------------------------
 
     @PostMapping("/test")
-    public Mono<TestConnectionResult> testTransient(
+    public TestConnectionResult testTransient(
             @RequestBody MarketplaceWriteRequest req, Authentication auth) {
         String userId = principalUser(auth);
-        return Mono.fromCallable(
-                () -> {
+
                     validateRequest(req, true);
                     MarketplaceConfigEntry entry = toConfigEntry(req);
-                    return probe(userId, req.id().trim(), entry);
-                });
+                    return probe(userId, req.id().trim(), entry);
     }
 
     @PostMapping("/{id}/test")
-    public Mono<TestConnectionResult> testExisting(@PathVariable String id, Authentication auth) {
+    public TestConnectionResult testExisting(@PathVariable String id, Authentication auth) {
         String userId = principalUser(auth);
-        return Mono.fromCallable(
-                () -> {
+
                     validateId(id);
                     MarketplaceConfigEntry entry =
-                            persistence
-                                    .load(userId, id)
-                                    .orElseThrow(
-                                            () ->
-                                                    new ResponseStatusException(
-                                                            HttpStatus.NOT_FOUND,
-                                                            "Marketplace not found: " + id));
-                    return probe(userId, id, entry);
-                });
+                    persistence
+                            .load(userId, id)
+                            .orElseThrow(
+                                    () ->
+                                            new ResponseStatusException(
+                                                    HttpStatus.NOT_FOUND,
+                                                    "Marketplace not found: " + id));
+                    return probe(userId, id, entry);
     }
 
     // -----------------------------------------------------------------
@@ -193,61 +179,57 @@ public class MarketplacesController {
     // -----------------------------------------------------------------
 
     @GetMapping("/{id}/skills")
-    public Mono<List<MarketSkillBrief>> listSkills(@PathVariable String id, Authentication auth) {
+    public List<MarketSkillBrief> listSkills(@PathVariable String id, Authentication auth) {
         String userId = principalUser(auth);
-        return Mono.fromCallable(
-                () -> {
+
                     DataAgentMarketplace mp = requireRegistered(userId, id);
                     List<MarketSkillSummary> raw;
                     try {
-                        raw = mp.list();
+                raw = mp.list();
                     } catch (RuntimeException e) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_GATEWAY,
-                                "Marketplace listing failed: " + e.getMessage(),
-                                e);
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_GATEWAY,
+                        "Marketplace listing failed: " + e.getMessage(),
+                        e);
                     }
                     List<MarketSkillBrief> out = new ArrayList<>(raw.size());
                     for (MarketSkillSummary s : raw) {
-                        out.add(new MarketSkillBrief(s.name(), s.description(), s.version()));
+                out.add(new MarketSkillBrief(s.name(), s.description(), s.version()));
                     }
                     out.sort(Comparator.comparing(MarketSkillBrief::name));
-                    return out;
-                });
+                    return out;
     }
 
     @GetMapping("/{id}/skills/{name}")
-    public Mono<MarketSkillDetail> getSkill(
+    public MarketSkillDetail getSkill(
             @PathVariable String id, @PathVariable String name, Authentication auth) {
         String userId = principalUser(auth);
-        return Mono.fromCallable(
-                () -> {
+
                     if (name == null || name.isBlank()) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_REQUEST, "skill name is required");
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "skill name is required");
                     }
                     DataAgentMarketplace mp = requireRegistered(userId, id);
                     MarketSkillContent content;
                     try {
-                        content = mp.fetch(name);
+                content = mp.fetch(name);
                     } catch (RuntimeException e) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_GATEWAY,
-                                "Marketplace fetch failed: " + e.getMessage(),
-                                e);
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_GATEWAY,
+                        "Marketplace fetch failed: " + e.getMessage(),
+                        e);
                     }
                     if (content == null) {
-                        throw new ResponseStatusException(
-                                HttpStatus.NOT_FOUND,
-                                "Skill '" + name + "' not found in marketplace '" + id + "'");
+                throw new ResponseStatusException(
+                        HttpStatus.NOT_FOUND,
+                        "Skill '" + name + "' not found in marketplace '" + id + "'");
                     }
                     Map<String, String> resources =
-                            content.resources() != null
-                                    ? new LinkedHashMap<>(content.resources())
-                                    : Map.of();
+                    content.resources() != null
+                            ? new LinkedHashMap<>(content.resources())
+                            : Map.of();
                     return new MarketSkillDetail(
-                            content.name(), content.description(), content.markdown(), resources);
-                });
+                    content.name(), content.description(), content.markdown(), resources);
     }
 
     // -----------------------------------------------------------------
@@ -265,9 +247,9 @@ public class MarketplacesController {
         validateId(id);
         return registry.find(userId, id)
                 .orElseThrow(
-                        () ->
-                                new ResponseStatusException(
-                                        HttpStatus.NOT_FOUND, "Marketplace not registered: " + id));
+                () ->
+                        new ResponseStatusException(
+                                HttpStatus.NOT_FOUND, "Marketplace not registered: " + id));
     }
 
     private TestConnectionResult probe(String userId, String id, MarketplaceConfigEntry entry) {
@@ -312,9 +294,9 @@ public class MarketplacesController {
             throw new ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
                     "unsupported marketplace type '"
-                            + req.type()
-                            + "', expected one of "
-                            + SUPPORTED_TYPES);
+                    + req.type()
+                    + "', expected one of "
+                    + SUPPORTED_TYPES);
         }
         Map<String, Object> props = req.properties();
         if ("git".equals(type)) {

@@ -32,7 +32,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * Agent 的只读活动日志。
@@ -46,7 +45,6 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/agents/{id}/activity")
 public class AgentActivityController {
-
     private static final Set<String> REDACTED_SHARE_ACTIONS =
             Set.of(ActivityEvent.Action.GRANT_SHARE, ActivityEvent.Action.REVOKE_SHARE);
 
@@ -68,41 +66,33 @@ public class AgentActivityController {
     }
 
     @GetMapping
-    public Mono<List<ActivityEvent>> list(
+    public List<ActivityEvent> list(
             @PathVariable("id") String agentId,
             @RequestParam(name = "since", required = false) Long since,
             @RequestParam(name = "limit", defaultValue = "50") int limit,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                        () -> {
-                            AgentDefinition def = guard.require(userId, agentId, Tier.RUN);
-                            if (!AgentDefinition.SCOPE_USER.equals(def.scope())
-                                    || def.ownerId() == null) {
-                                // Globals have no per-agent activity log (their workspace is
-                                // read-only and
-                                // not namespaced through the per-user store).
-                                return List.<ActivityEvent>of();
-                            }
-                            String ownerId = def.ownerId();
-                            Tier held = acl.tierFor(userId, def);
-                            boolean fullDetail = held != null && held.implies(Tier.EDIT);
-                            List<ActivityEvent> raw = store.list(ownerId, agentId, since, limit);
-                            if (fullDetail) {
-                                return raw;
-                            }
-                            List<ActivityEvent> out = new ArrayList<>(raw.size());
-                            for (ActivityEvent ev : raw) {
-                                out.add(redactFor(ev));
-                            }
-                            return out;
-                        })
-                .onErrorResume(ResponseStatusException.class, Mono::error)
-                .onErrorMap(
-                        ex ->
-                                new ResponseStatusException(
-                                        HttpStatus.INTERNAL_SERVER_ERROR,
-                                        "Failed to load activity: " + ex.getMessage()));
+
+                    AgentDefinition def = guard.require(userId, agentId, Tier.RUN);
+                    if (!AgentDefinition.SCOPE_USER.equals(def.scope())
+                            || def.ownerId() == null) {
+                        // Globals have no per-agent activity log (their workspace is
+                        // read-only and
+                        // not namespaced through the per-user store).
+                        return List.<ActivityEvent>of();
+                    }
+                    String ownerId = def.ownerId();
+                    Tier held = acl.tierFor(userId, def);
+                    boolean fullDetail = held != null && held.implies(Tier.EDIT);
+                    List<ActivityEvent> raw = store.list(ownerId, agentId, since, limit);
+                    if (fullDetail) {
+                        return raw;
+                    }
+                    List<ActivityEvent> out = new ArrayList<>(raw.size());
+                    for (ActivityEvent ev : raw) {
+                        out.add(redactFor(ev));
+                    }
+                    return out;
     }
 
     private static ActivityEvent redactFor(ActivityEvent ev) {

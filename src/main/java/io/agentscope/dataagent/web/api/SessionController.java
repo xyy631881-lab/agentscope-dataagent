@@ -45,7 +45,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * 这个类是系统的会话管家——管理用户和 Agent 之间的所有对话记录，就像一个聊天应用的"消息管理器"。
@@ -72,7 +71,6 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/agents/{agentId}/sessions")
 public class SessionController {
-
     private final DataAgentBootstrap bootstrap;
     private final SessionAgentManager sessionAgentManager;
     private final SessionReadStateStore readStateStore;
@@ -110,44 +108,42 @@ public class SessionController {
      * ⑥ 返回收件箱列表
      */
     @GetMapping("/inbox")
-    public Mono<List<InboxEntry>> inbox(
+    public List<InboxEntry> inbox(
             @PathVariable String agentId,
             @RequestParam(defaultValue = "50") int limit,
             @RequestParam(defaultValue = "false") boolean unreadOnly,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     String gatewayAgentId = lifecycleService.peekGatewayAgentId(userId, agentId);
                     List<SessionEntry> matched =
-                            sessionAgentManager.allSessions().stream()
-                                    .filter(e -> Objects.equals(e.userId(), userId))
-                                    .filter(e -> sessionMatchesAgent(e, gatewayAgentId))
-                                    .sorted(
-                                            Comparator.comparingLong(SessionEntry::lastActivityMs)
-                                                    .reversed())
-                                    .limit(limit)
-                                    .toList();
+                    sessionAgentManager.allSessions().stream()
+                            .filter(e -> Objects.equals(e.userId(), userId))
+                            .filter(e -> sessionMatchesAgent(e, gatewayAgentId))
+                            .sorted(
+                                    Comparator.comparingLong(SessionEntry::lastActivityMs)
+                                            .reversed())
+                            .limit(limit)
+                            .toList();
 
                     List<InboxEntry> out = new ArrayList<>(matched.size());
                     for (SessionEntry e : matched) {
-                        boolean unread =
-                                readStateStore.isUnread(userId, e.sessionKey(), e.lastActivityMs());
-                        if (unreadOnly && !unread) continue;
-                        String preview = lastMessagePreview(agentId, e);
-                        out.add(
-                                new InboxEntry(
-                                        e.sessionKey(),
-                                        e.sessionId(),
-                                        e.agentId(),
-                                        extractConversationId(e.gateKey()),
-                                        e.label(),
-                                        e.lastActivityMs(),
-                                        preview,
-                                        unread));
+                boolean unread =
+                        readStateStore.isUnread(userId, e.sessionKey(), e.lastActivityMs());
+                if (unreadOnly && !unread) continue;
+                String preview = lastMessagePreview(agentId, e);
+                out.add(
+                        new InboxEntry(
+                                e.sessionKey(),
+                                e.sessionId(),
+                                e.agentId(),
+                                extractConversationId(e.gateKey()),
+                                e.label(),
+                                e.lastActivityMs(),
+                                preview,
+                                unread));
                     }
-                    return out;
-                });
+                    return out;
     }
 
     /**
@@ -163,15 +159,13 @@ public class SessionController {
      * ④ 返回轮次列表
      */
     @GetMapping("/{key}")
-    public Mono<List<SessionTurnParser.TurnEntry>> turns(
+    public List<SessionTurnParser.TurnEntry> turns(
             @PathVariable String agentId, @PathVariable String key, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     SessionEntry entry = requireOwnedSession(agentId, key, userId);
                     String content = readSessionLogContent(agentId, entry);
-                    return SessionTurnParser.parse(content != null ? content : "");
-                });
+                    return SessionTurnParser.parse(content != null ? content : "");
     }
 
     /**
@@ -187,15 +181,13 @@ public class SessionController {
      * ③ 返回重置结果
      */
     @PostMapping("/{key}/reset")
-    public Mono<ResetResult> reset(
+    public ResetResult reset(
             @PathVariable String agentId, @PathVariable String key, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     SessionEntry entry = requireOwnedSession(agentId, key, userId);
                     boolean ok = sessionAgentManager.resetSession(entry.sessionKey());
-                    return new ResetResult(key, ok);
-                });
+                    return new ResetResult(key, ok);
     }
 
     /**
@@ -210,15 +202,13 @@ public class SessionController {
      * ③ 返回标记已读结果
      */
     @PatchMapping("/{key}/read")
-    public Mono<ReadStateResult> markRead(
+    public ReadStateResult markRead(
             @PathVariable String agentId, @PathVariable String key, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     SessionEntry entry = requireOwnedSession(agentId, key, userId);
                     long readAtMs = readStateStore.markRead(userId, entry.sessionKey());
-                    return new ReadStateResult(key, readAtMs, false);
-                });
+                    return new ReadStateResult(key, readAtMs, false);
     }
 
     /**
@@ -234,14 +224,12 @@ public class SessionController {
      */
     @DeleteMapping("/{key}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public Mono<Void> delete(
+    public void delete(
             @PathVariable String agentId, @PathVariable String key, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromRunnable(
-                () -> {
+
                     SessionEntry entry = requireOwnedSession(agentId, key, userId);
-                    sessionAgentManager.removeSession(entry.sessionKey());
-                });
+                    sessionAgentManager.removeSession(entry.sessionKey());
     }
 
     // -----------------------------------------------------------------
@@ -264,8 +252,8 @@ public class SessionController {
     private SessionEntry requireOwnedSession(String agentId, String key, String userId) {
         SessionEntry entry =
                 sessionAgentManager
-                        .getSession(key)
-                        .orElseGet(() -> findSessionByConversationId(agentId, key, userId));
+                .getSession(key)
+                .orElseGet(() -> findSessionByConversationId(agentId, key, userId));
         if (entry == null) {
             throw new ResponseStatusException(
                     HttpStatus.NOT_FOUND, "AgentStateStore not found: " + key);
@@ -386,13 +374,13 @@ public class SessionController {
             String innerAgentId = ha.getName();
             if (wm != null && innerAgentId != null && !innerAgentId.isBlank()) {
                 String relLog =
-                        "agents/" + innerAgentId + "/sessions/" + entry.sessionId() + ".log.jsonl";
+                "agents/" + innerAgentId + "/sessions/" + entry.sessionId() + ".log.jsonl";
                 String fromLog = wm.readManagedWorkspaceFileUtf8(RuntimeContext.empty(), relLog);
                 if (fromLog != null && !fromLog.isEmpty()) {
                     return fromLog;
                 }
                 String relCtx =
-                        "agents/" + innerAgentId + "/sessions/" + entry.sessionId() + ".jsonl";
+                "agents/" + innerAgentId + "/sessions/" + entry.sessionId() + ".jsonl";
                 String fromCtx = wm.readManagedWorkspaceFileUtf8(RuntimeContext.empty(), relCtx);
                 if (fromCtx != null && !fromCtx.isEmpty()) {
                     return fromCtx;

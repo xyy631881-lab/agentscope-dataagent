@@ -34,7 +34,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * Channel 目录和 channel 默认值管理。
@@ -52,7 +51,6 @@ import reactor.core.publisher.Mono;
  */
 @RestController
 public class ChannelDirectoryController {
-
     private final DataAgentBootstrap bootstrap;
     private final ChannelManager channelManager;
     private final BindingPersistence persistence;
@@ -65,41 +63,38 @@ public class ChannelDirectoryController {
     }
 
     @GetMapping("/api/channels")
-    public Mono<List<ChannelInfoView>> list() {
-        return Mono.fromCallable(
-                () -> {
+    public List<ChannelInfoView> list() {
                     Map<String, ChannelInfoView> merged = new LinkedHashMap<>();
 
                     for (Channel ch : channelManager.getAllChannels()) {
-                        ChannelConfig cfg = ch.config();
-                        merged.put(
+                ChannelConfig cfg = ch.config();
+                merged.put(
+                        ch.channelId(),
+                        new ChannelInfoView(
                                 ch.channelId(),
-                                new ChannelInfoView(
-                                        ch.channelId(),
-                                        cfg.dmScope() != null ? cfg.dmScope().name() : null,
-                                        cfg.defaultAgentId(),
-                                        channelManager.isStarted()));
+                                cfg.dmScope() != null ? cfg.dmScope().name() : null,
+                                cfg.defaultAgentId(),
+                                channelManager.isStarted()));
                     }
 
                     Map<String, ChannelConfigEntry> fileChannels =
-                            bootstrap.loadedConfig().getChannels();
+                    bootstrap.loadedConfig().getChannels();
                     if (fileChannels != null) {
-                        for (Map.Entry<String, ChannelConfigEntry> e : fileChannels.entrySet()) {
-                            if (merged.containsKey(e.getKey())) continue;
-                            ChannelConfigEntry ce = e.getValue();
-                            if (ce == null) continue;
-                            merged.put(
+                for (Map.Entry<String, ChannelConfigEntry> e : fileChannels.entrySet()) {
+                    if (merged.containsKey(e.getKey())) continue;
+                    ChannelConfigEntry ce = e.getValue();
+                    if (ce == null) continue;
+                    merged.put(
+                            e.getKey(),
+                            new ChannelInfoView(
                                     e.getKey(),
-                                    new ChannelInfoView(
-                                            e.getKey(),
-                                            ce.getDmScope(),
-                                            ce.getDefaultAgentId(),
-                                            false));
-                        }
+                                    ce.getDmScope(),
+                                    ce.getDefaultAgentId(),
+                                    false));
+                }
                     }
 
-                    return new ArrayList<>(merged.values());
-                });
+                    return new ArrayList<>(merged.values());
     }
 
     /**
@@ -109,28 +104,25 @@ public class ChannelDirectoryController {
      * Used by the binding form's type-select dropdown.
      */
     @GetMapping("/api/channels/types")
-    public Mono<List<String>> listTypes() {
-        return Mono.fromCallable(
-                () -> new ArrayList<>(new TreeSet<>(ChannelTypeRegistry.registeredTypes())));
+    public List<String> listTypes() {
+        return new ArrayList<>(new TreeSet<>(ChannelTypeRegistry.registeredTypes()));
     }
 
     @PostMapping("/api/agents/{agentId}/channels/{channelId}/default")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public Mono<Void> setDefault(@PathVariable String agentId, @PathVariable String channelId) {
-        return Mono.fromRunnable(
-                () ->
-                        persistence.mutate(
-                                channels -> {
-                                    ChannelConfigEntry ch = channels.get(channelId);
-                                    if (ch == null) {
-                                        throw new ResponseStatusException(
-                                                HttpStatus.NOT_FOUND,
-                                                "Channel not found: " + channelId);
-                                    }
-                                    ch.setDefaultAgentId(agentId);
-                                    return null;
-                                },
-                                List.of(channelId)));
+    public void setDefault(@PathVariable String agentId, @PathVariable String channelId) {
+        persistence.mutate(
+                        channels -> {
+                            ChannelConfigEntry ch = channels.get(channelId);
+                            if (ch == null) {
+                                throw new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND,
+                                        "Channel not found: " + channelId);
+                            }
+                            ch.setDefaultAgentId(agentId);
+                            return null;
+                        },
+                        List.of(channelId));
     }
 
     @JsonInclude(JsonInclude.Include.NON_NULL)

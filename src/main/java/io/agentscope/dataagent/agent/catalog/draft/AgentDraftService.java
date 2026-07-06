@@ -22,7 +22,6 @@ import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.UserMessage;
 import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.Model;
-import io.agentscope.dataagent.agent.catalog.draft.AgentDraft;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -36,9 +35,6 @@ import org.springframework.core.io.ResourceLoader;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
-import io.agentscope.dataagent.agent.catalog.draft.NamedFile;
 
 /**
  * AI 辅助的起始 Agent 配置草稿。给定一句话描述，使用低温度提示调用配置的
@@ -46,6 +42,11 @@ import io.agentscope.dataagent.agent.catalog.draft.NamedFile;
  *
  * <p>当没有可用的 {@link Model} bean 时返回 503；{@code GET /api/auth/me} 上的
  * {@code aiAvailable} 标志反映此状态，以便前端可以隐藏或禁用 AI 标签页。
+ *
+ * <p>从 WebFlux 迁移至 Spring MVC：移除 {@code Mono.fromCallable().subscribeOn
+ * (Schedulers.boundedElastic())} 包装，直接在 servlet 线程中同步调用。
+ * {@code model.stream()} 返回 {@code Flux<ChatResponse>}（框架接口），
+ * 用 {@code .collectList().block()} 同步消费。
  */
 @Service
 public class AgentDraftService {
@@ -98,24 +99,21 @@ public class AgentDraftService {
      *   <li>如果 model 返回格式错误的 JSON 或无文本内容则返回 502。
      * </ul>
      */
-    public Mono<AgentDraft> draft(String description) {
+    public AgentDraft draft(String description) {
         if (description == null || description.isBlank()) {
-            return Mono.error(
-                    new ResponseStatusException(HttpStatus.BAD_REQUEST, "description 是必填项"));
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "description 是必填项");
         }
         if (model == null) {
-            return Mono.error(
-                    new ResponseStatusException(
-                            HttpStatus.SERVICE_UNAVAILABLE,
-                            "AI 草稿不可用——请配置一个 model"));
+            throw new ResponseStatusException(
+                    HttpStatus.SERVICE_UNAVAILABLE,
+                    "AI 草稿不可用——请配置一个 model");
         }
 
         String prompt = promptTemplate.replace("{{DESCRIPTION}}", description.trim());
         Msg userMsg = new UserMessage(TextBlock.builder().text(prompt).build());
 
-        return Mono.fromCallable(() -> callModelBlocking(userMsg))
-                .subscribeOn(Schedulers.boundedElastic())
-                .flatMap(this::parseDraft);
+        String raw = callModelBlocking(userMsg);
+        return parseDraft(raw);
     }
 
     /**
@@ -162,7 +160,7 @@ public class AgentDraftService {
      * 宽松的 JSON 解析：去除 ```json 围栏以及任何前导/尾随文本，
      * 然后反序列化为 {@link AgentDraft}。失败时抛出 502 并附带原始输出。
      */
-    private Mono<AgentDraft> parseDraft(String raw) {
+    private AgentDraft parseDraft(String raw) {
         String stripped = stripCodeFence(raw).trim();
         // 如果 model 包含前后文本，尝试找到最外层的 JSON 对象。
         int firstBrace = stripped.indexOf('{');
@@ -171,15 +169,13 @@ public class AgentDraftService {
             stripped = stripped.substring(firstBrace, lastBrace + 1);
         }
         try {
-            AgentDraft draft = mapper.readValue(stripped, AgentDraft.class);
-            return Mono.just(draft);
+            return mapper.readValue(stripped, AgentDraft.class);
         } catch (Exception e) {
             log.warn("AgentDraftService: 解析 model 输出失败: {}", e.getMessage());
-            return Mono.error(
-                    new ResponseStatusException(
-                            HttpStatus.BAD_GATEWAY,
-                            "Model 返回了非 JSON 输出: "
-                                    + (raw.length() > 500 ? raw.substring(0, 500) + "..." : raw)));
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY,
+                    "Model 返回了非 JSON 输出: "
+                            + (raw.length() > 500 ? raw.substring(0, 500) + "..." : raw));
         }
     }
 

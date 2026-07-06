@@ -41,7 +41,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * 仅管理员的用户管理端点。
@@ -63,7 +62,6 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/admin/users")
 public class AdminUserController {
-
     private static final Logger log = LoggerFactory.getLogger(AdminUserController.class);
     private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -76,120 +74,110 @@ public class AdminUserController {
     }
 
     @GetMapping
-    public Mono<List<AdminUserView>> list(Authentication auth) {
+    public List<AdminUserView> list(Authentication auth) {
         requireAdmin(auth);
-        return Mono.fromCallable(
-                () -> userStore.listAll().stream().map(AdminUserController::toView).toList());
+        return userStore.listAll().stream().map(AdminUserController::toView).toList();
     }
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Mono<CreateUserResponse> create(
+    public CreateUserResponse create(
             @RequestBody CreateUserRequest req, Authentication auth) {
         requireAdmin(auth);
-        return Mono.fromCallable(
-                () -> {
+
                     if (req == null || req.username() == null || req.username().isBlank()) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_REQUEST, "username 是必填项");
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "username 是必填项");
                     }
                     String username = req.username().trim();
                     List<String> roles =
-                            req.roles() == null || req.roles().isEmpty()
-                                    ? List.of("user")
-                                    : List.copyOf(req.roles());
+                    req.roles() == null || req.roles().isEmpty()
+                            ? List.of("user")
+                            : List.copyOf(req.roles());
                     boolean generated =
-                            req.initialPassword() == null || req.initialPassword().isBlank();
+                    req.initialPassword() == null || req.initialPassword().isBlank();
                     String password = generated ? generateTempPassword() : req.initialPassword();
                     String userId = makeUserId(username);
                     try {
-                        UserRecord created =
-                                userStore.createUser(userId, username, password, roles);
-                        log.info(
-                                "管理员 '{}' 创建了用户 '{}' (roles={})",
-                                auth.getPrincipal(),
-                                username,
-                                roles);
-                        return new CreateUserResponse(toView(created), generated ? password : null);
+                UserRecord created =
+                        userStore.createUser(userId, username, password, roles);
+                log.info(
+                        "管理员 '{}' 创建了用户 '{}' (roles={})",
+                        auth.getPrincipal(),
+                        username,
+                        roles);
+                return new CreateUserResponse(toView(created), generated ? password : null);
                     } catch (IllegalArgumentException dup) {
-                        throw new ResponseStatusException(HttpStatus.CONFLICT, dup.getMessage());
+                throw new ResponseStatusException(HttpStatus.CONFLICT, dup.getMessage());
                     }
-                });
     }
 
     @PatchMapping("/{userId}/password")
-    public Mono<AdminUserView> resetPassword(
+    public AdminUserView resetPassword(
             @PathVariable String userId,
             @RequestBody PasswordResetRequest req,
             Authentication auth) {
         requireAdmin(auth);
-        return Mono.fromCallable(
-                () -> {
+
                     if (req == null || req.newPassword() == null || req.newPassword().isBlank()) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_REQUEST, "newPassword 是必填项");
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "newPassword 是必填项");
                     }
                     return userStore
-                            .updatePassword(userId, req.newPassword())
-                            .map(AdminUserController::toView)
-                            .orElseThrow(
-                                    () ->
-                                            new ResponseStatusException(
-                                                    HttpStatus.NOT_FOUND,
-                                                    "未找到用户: " + userId));
-                });
+                    .updatePassword(userId, req.newPassword())
+                    .map(AdminUserController::toView)
+                    .orElseThrow(
+                            () ->
+                                    new ResponseStatusException(
+                                            HttpStatus.NOT_FOUND,
+                                            "未找到用户: " + userId));
     }
 
     @PatchMapping("/{userId}/roles")
-    public Mono<AdminUserView> updateRoles(
+    public AdminUserView updateRoles(
             @PathVariable String userId, @RequestBody RolesRequest req, Authentication auth) {
         requireAdmin(auth);
-        return Mono.fromCallable(
-                () -> {
+
                     if (req == null || req.roles() == null || req.roles().isEmpty()) {
-                        throw new ResponseStatusException(
-                                HttpStatus.BAD_REQUEST, "roles 必须包含至少一个条目");
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "roles 必须包含至少一个条目");
                     }
                     // 最后管理员保护是 UserStore 的责任；将其 IllegalStateException
                     // 作为 409 抛出，以便 UI 可以显示友好的消息。
                     try {
-                        return userStore
-                                .updateRoles(userId, req.roles())
-                                .map(AdminUserController::toView)
-                                .orElseThrow(
-                                        () ->
-                                                new ResponseStatusException(
-                                                        HttpStatus.NOT_FOUND,
-                                                        "未找到用户: " + userId));
+                return userStore
+                        .updateRoles(userId, req.roles())
+                        .map(AdminUserController::toView)
+                        .orElseThrow(
+                                () ->
+                                        new ResponseStatusException(
+                                                HttpStatus.NOT_FOUND,
+                                                "未找到用户: " + userId));
                     } catch (IllegalStateException ex) {
-                        throw new ResponseStatusException(HttpStatus.CONFLICT, ex.getMessage());
+                throw new ResponseStatusException(HttpStatus.CONFLICT, ex.getMessage());
                     }
-                });
     }
 
     @DeleteMapping("/{userId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public Mono<Void> delete(@PathVariable String userId, Authentication auth) {
+    public void delete(@PathVariable String userId, Authentication auth) {
         requireAdmin(auth);
         String actor = (String) auth.getPrincipal();
         if (userId.equals(actor)) {
-            return Mono.error(
-                    new ResponseStatusException(HttpStatus.CONFLICT, "不能删除自己"));
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "不能删除自己");
         }
-        return Mono.fromRunnable(
-                () -> {
+
                     try {
-                        if (!userStore.deleteUser(userId)) {
-                            throw new ResponseStatusException(
-                                    HttpStatus.NOT_FOUND, "未找到用户: " + userId);
-                        }
+                if (!userStore.deleteUser(userId)) {
+                    throw new ResponseStatusException(
+                            HttpStatus.NOT_FOUND, "未找到用户: " + userId);
+                }
                     } catch (IllegalStateException ex) {
-                        throw new ResponseStatusException(HttpStatus.CONFLICT, ex.getMessage());
+                throw new ResponseStatusException(HttpStatus.CONFLICT, ex.getMessage());
                     }
                     // 级联撤销每个拥有者存储中每个 Agent 上的每个 (USER, userId) 授权。
                     // 不接触 workspace 文件——保留审计轨迹；管理员可以在之后手动清理。
                     revokeAllGrantsFor(userId);
-                });
     }
 
     // -----------------------------------------------------------------
@@ -200,8 +188,8 @@ public class AdminUserController {
         if (auth == null
                 || auth.getAuthorities() == null
                 || auth.getAuthorities().stream()
-                        .map(GrantedAuthority::getAuthority)
-                        .noneMatch("ROLE_ADMIN"::equals)) {
+                .map(GrantedAuthority::getAuthority)
+                .noneMatch("ROLE_ADMIN"::equals)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "需要管理员角色");
         }
     }
@@ -215,19 +203,19 @@ public class AdminUserController {
                 boolean changed = false;
                 for (AgentShareGrant g : shares) {
                     if (AgentShareGrant.GRANTEE_USER.equals(g.granteeType())
-                            && revokedUserId.equals(g.granteeId())) {
-                        changed = true;
-                        continue;
+                    && revokedUserId.equals(g.granteeId())) {
+                changed = true;
+                continue;
                     }
                     remaining.add(g);
                 }
                 if (changed) {
                     agentStore.save(owner.userId(), withShares(entry, remaining));
                     log.info(
-                            "已撤销 Agent {}/{} 上的 (USER, {}) 授权",
-                            revokedUserId,
-                            owner.userId(),
-                            entry.id());
+                    "已撤销 Agent {}/{} 上的 (USER, {}) 授权",
+                    revokedUserId,
+                    owner.userId(),
+                    entry.id());
                 }
             }
         }

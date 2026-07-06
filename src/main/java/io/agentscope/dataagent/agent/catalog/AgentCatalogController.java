@@ -36,7 +36,6 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 import io.agentscope.dataagent.agent.catalog.draft.AgentDraft;
 
 /**
@@ -55,7 +54,6 @@ import io.agentscope.dataagent.agent.catalog.draft.AgentDraft;
 @RestController
 @RequestMapping("/api/agents")
 public class AgentCatalogController {
-
     private final AgentCatalogService catalogService;
     private final AgentAclService aclService;
     private final AgentAccessGuard guard;
@@ -77,32 +75,28 @@ public class AgentCatalogController {
      * the user's own custom agents.
      */
     @GetMapping
-    public Mono<List<AgentDefinition>> listAgents(Authentication auth) {
+    public List<AgentDefinition> listAgents(Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () ->
-                        catalogService.listVisible(userId).stream()
-                                .map(def -> withTier(userId, def))
-                                .toList());
+        return catalogService.listVisible(userId).stream()
+                        .map(def -> withTier(userId, def))
+                        .toList();
     }
 
     /** Gets a single agent definition visible to the authenticated user. */
     @GetMapping("/{id}")
-    public Mono<AgentDefinition> getAgent(@PathVariable String id, Authentication auth) {
+    public AgentDefinition getAgent(@PathVariable String id, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () ->
-                        withTier(
-                                userId,
-                                catalogService
-                                        .findVisible(userId, id)
-                                        .orElseThrow(
-                                                () ->
-                                                        new org.springframework.web.server
-                                                                .ResponseStatusException(
-                                                                org.springframework.http.HttpStatus
-                                                                        .NOT_FOUND,
-                                                                "Agent not found: " + id))));
+        return withTier(
+                        userId,
+                        catalogService
+                                .findVisible(userId, id)
+                                .orElseThrow(
+                                        () ->
+                                                new org.springframework.web.server
+                                                        .ResponseStatusException(
+                                                        org.springframework.http.HttpStatus
+                                                                .NOT_FOUND,
+                                                        "Agent not found: " + id)));
     }
 
     /**
@@ -117,19 +111,17 @@ public class AgentCatalogController {
     /** Creates a new user-custom agent definition. */
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Mono<AgentDefinition> createAgent(
+    public AgentDefinition createAgent(
             @RequestBody AgentCreateRequest req, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     AgentDefinition created = catalogService.createUserAgent(userId, req);
                     activity.record(
-                            userId,
-                            created.id(),
-                            activity.actor(userId),
-                            ActivityEvent.Action.CREATE);
-                    return created;
-                });
+                    userId,
+                    created.id(),
+                    activity.actor(userId),
+                    ActivityEvent.Action.CREATE);
+                    return created;
     }
 
     /**
@@ -137,26 +129,24 @@ public class AgentCatalogController {
      * change is persisted to the owner's namespace regardless of who triggered it.
      */
     @PutMapping("/{id}")
-    public Mono<AgentDefinition> updateAgent(
+    public AgentDefinition updateAgent(
             @PathVariable String id, @RequestBody AgentCreateRequest req, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     AgentDefinition def = guard.require(userId, id, Tier.EDIT);
                     String ownerId = def.ownerId();
                     if (ownerId == null) {
-                        throw new ResponseStatusException(
-                                HttpStatus.CONFLICT,
-                                "Global agents cannot be edited via the catalog API");
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT,
+                        "Global agents cannot be edited via the catalog API");
                     }
                     AgentDefinition updated = catalogService.updateUserAgent(ownerId, id, req);
                     activity.record(
-                            ownerId,
-                            id,
-                            activity.actor(userId),
-                            ActivityEvent.Action.EDIT_SETTINGS);
-                    return withTier(userId, updated);
-                });
+                    ownerId,
+                    id,
+                    activity.actor(userId),
+                    ActivityEvent.Action.EDIT_SETTINGS);
+                    return withTier(userId, updated);
     }
 
     /**
@@ -165,24 +155,22 @@ public class AgentCatalogController {
      */
     @DeleteMapping("/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public Mono<Void> deleteAgent(@PathVariable String id, Authentication auth) {
+    public void deleteAgent(@PathVariable String id, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromRunnable(
-                () -> {
+
                     AgentDefinition def = guard.require(userId, id, Tier.EDIT);
                     String ownerId = def.ownerId();
                     if (ownerId == null) {
-                        throw new ResponseStatusException(
-                                HttpStatus.CONFLICT,
-                                "Global agents cannot be deleted via the catalog API");
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT,
+                        "Global agents cannot be deleted via the catalog API");
                     }
                     catalogService.deleteUserAgent(ownerId, id);
                     // The owning namespace tree (including activity.jsonl) is removed when the
                     // agent is deleted; we still emit one final event so a workspace audit
                     // sweep can see who triggered the deletion before the log went away.
                     activity.record(
-                            ownerId, id, activity.actor(userId), ActivityEvent.Action.DELETE_AGENT);
-                });
+                    ownerId, id, activity.actor(userId), ActivityEvent.Action.DELETE_AGENT);
     }
 
     // -----------------------------------------------------------------
@@ -204,36 +192,34 @@ public class AgentCatalogController {
      * }</pre>
      */
     @PostMapping("/{id}/shares")
-    public Mono<AgentDefinition> grantShare(
+    public AgentDefinition grantShare(
             @PathVariable String id,
             @RequestBody ShareGrantRequest req,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     // 第一道门：可见性 + EDIT 权限（owner 必然满足 EDIT，因为 tierFor 规则2）
                     AgentDefinition def = guard.require(userId, id, Tier.EDIT);
                     String ownerId = def.ownerId();
                     if (ownerId == null) {
-                        // 全局 Agent 不走分享（它本来就所有人可见）
-                        throw new ResponseStatusException(
-                                HttpStatus.CONFLICT,
-                                "Global agents cannot be shared via the catalog API");
+                // 全局 Agent 不走分享（它本来就所有人可见）
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT,
+                        "Global agents cannot be shared via the catalog API");
                     }
                     // 第二道门：只有 owner 能管理分享，被授权 EDIT 的人不能再授权
                     if (!userId.equals(ownerId)) {
-                        throw new ResponseStatusException(
-                                HttpStatus.FORBIDDEN,
-                                "Only the owner may manage shares on agent " + id);
+                throw new ResponseStatusException(
+                        HttpStatus.FORBIDDEN,
+                        "Only the owner may manage shares on agent " + id);
                     }
                     AgentDefinition updated = catalogService.grantShare(ownerId, id, req);
                     activity.record(
-                            ownerId,
-                            id,
-                            activity.actor(userId),
-                            ActivityEvent.Action.EDIT_SETTINGS);
-                    return withTier(userId, updated);
-                });
+                    ownerId,
+                    id,
+                    activity.actor(userId),
+                    ActivityEvent.Action.EDIT_SETTINGS);
+                    return withTier(userId, updated);
     }
 
     /**
@@ -246,34 +232,32 @@ public class AgentCatalogController {
      * }</pre>
      */
     @DeleteMapping("/{id}/shares")
-    public Mono<AgentDefinition> revokeShare(
+    public AgentDefinition revokeShare(
             @PathVariable String id,
             @RequestParam String granteeType,
             @RequestParam String granteeId,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     AgentDefinition def = guard.require(userId, id, Tier.EDIT);
                     String ownerId = def.ownerId();
                     if (ownerId == null) {
-                        throw new ResponseStatusException(
-                                HttpStatus.CONFLICT,
-                                "Global agents cannot be shared via the catalog API");
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT,
+                        "Global agents cannot be shared via the catalog API");
                     }
                     if (!userId.equals(ownerId)) {
-                        throw new ResponseStatusException(
-                                HttpStatus.FORBIDDEN,
-                                "Only the owner may manage shares on agent " + id);
+                throw new ResponseStatusException(
+                        HttpStatus.FORBIDDEN,
+                        "Only the owner may manage shares on agent " + id);
                     }
                     AgentDefinition updated =
-                            catalogService.revokeShare(ownerId, id, granteeType, granteeId);
+                    catalogService.revokeShare(ownerId, id, granteeType, granteeId);
                     activity.record(
-                            ownerId,
-                            id,
-                            activity.actor(userId),
-                            ActivityEvent.Action.EDIT_SETTINGS);
-                    return withTier(userId, updated);
-                });
+                    ownerId,
+                    id,
+                    activity.actor(userId),
+                    ActivityEvent.Action.EDIT_SETTINGS);
+                    return withTier(userId, updated);
     }
 }

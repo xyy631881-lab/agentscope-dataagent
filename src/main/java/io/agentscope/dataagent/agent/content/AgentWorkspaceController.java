@@ -42,9 +42,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -58,7 +56,6 @@ import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import reactor.core.publisher.Mono;
 
 /**
  * Generic workspace file CRUD for an agent.
@@ -111,24 +108,21 @@ public class AgentWorkspaceController {
     // -----------------------------------------------------------------
 
     @GetMapping
-    public Mono<WorkspaceSummary> summary(@PathVariable String agentId, Authentication auth) {
+    public WorkspaceSummary summary(@PathVariable String agentId, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
                     return summarize(agentId, ctx);
-                });
     }
 
     @PostMapping("/scaffold")
-    public Mono<WorkspaceSummary> scaffold(
+    public WorkspaceSummary scaffold(
             @PathVariable String agentId,
             @RequestParam(name = "name", defaultValue = "") String agentName,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.EDIT);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
@@ -144,7 +138,6 @@ public class AgentWorkspaceController {
                                         "# " + displayName + "\n\nYou are " + displayName + ".\n");
                     }
                     return summarize(agentId, ctx);
-                });
     }
 
     // -----------------------------------------------------------------
@@ -152,10 +145,9 @@ public class AgentWorkspaceController {
     // -----------------------------------------------------------------
 
     @GetMapping("/memory")
-    public Mono<MemoryView> memory(@PathVariable String agentId, Authentication auth) {
+    public MemoryView memory(@PathVariable String agentId, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
@@ -180,7 +172,6 @@ public class AgentWorkspaceController {
                                                                 fileName(fi.path()), fi.size())));
                     }
                     return new MemoryView(memoryContent, dailyFiles);
-                });
     }
 
     // -----------------------------------------------------------------
@@ -188,26 +179,23 @@ public class AgentWorkspaceController {
     // -----------------------------------------------------------------
 
     @GetMapping("/files")
-    public Mono<List<FileNode>> tree(
+    public List<FileNode> tree(
             @PathVariable String agentId,
             @RequestParam(name = "recursive", defaultValue = "true") boolean recursive,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
                     return collectChildrenFs(fs, "/", recursive ? 6 : 1);
-                });
     }
 
     @GetMapping("/file")
-    public Mono<String> readFile(
+    public String readFile(
             @PathVariable String agentId, @RequestParam("path") String path, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
                     String rel = validateRelPath(path);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
@@ -230,18 +218,16 @@ public class AgentWorkspaceController {
                         return "(file too large to display: " + content.length() + " bytes)";
                     }
                     return content;
-                });
     }
 
     @PutMapping("/file")
-    public Mono<FileNode> writeFile(
+    public FileNode writeFile(
             @PathVariable String agentId,
             @RequestParam("path") String path,
             @RequestBody WriteRequest req,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.EDIT);
                     String rel = validateRelPath(path);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
@@ -267,19 +253,17 @@ public class AgentWorkspaceController {
                     }
                     return fileNode(
                             rel, false, (long) content.getBytes(StandardCharsets.UTF_8).length);
-                });
     }
 
     @PostMapping("/file")
     @ResponseStatus(HttpStatus.CREATED)
-    public Mono<FileNode> createNode(
+    public FileNode createNode(
             @PathVariable String agentId,
             @RequestParam("path") String path,
             @RequestParam(name = "type", defaultValue = "file") String type,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.EDIT);
                     String rel = validateRelPath(path);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
@@ -302,15 +286,13 @@ public class AgentWorkspaceController {
                                 null);
                     }
                     return fileNode(rel, isDir, isDir ? null : 0L);
-                });
     }
 
     @PostMapping("/file/move")
-    public Mono<FileNode> moveNode(
+    public FileNode moveNode(
             @PathVariable String agentId, @RequestBody MoveRequest req, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     if (req == null || req.from() == null || req.to() == null) {
                         throw new ResponseStatusException(
                                 HttpStatus.BAD_REQUEST, "from and to are required");
@@ -344,16 +326,14 @@ public class AgentWorkspaceController {
                                 Map.of("from", req.from()));
                     }
                     return fileNode(toRel, isDirectoryEntry(fs, rc, toRel), null);
-                });
     }
 
     @DeleteMapping("/file")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public Mono<Void> deleteNode(
+    public void deleteNode(
             @PathVariable String agentId, @RequestParam("path") String path, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromRunnable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.EDIT);
                     String rel = validateRelPath(path);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
@@ -377,69 +357,48 @@ public class AgentWorkspaceController {
                                 path,
                                 null);
                     }
-                });
     }
 
     @PostMapping("/upload")
-    public Mono<FileNode> upload(
+    public FileNode upload(
             @PathVariable String agentId,
             @RequestParam("path") String path,
-            @RequestPart("file") FilePart file,
+            @RequestPart("file") org.springframework.web.multipart.MultipartFile file,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                        () -> {
-                            guard.require(userId, agentId, Tier.EDIT);
-                            return resolveContext(userId, agentId);
-                        })
-                .flatMap(
-                        ctx -> {
-                            String dirRel;
-                            try {
-                                dirRel = validateRelPath(path);
-                            } catch (ResponseStatusException ex) {
-                                return Mono.error(ex);
-                            }
-                            String filename = sanitiseFilename(file.filename());
-                            String targetRel = (dirRel.isEmpty() ? "" : dirRel + "/") + filename;
-                            return DataBufferUtils.join(file.content())
-                                    .map(
-                                            db -> {
-                                                byte[] bytes = new byte[db.readableByteCount()];
-                                                db.read(bytes);
-                                                DataBufferUtils.release(db);
-                                                return bytes;
-                                            })
-                                    .map(
-                                            bytes -> {
-                                                AbstractFilesystem fs =
-                                                        ctx.manager().getFilesystem();
-                                                List<FileUploadResponse> resp =
-                                                        fs.uploadFiles(
-                                                                RuntimeContext.empty(),
-                                                                List.of(
-                                                                        Map.entry(
-                                                                                targetRel, bytes)));
-                                                if (!resp.isEmpty()
-                                                        && resp.get(0).error() != null) {
-                                                    throw new ResponseStatusException(
-                                                            HttpStatus.INTERNAL_SERVER_ERROR,
-                                                            "Upload failed: "
-                                                                    + resp.get(0).error());
-                                                }
-                                                if (ctx.ownerId() != null) {
-                                                    activity.record(
-                                                            ctx.ownerId(),
-                                                            agentId,
-                                                            activity.actor(userId),
-                                                            ActivityEvent.Action.UPLOAD_FILE,
-                                                            targetRel,
-                                                            null);
-                                                }
-                                                return fileNode(
-                                                        targetRel, false, (long) bytes.length);
-                                            });
-                        });
+        guard.require(userId, agentId, Tier.EDIT);
+        WorkspaceContext ctx = resolveContext(userId, agentId);
+        String dirRel = validateRelPath(path);
+        String filename = sanitiseFilename(file.getOriginalFilename());
+        String targetRel = (dirRel.isEmpty() ? "" : dirRel + "/") + filename;
+        byte[] bytes;
+        try {
+            bytes = file.getBytes();
+        } catch (Exception e) {
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Failed to read uploaded file: " + e.getMessage());
+        }
+        AbstractFilesystem fs = ctx.manager().getFilesystem();
+        List<FileUploadResponse> resp =
+                fs.uploadFiles(
+                        RuntimeContext.empty(),
+                        List.of(Map.entry(targetRel, bytes)));
+        if (!resp.isEmpty() && resp.get(0).error() != null) {
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Upload failed: " + resp.get(0).error());
+        }
+        if (ctx.ownerId() != null) {
+            activity.record(
+                    ctx.ownerId(),
+                    agentId,
+                    activity.actor(userId),
+                    ActivityEvent.Action.UPLOAD_FILE,
+                    targetRel,
+                    null);
+        }
+        return fileNode(targetRel, false, (long) bytes.length);
     }
 
     // -----------------------------------------------------------------
@@ -447,11 +406,10 @@ public class AgentWorkspaceController {
     // -----------------------------------------------------------------
 
     @GetMapping("/subagents")
-    public Mono<List<SubagentInfo>> listSubagents(
+    public List<SubagentInfo> listSubagents(
             @PathVariable String agentId, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.RUN);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
                     AbstractFilesystem fs = ctx.manager().getFilesystem();
@@ -480,18 +438,16 @@ public class AgentWorkspaceController {
                     }
                     result.sort(Comparator.comparing(SubagentInfo::name));
                     return result;
-                });
     }
 
     @PutMapping("/subagents/{name}")
-    public Mono<SubagentInfo> upsertSubagent(
+    public SubagentInfo upsertSubagent(
             @PathVariable String agentId,
             @PathVariable String name,
             @RequestBody SubagentUpsertRequest req,
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.EDIT);
                     if (req == null || req.description() == null || req.description().isBlank()) {
                         throw new ResponseStatusException(
@@ -511,16 +467,14 @@ public class AgentWorkspaceController {
                                 "Generated markdown failed to parse");
                     }
                     return toSubagentInfo(decl);
-                });
     }
 
     @PostMapping("/subagents/from-agent")
     @ResponseStatus(HttpStatus.CREATED)
-    public Mono<SubagentInfo> createSubagentFromAgent(
+    public SubagentInfo createSubagentFromAgent(
             @PathVariable String agentId, @RequestBody FromAgentRequest req, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromCallable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.EDIT);
                     if (req == null
                             || req.sourceAgentId() == null
@@ -572,16 +526,14 @@ public class AgentWorkspaceController {
                                 "Generated markdown failed to parse");
                     }
                     return toSubagentInfo(decl);
-                });
     }
 
     @DeleteMapping("/subagents/{name}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public Mono<Void> deleteSubagent(
+    public void deleteSubagent(
             @PathVariable String agentId, @PathVariable String name, Authentication auth) {
         String userId = (String) auth.getPrincipal();
-        return Mono.fromRunnable(
-                () -> {
+
                     guard.require(userId, agentId, Tier.EDIT);
                     validateSubagentName(name);
                     WorkspaceContext ctx = resolveContext(userId, agentId);
@@ -596,7 +548,6 @@ public class AgentWorkspaceController {
                         throw new ResponseStatusException(
                                 HttpStatus.INTERNAL_SERVER_ERROR, "Delete failed: " + wr.error());
                     }
-                });
     }
 
     // -----------------------------------------------------------------
