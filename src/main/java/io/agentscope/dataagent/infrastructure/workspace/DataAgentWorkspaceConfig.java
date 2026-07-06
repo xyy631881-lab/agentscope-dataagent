@@ -17,6 +17,7 @@ package io.agentscope.dataagent.infrastructure.workspace;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.agentscope.dataagent.web.config.properties.WorkspaceProperties;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClient;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClientOptions;
@@ -61,14 +62,6 @@ public class DataAgentWorkspaceConfig {
     private long evictionPollSeconds;
 
     /**
-     * Same property {@code DataAgentConfig} reads for {@code cwd}. Resolved independently here so
-     * {@link #userSandboxRegistry} does not have to inject {@code DataAgentBootstrap} — the
-     * bootstrap itself depends on this registry, which would form a cycle.
-     */
-    @Value("${dataagent.workspace:}")
-    private String workspaceDir;
-
-    /**
      * Default {@link SandboxClient} bean — a no-arg {@link DockerSandboxClient}. Operators can
      * override by declaring their own {@code SandboxClient<DockerSandboxClientOptions>} bean.
      */
@@ -85,8 +78,9 @@ public class DataAgentWorkspaceConfig {
     @Bean
     public UserSandboxRegistry userSandboxRegistry(
             SandboxClient<DockerSandboxClientOptions> sandboxClient,
-            SandboxLifecycleObserver lifecycleObserver) {
-        Path sharedRoot = resolveCwd().resolve("shared");
+            SandboxLifecycleObserver lifecycleObserver,
+            WorkspaceProperties workspaceProps) {
+        Path sharedRoot = resolveCwd(workspaceProps).resolve("shared");
         Duration idleTtl = Duration.ofMinutes(idleTtlMinutes);
         Duration evictionPoll = Duration.ofSeconds(evictionPollSeconds);
         log.info(
@@ -97,9 +91,16 @@ public class DataAgentWorkspaceConfig {
         return new UserSandboxRegistry(sandboxClient, sharedRoot, idleTtl, evictionPoll, lifecycleObserver);
     }
 
-    private Path resolveCwd() {
-        if (workspaceDir != null && !workspaceDir.isBlank()) {
-            return Paths.get(workspaceDir).toAbsolutePath().normalize();
+    /**
+     * Resolves the workspace root from {@link WorkspaceProperties} — same source as
+     * {@code BootstrapConfig} uses. Injecting the properties bean directly (instead of
+     * {@code DataAgentBootstrap}) avoids a circular dependency: the bootstrap depends
+     * on this registry's {@link UserSandboxRegistry} bean.
+     */
+    private Path resolveCwd(WorkspaceProperties props) {
+        String root = props.getRoot();
+        if (root != null && !root.isBlank()) {
+            return Paths.get(root).toAbsolutePath().normalize();
         }
         return Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
     }
