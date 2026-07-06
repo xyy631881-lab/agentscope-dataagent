@@ -15,9 +15,9 @@
  */
 package io.agentscope.dataagent.web.session;
 
+import io.agentscope.dataagent.conversation.ConversationService;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.runtime.config.SessionLifecycleConfig;
-import io.agentscope.dataagent.runtime.session.SessionAgentManager;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
@@ -32,20 +32,25 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * 定时任务：空闲重置、每日重置、定期清理
+ * 定时任务：空闲重置、每日重置、定期清理。
+ *
+ * <p>委托 {@link ConversationService} 执行实际的会话操作，
+ * 自身只负责调度时机和异常隔离。
  */
 @Component
 public class SessionLifecycleScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(SessionLifecycleScheduler.class);
 
-    private final SessionAgentManager sessionAgentManager;
+    private final ConversationService conversationService;
     private final SessionLifecycleConfig cfg;
     private final ScheduledExecutorService scheduler;
 
-    public SessionLifecycleScheduler(DataAgentBootstrap builderBootstrap) {
-        this.sessionAgentManager = builderBootstrap.sessionAgentManager();
-        this.cfg = builderBootstrap.loadedConfig().getSession();
+    public SessionLifecycleScheduler(
+            ConversationService conversationService,
+            DataAgentBootstrap bootstrap) {
+        this.conversationService = conversationService;
+        this.cfg = bootstrap.loadedConfig() != null ? bootstrap.loadedConfig().getSession() : null;
         this.scheduler =
                 Executors.newSingleThreadScheduledExecutor(
                         r -> {
@@ -69,7 +74,7 @@ public class SessionLifecycleScheduler {
             scheduler.scheduleAtFixedRate(
                     () -> {
                         try {
-                            int n = sessionAgentManager.resetIdleSessions(idleMs);
+                            int n = conversationService.resetIdleSessions(idleMs);
                             if (n > 0) {
                                 log.debug("Idle reset cycle: reset {} sessions", n);
                             }
@@ -92,7 +97,7 @@ public class SessionLifecycleScheduler {
                 scheduler.scheduleAtFixedRate(
                         () -> {
                             try {
-                                int n = sessionAgentManager.resetAllSessions();
+                                int n = conversationService.resetAllSessions();
                                 log.info("Daily reset cycle: reset {} sessions", n);
                             } catch (Exception e) {
                                 log.warn("Daily reset failed", e);
@@ -114,9 +119,9 @@ public class SessionLifecycleScheduler {
         scheduler.scheduleAtFixedRate(
                 () -> {
                     try {
-                        int n = sessionAgentManager.runMaintenance();
+                        int n = conversationService.runMaintenance();
                         if (n > 0) {
-                            log.debug("AgentStateStore maintenance: pruned {} entries", n);
+                            log.debug("Session maintenance: pruned {} entries", n);
                         }
                     } catch (Exception e) {
                         log.warn("Maintenance failed", e);

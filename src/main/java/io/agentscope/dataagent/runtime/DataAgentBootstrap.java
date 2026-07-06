@@ -27,10 +27,6 @@ import io.agentscope.dataagent.runtime.config.SkillRepositorySupport;
 import io.agentscope.harness.agent.gateway.HarnessGateway;
 import io.agentscope.dataagent.infrastructure.workspace.UserSandboxRegistry;
 import io.agentscope.dataagent.runtime.outbound.OutboundTool;
-import io.agentscope.dataagent.runtime.session.AgentManagerConfig;
-import io.agentscope.dataagent.runtime.session.SessionAgentManager;
-import io.agentscope.dataagent.runtime.session.SessionMaintenanceConfig;
-import io.agentscope.dataagent.runtime.session.SessionStore;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.gateway.ChannelManager;
 import io.agentscope.harness.agent.gateway.Gateway;
@@ -82,7 +78,6 @@ public final class DataAgentBootstrap {
     private final AgentscopeConfig loadedConfig;     // agentscope.json 解析结果
     private final List<Channel> registeredChannels;  // 通道列表
     private final HarnessGateway gateway;    // 网关（消息路由器）
-    private final SessionAgentManager sessionAgentManager;    // 会话管理器，负责创建、维护会话管理
     private final ChannelManager channelManager;    // 通道管理器
 
     private DataAgentBootstrap(
@@ -92,7 +87,6 @@ public final class DataAgentBootstrap {
             AgentscopeConfig loadedConfig,
             List<Channel> registeredChannels,
             HarnessGateway gateway,
-            SessionAgentManager sessionAgentManager,
             ChannelManager channelManager) {
         this.cwd = Objects.requireNonNull(cwd, "cwd");
         this.configPath = Objects.requireNonNull(configPath, "configPath");
@@ -101,7 +95,6 @@ public final class DataAgentBootstrap {
         this.registeredChannels =
                 registeredChannels != null ? List.copyOf(registeredChannels) : List.of();
         this.gateway = gateway;
-        this.sessionAgentManager = sessionAgentManager;
         this.channelManager = channelManager;
     }
 
@@ -183,11 +176,6 @@ public final class DataAgentBootstrap {
 
     public HarnessGateway gateway() {
         return gateway;
-    }
-
-    /** 构建时使用的 session agent manager（供控制器获取 session 信息）。 */
-    public SessionAgentManager sessionAgentManager() {
-        return sessionAgentManager;
     }
 
     /** 用于 channel 生命周期管理和出站消息投递的 channel manager。 */
@@ -272,27 +260,6 @@ public final class DataAgentBootstrap {
             }
         }
         return List.copyOf(merged.values());
-    }
-
-    /**
-     * 把 JSON 里的 session.maintenance 块转成运行时的 AgentManagerConfig。没有就回退到 defaults()。
-     * 配置会话清理策略（多久清一次、最多保留多少条），防止 sessions.json 无限膨胀。
-     */
-    private static AgentManagerConfig resolveAgentManagerConfig(AgentscopeConfig fileConfig) {
-        var sessionCfg = fileConfig != null ? fileConfig.getSession() : null;
-        if (sessionCfg == null || sessionCfg.getMaintenance() == null) {
-            return AgentManagerConfig.defaults();
-        }
-        var m = sessionCfg.getMaintenance();
-        String mode = m.getMode();
-        if (mode == null || mode.isBlank() || "off".equalsIgnoreCase(mode)) {
-            return AgentManagerConfig.defaults();
-        }
-        long pruneAfterMs = m.pruneAfterMs();
-        int maxEntries = m.getMaxEntries() != null ? m.getMaxEntries() : 0;
-        SessionMaintenanceConfig sm =
-                SessionMaintenanceConfig.enabled(pruneAfterMs, maxEntries);
-        return new AgentManagerConfig(sm);
     }
 
     static void applyFileEntry(
@@ -418,18 +385,7 @@ public final class DataAgentBootstrap {
                             ? fileConfig.getMain().trim()
                             : ids.iterator().next();
 
-            // ---- 阶段 1：构建共享的 session 基础设施 ----
-            Path mainWorkspace = resolveAgentWorkspace(cwd, fileAgents.get(main));
-
-            WorkspaceManager wsManager = new WorkspaceManager(mainWorkspace);
-
-            Path storeFile = mainWorkspace.resolve("sessions.json");
-            SessionStore sessionStore = new SessionStore(storeFile);
-            sessionStore.load();
-
-            AgentManagerConfig amCfg = resolveAgentManagerConfig(fileConfig);
-            SessionAgentManager sam =
-                    new SessionAgentManager(wsManager, amCfg, sessionStore);
+            // ---- 阶段 1：session 基础设施已迁移到 ConversationService（JPA） ----
 
             ChannelManager channelMgr = new ChannelManager();
             HarnessGateway gateway = HarnessGateway.create(channelMgr);
@@ -496,7 +452,6 @@ public final class DataAgentBootstrap {
                     fileConfig,
                     resolvedChannels,
                     gateway,
-                    sam,
                     channelMgr);
         }
 

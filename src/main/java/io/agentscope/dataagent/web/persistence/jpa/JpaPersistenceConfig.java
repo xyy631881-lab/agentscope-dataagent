@@ -17,6 +17,7 @@ package io.agentscope.dataagent.web.persistence.jpa;
 
 import io.agentscope.dataagent.web.auth.UserStore;
 import io.agentscope.dataagent.agent.catalog.UserAgentDefinitionStore;
+import io.agentscope.dataagent.conversation.ConversationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.domain.EntityScan;
@@ -28,10 +29,13 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
 /**
  * JpaPersistenceConfig 是"数据库持久化层的总开关"——它通过 3 个注解激活 Spring Data JPA 的全套能力，
  * 并创建 2 个核心 Bean（用户存储 + Agent 定义存储），是连接"业务接口"和"数据库表"的桥梁。
+ *
+ * <p>扫描两个包：{@code web.persistence.jpa}（用户/Agent/Contribution 实体）和
+ * {@code conversation}（会话实体 SessionEntity / SessionReadStateEntity）。
  */
 @Configuration
-@EnableJpaRepositories(basePackageClasses = JpaPersistenceConfig.class)
-@EntityScan(basePackageClasses = JpaPersistenceConfig.class)
+@EnableJpaRepositories(basePackageClasses = {JpaPersistenceConfig.class, ConversationService.class})
+@EntityScan(basePackageClasses = {JpaPersistenceConfig.class, ConversationService.class})
 @EnableTransactionManagement
 public class JpaPersistenceConfig {
 

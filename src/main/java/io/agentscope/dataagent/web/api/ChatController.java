@@ -28,8 +28,7 @@ import io.agentscope.core.event.ToolResultStartEvent;
 import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.UserMessage;
-import io.agentscope.dataagent.runtime.DataAgentBootstrap;
-import io.agentscope.dataagent.runtime.session.SessionAgentManager;
+import io.agentscope.dataagent.conversation.ConversationService;
 import io.agentscope.dataagent.runtime.session.SessionEntry;
 import io.agentscope.dataagent.agent.activity.ActivityEvent;
 import io.agentscope.dataagent.agent.activity.AgentActivityStore;
@@ -87,7 +86,7 @@ public class ChatController {
     private static final long SSE_TIMEOUT = 300_000L; // 5 分钟
 
     private final ChatUiChannel chatUiChannel;
-    private final SessionAgentManager sessionAgentManager;
+    private final ConversationService conversationService;
     private final AgentCatalogService catalogService;
     private final AgentLifecycleService lifecycleService;
     private final IdentityLinkStore identityLinks;
@@ -99,7 +98,7 @@ public class ChatController {
 
     public ChatController(
             ChatUiChannel chatUiChannel,
-            DataAgentBootstrap builderBootstrap,
+            ConversationService conversationService,
             AgentCatalogService catalogService,
             IdentityLinkStore identityLinks,
             UsageStore usageStore,
@@ -107,7 +106,7 @@ public class ChatController {
             AgentActivityStore activity,
             AgentLifecycleService lifecycleService) {
         this.chatUiChannel = chatUiChannel;
-        this.sessionAgentManager = builderBootstrap.sessionAgentManager();
+        this.conversationService = conversationService;
         this.catalogService = catalogService;
         this.lifecycleService = lifecycleService;
         this.identityLinks = identityLinks;
@@ -277,7 +276,7 @@ public class ChatController {
 
     private String findSessionKeyByGate(String userId, String gateKey) {
         if (gateKey == null) return null;
-        return sessionAgentManager.findByGateKey(gateKey, userId)
+        return conversationService.findByGateKey(gateKey, userId)
                 .map(SessionEntry::sessionKey)
                 .orElse(null);
     }
@@ -311,7 +310,7 @@ public class ChatController {
                                     + " conversation.",
                             null);
                 }
-                boolean ok = sessionAgentManager.resetSession(sessionKey);
+                boolean ok = conversationService.resetSessionByKey(sessionKey);
                 startedSessions.remove(gateKey);
                 return new CommandResult(
                         ok
