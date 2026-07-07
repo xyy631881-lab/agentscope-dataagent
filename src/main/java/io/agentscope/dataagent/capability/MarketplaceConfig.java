@@ -13,13 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.config;
+package io.agentscope.dataagent.capability;
 
+import io.agentscope.dataagent.capability.UserMarketplaceRegistry.DataAgentMarketplaceFactoryRegistration;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
-import io.agentscope.dataagent.runtime.marketplace.GitDataAgentMarketplace;
-import io.agentscope.dataagent.runtime.marketplace.LocalApprovalMarketplace;
-import io.agentscope.dataagent.runtime.marketplace.NacosDataAgentMarketplace;
-import io.agentscope.dataagent.runtime.marketplace.UserMarketplaceRegistry.DataAgentMarketplaceFactoryRegistration;
 import java.nio.file.Path;
 import java.util.Map;
 import org.slf4j.Logger;

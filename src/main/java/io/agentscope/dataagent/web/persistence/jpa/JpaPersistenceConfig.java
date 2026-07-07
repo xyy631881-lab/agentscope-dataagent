@@ -15,6 +15,7 @@
  */
 package io.agentscope.dataagent.web.persistence.jpa;
 
+import io.agentscope.dataagent.capability.ContributionEntity;
 import io.agentscope.dataagent.web.auth.UserStore;
 import io.agentscope.dataagent.agent.catalog.UserAgentDefinitionStore;
 import io.agentscope.dataagent.conversation.ConversationService;
@@ -34,8 +35,8 @@ import org.springframework.transaction.annotation.EnableTransactionManagement;
  * {@code conversation}（会话实体 SessionEntity / SessionReadStateEntity）。
  */
 @Configuration
-@EnableJpaRepositories(basePackageClasses = {JpaPersistenceConfig.class, ConversationService.class})
-@EntityScan(basePackageClasses = {JpaPersistenceConfig.class, ConversationService.class})
+@EnableJpaRepositories(basePackageClasses = {JpaPersistenceConfig.class, ConversationService.class, ContributionEntity.class})
+@EntityScan(basePackageClasses = {JpaPersistenceConfig.class, ConversationService.class, ContributionEntity.class})
 @EnableTransactionManagement
 public class JpaPersistenceConfig {
 

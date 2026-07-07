@@ -13,12 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.marketplace;
+package io.agentscope.dataagent.capability;
 
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.tool.Tool;
 import io.agentscope.core.tool.ToolParam;
-import io.agentscope.dataagent.web.persistence.jpa.ContributionEntity;
 import io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import java.nio.file.Paths;

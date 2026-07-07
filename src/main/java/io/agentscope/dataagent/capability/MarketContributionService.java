@@ -13,14 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.marketplace;
+package io.agentscope.dataagent.capability;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
-import io.agentscope.dataagent.web.persistence.jpa.ContributionEntity;
-import io.agentscope.dataagent.web.persistence.jpa.ContributionRepository;
 import io.agentscope.dataagent.infrastructure.workspace.SandboxPool;
 import java.io.IOException;
 import java.io.UncheckedIOException;

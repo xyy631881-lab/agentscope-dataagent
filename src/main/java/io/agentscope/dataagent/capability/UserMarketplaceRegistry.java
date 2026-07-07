@@ -13,9 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.runtime.marketplace;
+package io.agentscope.dataagent.capability;
 
-import io.agentscope.dataagent.runtime.config.MarketplaceConfigEntry;
 import io.agentscope.dataagent.infrastructure.workspace.WorkspaceManagerFactory;
 import jakarta.annotation.PreDestroy;
 import java.util.ArrayList;
@@ -153,7 +152,7 @@ public class UserMarketplaceRegistry {
 
     /**
      * 用于插入 marketplace 存储的 SPI。v1 在 {@code "local"} 类型下提供
-     * {@link io.agentscope.dataagent.runtime.marketplace.LocalApprovalMarketplace}；
+     * {@link LocalApprovalMarketplace}；
      * git 和 nacos 存储故意不打包（如果需要，从 agentscope-builder 中提取
      * {@code GitDataAgentMarketplace} / {@code NacosDataAgentMarketplace} 类）。
      */

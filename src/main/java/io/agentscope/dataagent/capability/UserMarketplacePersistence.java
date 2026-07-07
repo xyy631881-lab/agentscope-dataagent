@@ -13,13 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.runtime.marketplace;
+package io.agentscope.dataagent.capability;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.agentscope.dataagent.runtime.config.MarketplaceConfigEntry;
-import io.agentscope.dataagent.web.persistence.jpa.UserMarketplaceEntity;
-import io.agentscope.dataagent.web.persistence.jpa.UserMarketplaceRepository;
 import jakarta.transaction.Transactional;
 import java.time.Instant;
 import java.util.LinkedHashMap;

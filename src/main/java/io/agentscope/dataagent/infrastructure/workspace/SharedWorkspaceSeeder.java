@@ -41,7 +41,7 @@ import org.springframework.stereotype.Component;
  * application starts.
  *
  * <p>Write semantics are <b>write-if-missing</b>: an admin-approved contribution that has already
- * been materialised by {@link io.agentscope.dataagent.web.marketplace.MarketContributionService} is
+ * been materialised by {@link io.agentscope.dataagent.capability.MarketContributionService} is
  * never clobbered by a restart, and the on-disk copy can be hand-edited by operators between
  * deployments. To force a refresh of a shipped file, delete it on disk and bounce the process.
  *

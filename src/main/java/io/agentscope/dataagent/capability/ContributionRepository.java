@@ -13,21 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.persistence.jpa;
+package io.agentscope.dataagent.capability;
 
 import java.util.List;
-import java.util.Optional;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.repository.query.Param;
 
-/** Spring Data repository for {@link UserMarketplaceEntity}. */
-public interface UserMarketplaceRepository extends JpaRepository<UserMarketplaceEntity, Long> {
+/** JPA repository for {@link ContributionEntity}. */
+public interface ContributionRepository extends JpaRepository<ContributionEntity, Long> {
 
-    List<UserMarketplaceEntity> findByUserIdOrderByMarketplaceIdAsc(String userId);
+    List<ContributionEntity> findAllByStatusOrderByCreatedAtDesc(@Param("status") String status);
 
-    Optional<UserMarketplaceEntity> findByUserIdAndMarketplaceId(
-            String userId, String marketplaceId);
-
-    boolean existsByUserIdAndMarketplaceId(String userId, String marketplaceId);
-
-    void deleteByUserIdAndMarketplaceId(String userId, String marketplaceId);
+    List<ContributionEntity> findAllBySourceUserIdOrderByCreatedAtDesc(
+            @Param("sourceUserId") String sourceUserId);
 }

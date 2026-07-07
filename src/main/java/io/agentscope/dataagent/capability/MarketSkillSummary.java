@@ -13,17 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.persistence.jpa;
+package io.agentscope.dataagent.capability;
 
-import java.util.List;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.repository.query.Param;
-
-/** JPA repository for {@link ContributionEntity}. */
-public interface ContributionRepository extends JpaRepository<ContributionEntity, Long> {
-
-    List<ContributionEntity> findAllByStatusOrderByCreatedAtDesc(@Param("status") String status);
-
-    List<ContributionEntity> findAllBySourceUserIdOrderByCreatedAtDesc(
-            @Param("sourceUserId") String sourceUserId);
-}
+/**
+ * 由 {@link DataAgentMarketplace#list()} 返回的轻量级 Skill 描述符。用于填充
+ * marketplace 浏览器，而无需承担下载每个 SKILL.md 的成本。
+ *
+ * @param name        用户安装时使用的稳定标识符
+ * @param description 在 UI 中显示的一行描述；可能为空但不会为 null
+ * @param version     上游版本字符串，如果源没有版本概念（例如没有标签的 git 仓库）
+ *                    则为 {@code null}
+ */
+public record MarketSkillSummary(String name, String description, String version) {}

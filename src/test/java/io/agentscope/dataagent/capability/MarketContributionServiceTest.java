@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.web.marketplace;
+package io.agentscope.dataagent.capability;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -23,8 +23,6 @@ import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.Model;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.web.DataAgentApp;
-import io.agentscope.dataagent.web.persistence.jpa.ContributionEntity;
-import io.agentscope.dataagent.web.persistence.jpa.ContributionRepository;
 import io.agentscope.harness.agent.filesystem.remote.store.BaseStore;
 import io.agentscope.harness.agent.filesystem.remote.store.InMemoryStore;
 import java.io.IOException;
