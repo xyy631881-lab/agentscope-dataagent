@@ -15,15 +15,11 @@
  */
 package io.agentscope.dataagent.conversation;
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.dataagent.agent.catalog.AgentLifecycleService;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.runtime.config.AgentscopeConfig;
-import io.agentscope.dataagent.runtime.config.SessionLifecycleConfig;
 import io.agentscope.dataagent.runtime.session.SessionEntry;
 import io.agentscope.dataagent.runtime.session.SessionKind;
 import io.agentscope.dataagent.runtime.session.SessionMaintenanceConfig;
@@ -36,14 +32,14 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -55,12 +51,13 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>持久化从 sessions.json + ConcurrentHashMap 迁移到 JPA（MySQL/H2），
  * 消除了 JSON 文件读写和内存索引，查询直接走数据库索引。
+ *
+ * <p>启动迁移（sessions.json → JPA）已提取到 {@link ConversationMigrationService}。
  */
 @Service
 public class ConversationService {
 
     private static final Logger log = LoggerFactory.getLogger(ConversationService.class);
-    private static final ObjectMapper MIGRATION_MAPPER = new ObjectMapper();
 
     private final SessionEntityRepository sessionRepo;
     private final SessionReadStateRepository readStateRepo;
@@ -72,13 +69,14 @@ public class ConversationService {
             SessionEntityRepository sessionRepo,
             SessionReadStateRepository readStateRepo,
             DataAgentBootstrap bootstrap,
-            AgentLifecycleService lifecycleService) {
+            AgentLifecycleService lifecycleService,
+            ConversationMigrationService migrationService) {
         this.sessionRepo = sessionRepo;
         this.readStateRepo = readStateRepo;
         this.bootstrap = bootstrap;
         this.lifecycleService = lifecycleService;
         this.maintenanceConfig = resolveMaintenanceConfig(bootstrap.loadedConfig());
-        migrateFromSessionsJson();
+        // migrationService is injected to guarantee it initializes (and runs migration) first
     }
 
     // ==============================================================
@@ -103,9 +101,8 @@ public class ConversationService {
     public SessionEntry findSessionByConversationId(String agentId, String key, String userId) {
         if (key == null || key.isBlank()) return null;
         String gatewayAgentId = lifecycleService.peekGatewayAgentId(userId, agentId);
-        List<SessionEntity> mains = sessionRepo.findByKind(SessionKind.MAIN.getValue());
+        List<SessionEntity> mains = sessionRepo.findByUserIdAndKind(userId, SessionKind.MAIN.getValue());
         for (SessionEntity e : mains) {
-            if (!Objects.equals(userId, e.getUserId())) continue;
             if (!sessionMatchesAgent(e.toEntry(), gatewayAgentId)) continue;
             if (key.equals(extractConversationId(e.getGateKey()))) {
                 return e.toEntry();
@@ -390,31 +387,47 @@ public class ConversationService {
     public int resetIdleSessions(long idleMs) {
         if (idleMs <= 0) return 0;
         long cutoff = System.currentTimeMillis() - idleMs;
-        List<SessionEntity> all = sessionRepo.findAll();
-        int n = 0;
-        for (SessionEntity e : all) {
-            if (e.getLastActivityMs() < cutoff) {
-                if (resetSessionByKey(e.getSessionKey())) n++;
-            }
+        List<SessionEntity> idle = sessionRepo.findByLastActivityMsBefore(cutoff);
+        if (idle.isEmpty()) return 0;
+        long now = System.currentTimeMillis();
+        List<SessionEntity> toSave = new ArrayList<>(idle.size());
+        for (SessionEntity e : idle) {
+            SessionKind kind = "main".equals(e.getKind()) ? SessionKind.MAIN : SessionKind.SUBAGENT;
+            String newSessionId =
+                    kind == SessionKind.MAIN
+                            ? "main-" + UUID.randomUUID()
+                            : "subagent-" + UUID.randomUUID();
+            String newPath = resolveSessionFilePath(e.getUserId(), e.getAgentId(), newSessionId);
+            toSave.add(e.copyWithNewSessionId(newSessionId, newPath, now));
         }
-        if (n > 0) {
-            log.info("空闲重置: {} 个 session（空闲 > {} ms）", n, idleMs);
+        sessionRepo.saveAll(toSave);
+        if (!toSave.isEmpty()) {
+            log.info("空闲重置: {} 个 session（空闲 > {} ms）", toSave.size(), idleMs);
         }
-        return n;
+        return toSave.size();
     }
 
     /** 无条件重置所有会话。 */
     @Transactional
     public int resetAllSessions() {
         List<SessionEntity> all = sessionRepo.findAll();
-        int n = 0;
+        if (all.isEmpty()) return 0;
+        long now = System.currentTimeMillis();
+        List<SessionEntity> toSave = new ArrayList<>(all.size());
         for (SessionEntity e : all) {
-            if (resetSessionByKey(e.getSessionKey())) n++;
+            SessionKind kind = "main".equals(e.getKind()) ? SessionKind.MAIN : SessionKind.SUBAGENT;
+            String newSessionId =
+                    kind == SessionKind.MAIN
+                            ? "main-" + UUID.randomUUID()
+                            : "subagent-" + UUID.randomUUID();
+            String newPath = resolveSessionFilePath(e.getUserId(), e.getAgentId(), newSessionId);
+            toSave.add(e.copyWithNewSessionId(newSessionId, newPath, now));
         }
-        if (n > 0) {
-            log.info("每日重置: {} 个 session 已重置", n);
+        sessionRepo.saveAll(toSave);
+        if (!toSave.isEmpty()) {
+            log.info("每日重置: {} 个 session 已重置", toSave.size());
         }
-        return n;
+        return toSave.size();
     }
 
     /** 维护清理：过期删除 + 总数限制。 */
@@ -426,27 +439,26 @@ public class ConversationService {
         int removed = 0;
         long now = System.currentTimeMillis();
 
-        // ① 清理过期会话
+        // ① 清理过期会话（走索引 ix_conv_session_activity_global）
         if (maintenanceConfig.pruneAfterMs() > 0) {
             long cutoff = now - maintenanceConfig.pruneAfterMs();
-            List<SessionEntity> all = sessionRepo.findAll();
-            for (SessionEntity e : all) {
-                if (e.getLastActivityMs() < cutoff) {
-                    sessionRepo.delete(e);
-                    removed++;
-                }
+            List<SessionEntity> expired = sessionRepo.findByLastActivityMsBefore(cutoff);
+            if (!expired.isEmpty()) {
+                sessionRepo.deleteAllInBatch(expired);
+                removed += expired.size();
             }
         }
 
-        // ② 限制总数
+        // ② 限制总数（只加载需要删除的最旧 N 条，不加载全表）
         if (maintenanceConfig.maxEntries() > 0) {
-            List<SessionEntity> all = sessionRepo.findAll();
-            if (all.size() > maintenanceConfig.maxEntries()) {
-                all.sort(Comparator.comparingLong(SessionEntity::getLastActivityMs));
-                int toRemove = all.size() - maintenanceConfig.maxEntries();
-                for (int i = 0; i < toRemove && i < all.size(); i++) {
-                    sessionRepo.delete(all.get(i));
-                    removed++;
+            long total = sessionRepo.count();
+            int toRemove = (int) (total - maintenanceConfig.maxEntries());
+            if (toRemove > 0) {
+                Pageable page = PageRequest.of(0, toRemove);
+                List<SessionEntity> oldest = sessionRepo.findAllByOrderByLastActivityMsAsc(page);
+                if (!oldest.isEmpty()) {
+                    sessionRepo.deleteAllInBatch(oldest);
+                    removed += oldest.size();
                 }
             }
         }
@@ -484,72 +496,8 @@ public class ConversationService {
     }
 
     // ==============================================================
-    //  启动迁移：sessions.json → JPA
+    //  配置解析
     // ==============================================================
-
-    /**
-     * 如果 JPA 表为空且 sessions.json 存在，则将旧数据迁移到 JPA。
-     * 这是一次性迁移，迁移完成后 sessions.json 不再使用。
-     */
-    private void migrateFromSessionsJson() {
-        try {
-            if (sessionRepo.count() > 0) {
-                return; // JPA 已有数据，跳过迁移
-            }
-            Path storeFile = resolveSessionsJsonPath();
-            if (storeFile == null || !Files.isRegularFile(storeFile)) {
-                return; // 无 sessions.json，跳过
-            }
-            String json = Files.readString(storeFile, StandardCharsets.UTF_8);
-            if (json.isBlank()) return;
-            Map<String, StoredSessionEntry> loaded =
-                    MIGRATION_MAPPER.readValue(
-                            json,
-                            new TypeReference<LinkedHashMap<String, StoredSessionEntry>>() {});
-            if (loaded == null || loaded.isEmpty()) return;
-            int count = 0;
-            for (StoredSessionEntry se : loaded.values()) {
-                if (se == null || se.sessionKey == null) continue;
-                SessionEntity entity = new SessionEntity();
-                entity.setSessionKey(se.sessionKey);
-                entity.setAgentId(se.agentId);
-                entity.setSessionId(se.sessionId);
-                entity.setLabel(se.label);
-                entity.setKind(se.kind != null ? se.kind : "main");
-                entity.setSpawnedBy(se.spawnedBy);
-                entity.setSpawnDepth(se.spawnDepth);
-                entity.setCreatedAtMs(se.createdAtMs);
-                entity.setLastActivityMs(se.lastActivityMs);
-                entity.setSessionFilePath(se.sessionFilePath);
-                entity.setSpawnRunId(se.spawnRunId);
-                entity.setGateKey(se.gateKey);
-                entity.setUserId(se.userId);
-                sessionRepo.save(entity);
-                count++;
-            }
-            log.info("从 sessions.json 迁移了 {} 个 session 到 JPA", count);
-        } catch (Exception e) {
-            log.warn("sessions.json 迁移失败（不影响启动）: {}", e.getMessage());
-        }
-    }
-
-    private Path resolveSessionsJsonPath() {
-        try {
-            var fileConfig = bootstrap.loadedConfig();
-            var agents = fileConfig != null ? fileConfig.getAgents() : null;
-            var main = fileConfig != null ? fileConfig.getMain() : null;
-            String mainId = (main != null && !main.isBlank()) ? main.trim() : null;
-            if (agents != null && mainId != null && agents.containsKey(mainId)) {
-                var entry = agents.get(mainId);
-                if (entry != null && entry.getWorkspace() != null && !entry.getWorkspace().isBlank()) {
-                    return bootstrap.cwd().resolve(entry.getWorkspace()).resolve("sessions.json");
-                }
-            }
-            return bootstrap.cwd().resolve(".agentscope").resolve("workspace").resolve("sessions.json");
-        } catch (Exception e) {
-            return null;
-        }
-    }
 
     private static SessionMaintenanceConfig resolveMaintenanceConfig(AgentscopeConfig fileConfig) {
         var sessionCfg = fileConfig != null ? fileConfig.getSession() : null;
@@ -569,23 +517,6 @@ public class ConversationService {
     // ==============================================================
     //  DTO
     // ==============================================================
-
-    /** sessions.json 旧格式的反序列化 record（迁移用）。 */
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    public record StoredSessionEntry(
-            String sessionKey,
-            String agentId,
-            String sessionId,
-            String label,
-            String kind,
-            String spawnedBy,
-            int spawnDepth,
-            long createdAtMs,
-            long lastActivityMs,
-            String sessionFilePath,
-            String spawnRunId,
-            String gateKey,
-            String userId) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record InboxEntry(

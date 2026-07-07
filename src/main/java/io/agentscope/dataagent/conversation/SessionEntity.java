@@ -44,7 +44,8 @@ import jakarta.persistence.UniqueConstraint;
         indexes = {
             @Index(name = "ix_conv_session_user", columnList = "user_id, agent_id"),
             @Index(name = "ix_conv_session_gate", columnList = "gate_key"),
-            @Index(name = "ix_conv_session_activity", columnList = "user_id, last_activity_ms")
+            @Index(name = "ix_conv_session_activity", columnList = "user_id, last_activity_ms"),
+            @Index(name = "ix_conv_session_activity_global", columnList = "last_activity_ms")
         })
 public class SessionEntity {
 

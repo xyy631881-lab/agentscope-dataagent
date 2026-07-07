@@ -17,6 +17,7 @@ package io.agentscope.dataagent.conversation;
 
 import java.util.List;
 import java.util.Optional;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,6 +41,15 @@ public interface SessionEntityRepository extends JpaRepository<SessionEntity, Lo
             String userId, String agentId);
 
     List<SessionEntity> findByKind(String kind);
+
+    /** 查询最后活跃时间早于 cutoff 的会话（用于空闲重置和过期清理）。 */
+    List<SessionEntity> findByLastActivityMsBefore(long cutoff);
+
+    /** 按用户和会话类型查询（替代 findByKind + 内存过滤）。 */
+    List<SessionEntity> findByUserIdAndKind(String userId, String kind);
+
+    /** 按最后活跃时间升序分页查询（用于 maxEntries 超量清理，只取最旧的 N 条）。 */
+    List<SessionEntity> findAllByOrderByLastActivityMsAsc(Pageable pageable);
 
     @Transactional
     void deleteBySessionKey(String sessionKey);
