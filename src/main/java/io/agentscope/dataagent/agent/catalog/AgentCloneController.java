@@ -17,8 +17,8 @@ package io.agentscope.dataagent.agent.catalog;
 
 import io.agentscope.dataagent.agent.activity.ActivityEvent;
 import io.agentscope.dataagent.agent.activity.AgentActivityStore;
-import io.agentscope.dataagent.agent.catalog.AgentCatalogService;
-import io.agentscope.dataagent.agent.catalog.AgentCatalogService.StoredEntryAndDefinition;
+import io.agentscope.dataagent.agent.catalog.AgentMutationService;
+import io.agentscope.dataagent.agent.catalog.AgentMutationService.StoredEntryAndDefinition;
 import io.agentscope.dataagent.agent.catalog.AgentDefinition;
 import io.agentscope.dataagent.agent.sharing.AgentAccessGuard;
 import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
@@ -54,17 +54,17 @@ import org.springframework.web.server.ResponseStatusException;
 public class AgentCloneController {
     private static final Logger log = LoggerFactory.getLogger(AgentCloneController.class);
 
-    private final AgentCatalogService catalog;
+    private final AgentMutationService mutationService;
     private final AgentAccessGuard guard;
     private final WorkspaceManagerFactory workspaceFactory;
     private final AgentActivityStore activity;
 
     public AgentCloneController(
-            AgentCatalogService catalog,
+            AgentMutationService mutationService,
             AgentAccessGuard guard,
             WorkspaceManagerFactory workspaceFactory,
             AgentActivityStore activity) {
-        this.catalog = catalog;
+        this.mutationService = mutationService;
         this.guard = guard;
         this.workspaceFactory = workspaceFactory;
         this.activity = activity;
@@ -90,7 +90,7 @@ public class AgentCloneController {
                     String newName = req != null ? req.name() : null;
 
                     StoredEntryAndDefinition out =
-                    catalog.prepareClone(srcOwnerId, sourceAgentId, userId, newId, newName);
+                    mutationService.prepareClone(srcOwnerId, sourceAgentId, userId, newId, newName);
 
                     int copied =
                     WorkspaceCopier.copy(
@@ -124,7 +124,7 @@ public class AgentCloneController {
                     ActivityEvent.Action.CLONE_FROM,
                     userId + "/" + out.entry().id(),
                     Map.of("files", copied));
-                    return out.definition();
+                    return out.definition();
     }
 
     public record CloneRequest(String newAgentId, String name) {}

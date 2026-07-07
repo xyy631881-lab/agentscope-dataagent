@@ -18,7 +18,7 @@ package io.agentscope.dataagent.agent.catalog;
 import io.agentscope.dataagent.agent.activity.ActivityEvent;
 import io.agentscope.dataagent.agent.activity.AgentActivityStore;
 import io.agentscope.dataagent.agent.catalog.AgentCreateRequest;
-import io.agentscope.dataagent.agent.catalog.AgentCatalogService.ShareGrantRequest;
+import io.agentscope.dataagent.agent.catalog.AgentMutationService.ShareGrantRequest;
 import io.agentscope.dataagent.agent.sharing.AgentAccessGuard;
 import io.agentscope.dataagent.agent.sharing.AgentAclService;
 import io.agentscope.dataagent.agent.sharing.AgentAclService.Tier;
@@ -55,16 +55,19 @@ import io.agentscope.dataagent.agent.catalog.draft.AgentDraft;
 @RequestMapping("/api/agents")
 public class AgentCatalogController {
     private final AgentCatalogService catalogService;
+    private final AgentMutationService mutationService;
     private final AgentAclService aclService;
     private final AgentAccessGuard guard;
     private final AgentActivityStore activity;
 
     public AgentCatalogController(
             AgentCatalogService catalogService,
+            AgentMutationService mutationService,
             AgentAclService aclService,
             AgentAccessGuard guard,
             AgentActivityStore activity) {
         this.catalogService = catalogService;
+        this.mutationService = mutationService;
         this.aclService = aclService;
         this.guard = guard;
         this.activity = activity;
@@ -115,13 +118,13 @@ public class AgentCatalogController {
             @RequestBody AgentCreateRequest req, Authentication auth) {
         String userId = (String) auth.getPrincipal();
 
-                    AgentDefinition created = catalogService.createUserAgent(userId, req);
+                    AgentDefinition created = mutationService.createUserAgent(userId, req);
                     activity.record(
                     userId,
                     created.id(),
                     activity.actor(userId),
                     ActivityEvent.Action.CREATE);
-                    return created;
+                    return created;
     }
 
     /**
@@ -140,13 +143,13 @@ public class AgentCatalogController {
                         HttpStatus.CONFLICT,
                         "Global agents cannot be edited via the catalog API");
                     }
-                    AgentDefinition updated = catalogService.updateUserAgent(ownerId, id, req);
+                    AgentDefinition updated = mutationService.updateUserAgent(ownerId, id, req);
                     activity.record(
                     ownerId,
                     id,
                     activity.actor(userId),
                     ActivityEvent.Action.EDIT_SETTINGS);
-                    return withTier(userId, updated);
+                    return withTier(userId, updated);
     }
 
     /**
@@ -165,12 +168,12 @@ public class AgentCatalogController {
                         HttpStatus.CONFLICT,
                         "Global agents cannot be deleted via the catalog API");
                     }
-                    catalogService.deleteUserAgent(ownerId, id);
+                    mutationService.deleteUserAgent(ownerId, id);
                     // The owning namespace tree (including activity.jsonl) is removed when the
                     // agent is deleted; we still emit one final event so a workspace audit
                     // sweep can see who triggered the deletion before the log went away.
                     activity.record(
-                    ownerId, id, activity.actor(userId), ActivityEvent.Action.DELETE_AGENT);
+                    ownerId, id, activity.actor(userId), ActivityEvent.Action.DELETE_AGENT);
     }
 
     // -----------------------------------------------------------------
@@ -213,13 +216,13 @@ public class AgentCatalogController {
                         HttpStatus.FORBIDDEN,
                         "Only the owner may manage shares on agent " + id);
                     }
-                    AgentDefinition updated = catalogService.grantShare(ownerId, id, req);
+                    AgentDefinition updated = mutationService.grantShare(ownerId, id, req);
                     activity.record(
                     ownerId,
                     id,
                     activity.actor(userId),
                     ActivityEvent.Action.EDIT_SETTINGS);
-                    return withTier(userId, updated);
+                    return withTier(userId, updated);
     }
 
     /**
@@ -252,12 +255,12 @@ public class AgentCatalogController {
                         "Only the owner may manage shares on agent " + id);
                     }
                     AgentDefinition updated =
-                    catalogService.revokeShare(ownerId, id, granteeType, granteeId);
+                    mutationService.revokeShare(ownerId, id, granteeType, granteeId);
                     activity.record(
                     ownerId,
                     id,
                     activity.actor(userId),
                     ActivityEvent.Action.EDIT_SETTINGS);
-                    return withTier(userId, updated);
+                    return withTier(userId, updated);
     }
 }
