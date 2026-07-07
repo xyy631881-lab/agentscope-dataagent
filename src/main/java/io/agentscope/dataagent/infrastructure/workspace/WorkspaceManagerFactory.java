@@ -24,7 +24,7 @@ import java.util.Objects;
 
 /**
  * Builds {@link WorkspaceManager} instances whose filesystem is backed by a per-{@code (userId,
- * agentId)} live {@link Sandbox} from {@link UserSandboxRegistry}.
+ * agentId)} live {@link Sandbox} from a {@link SandboxPool}.
  *
  * <p>The same {@link Sandbox} instance backs both the agent runtime (via {@code
  * SandboxContext.externalSandbox} injected by the HarnessGateway) and every browser controller's
@@ -39,9 +39,9 @@ import java.util.Objects;
  */
 public final class WorkspaceManagerFactory {
 
-    private final UserSandboxRegistry registry;
+    private final SandboxPool registry;
 
-    public WorkspaceManagerFactory(UserSandboxRegistry registry) {
+    public WorkspaceManagerFactory(SandboxPool registry) {
         this.registry = Objects.requireNonNull(registry, "registry");
     }
 

@@ -20,19 +20,11 @@ import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClientOptions;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxState;
-import io.agentscope.harness.agent.sandbox.layout.WorkspaceEntry;
-import io.agentscope.harness.agent.sandbox.layout.WorkspaceProjectionEntry;
 import io.agentscope.harness.agent.sandbox.snapshot.NoopSnapshotSpec;
 import jakarta.annotation.PreDestroy;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
-import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -47,15 +39,12 @@ import org.slf4j.LoggerFactory;
  * 比喻：酒店式公寓前台，住客（用户）来的时候给他开一间房（容器），走的时候不退房（缓存复用），
  * 但空闲超过 TTL 就自动退房（回收）。
  */
-public final class UserSandboxRegistry {
+public final class UserSandboxRegistry implements SandboxPool {
 
     private static final Logger log = LoggerFactory.getLogger(UserSandboxRegistry.class);
 
-    private static final List<String> DEFAULT_PROJECTION_ROOTS =
-            List.of("AGENTS.md", "skills", "subagents", "knowledge");
-
     private final SandboxClient<DockerSandboxClientOptions> client;
-    private final Path hostWorkspaceRoot;
+    private final SharedWorkspaceProjection projection;
     private final Duration idleTtl;
     private final SandboxLifecycleObserver lifecycleObserver;
     //entries —— 主缓存表，key 是 (userId, agentId)，value 是容器 Entry，ConcurrentHashMap 保证多线程安全。
@@ -64,11 +53,9 @@ public final class UserSandboxRegistry {
 
     /**
      * @param client backend client used to {@link SandboxClient#create create} new sandboxes
-     * @param hostWorkspaceRoot directory under which per-agent shared seed lives, organised as
-     *     {@code <hostWorkspaceRoot>/agents/<agentId>/{AGENTS.md, skills/, subagents/, knowledge/}}.
-     *     Each container is projected with the slice for its own {@code agentId} only, so two
-     *     agents on the same host do not see each other's shared layer. May be {@code null} to
-     *     skip projection entirely (every container starts empty).
+     * @param projection builds the {@link WorkspaceSpec} that mounts per-agent shared seed
+     *     content (AGENTS.md / skills/ / subagents/ / knowledge/) into each fresh container.
+     *     Encapsulates the host-path layout so the registry can focus on container pooling.
      * @param idleTtl how long a sandbox may sit unused before {@link #evictIdle()} closes it
      * @param evictionPollInterval how often the background scheduler checks for idle sandboxes
      * @param lifecycleObserver observer that persists sandbox lifecycle events to DB;
@@ -76,12 +63,12 @@ public final class UserSandboxRegistry {
      */
     public UserSandboxRegistry(
             SandboxClient<DockerSandboxClientOptions> client,
-            Path hostWorkspaceRoot,
+            SharedWorkspaceProjection projection,
             Duration idleTtl,
             Duration evictionPollInterval,
             SandboxLifecycleObserver lifecycleObserver) {
         this.client = Objects.requireNonNull(client, "client");
-        this.hostWorkspaceRoot = hostWorkspaceRoot;
+        this.projection = Objects.requireNonNull(projection, "projection");
         this.idleTtl = Objects.requireNonNull(idleTtl, "idleTtl");
         this.lifecycleObserver = lifecycleObserver;
         long pollMs =
@@ -100,11 +87,9 @@ public final class UserSandboxRegistry {
         this.evictor.scheduleWithFixedDelay(
                 this::evictIdleQuietly, pollMs, pollMs, TimeUnit.MILLISECONDS);
         log.info(
-                "UserSandboxRegistry initialised: idleTtl={}, evictionPoll={},"
-                        + " hostWorkspaceRoot={}",
+                "UserSandboxRegistry initialised: idleTtl={}, evictionPoll={}",
                 idleTtl,
-                evictionPollInterval,
-                hostWorkspaceRoot);
+                evictionPollInterval);
     }
 
     /**
@@ -128,21 +113,6 @@ public final class UserSandboxRegistry {
                             return new Entry(createAndStart(k));  // 没有 → 创建新的
                         });
         return entry.sandbox;
-    }
-
-    /**
-     * peek(userId, agentId) — 看一眼有没有（不创建）
-     * 用途：前端刚加载页面时，只看有没有已有容器，不触发冷启动（创建容器要好几秒）
-     */
-    public Optional<Sandbox> peek(String userId, String agentId) {
-        validateSegment("userId", userId);
-        validateSegment("agentId", agentId);
-        Entry e = entries.get(new Key(userId, agentId));
-        if (e == null) {
-            return Optional.empty();  // 没找到 → 返回空
-        }
-        e.touch();
-        return Optional.of(e.sandbox);
     }
 
     /**
@@ -221,8 +191,8 @@ public final class UserSandboxRegistry {
      */
     private Sandbox createAndStart(Key key) {
         DockerSandboxClientOptions options = new DockerSandboxClientOptions();
-        // 1. 构建工作空间规格（挂载共享内容）
-        WorkspaceSpec ws = buildWorkspaceSpec(key);
+        // 1. 构建工作空间规格（挂载共享内容）—— 委托给 SharedWorkspaceProjection
+        WorkspaceSpec ws = projection.buildSpec(key.userId(), key.agentId());
         // 2. 创建 Docker 容器
         Sandbox sandbox = client.create(ws, new NoopSnapshotSpec(), options);
         try {
@@ -250,8 +220,16 @@ public final class UserSandboxRegistry {
 
     /**
      * 通知观察者记录沙箱生命周期。
-     * 从 DockerSandboxState 提取容器信息，委托给 lifecycleObserver 持久化到 DB。
-     * Registry 本身不再直接操作 DB——这是框架适配层和项目审计层的分界。
+     *
+     * <p><b>Docker adapter layer:</b> This method casts {@code sandbox.getState()} to
+     * {@link DockerSandboxState} to extract the container ID, name, and image. This is
+     * Docker-specific, but it is acceptable here because this entire class is the Docker-based
+     * {@code SandboxPool} implementation — the registry is wired to a
+     * {@code DockerSandboxClient} and creates Docker containers exclusively. If a non-Docker
+     * backend is ever needed, a separate {@code SandboxPool} implementation should be provided
+     * rather than parameterising this cast with a strategy.
+     *
+     * <p>Registry 本身不再直接操作 DB——所有 DB 记录的读写都委托给 lifecycleObserver。
      */
     private void recordLifecycle(Key key, Sandbox sandbox) {
         try {
@@ -265,43 +243,6 @@ public final class UserSandboxRegistry {
         } catch (Exception e) {
             log.warn("[sandbox-lifecycle] 记录生命周期失败: {}", e.getMessage());
         }
-    }
-
-    /**
-     * 效果：每个新容器启动时，
-     * 两层隔离：
-     * 用户间隔离：每个用户一个独立容器，文件系统天然隔离
-     * Agent 间隔离：容器只挂载自己 agentId 的共享层，看不到别的 Agent 的 skills
-     * 自动获得该 Agent 的共享内容（技能、子代理、知识库、AGENTS.md），但用户自己的文件是空的。
-     */
-    private WorkspaceSpec buildWorkspaceSpec(Key key) {
-        WorkspaceSpec spec = new WorkspaceSpec();
-        if (hostWorkspaceRoot == null) {
-            return spec;
-        }
-        // 宿主机路径: {cwd}/shared/agents/{agentId}/
-        Path agentSlice =
-                hostWorkspaceRoot
-                        .resolve("agents")
-                        .resolve(key.agentId())
-                        .toAbsolutePath()
-                        .normalize();
-        try {
-            // 确保目录存在
-            Files.createDirectories(agentSlice);
-        } catch (IOException e) {
-            throw new IllegalStateException(
-                    "Failed to ensure per-agent shared dir " + agentSlice + ": " + e.getMessage(),
-                    e);
-        }
-        // 把这个目录下的特定子目录投影（挂载）到容器里
-        WorkspaceProjectionEntry projection = new WorkspaceProjectionEntry();
-        projection.setSourceRoot(agentSlice.toString());
-        projection.setIncludeRoots(DEFAULT_PROJECTION_ROOTS);
-        Map<String, WorkspaceEntry> es = new LinkedHashMap<>();
-        es.put("__workspace_projection__", projection);
-        spec.setEntries(es);
-        return spec;
     }
 
     //关闭失败只 warn 不抛异常——避免一个容器关失败导致整个清理循环中断。

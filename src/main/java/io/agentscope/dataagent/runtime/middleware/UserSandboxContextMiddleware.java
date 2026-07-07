@@ -20,7 +20,7 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
-import io.agentscope.dataagent.infrastructure.workspace.UserSandboxRegistry;
+import io.agentscope.dataagent.infrastructure.workspace.SandboxPool;
 import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxContext;
@@ -42,14 +42,14 @@ public final class UserSandboxContextMiddleware implements MiddlewareBase {
 
     private static final Logger log = LoggerFactory.getLogger(UserSandboxContextMiddleware.class);
 
-    private final UserSandboxRegistry registry;
+    private final SandboxPool registry;
     private final String agentId;
 
     /**
-     * @param registry 每个用户的 sandbox 注册表
+     * @param registry 每个用户的 sandbox 池
      * @param agentId  稳定的 Agent 标识（来自配置文件，如 "data-agent"），
      */
-    public UserSandboxContextMiddleware(UserSandboxRegistry registry, String agentId) {
+    public UserSandboxContextMiddleware(SandboxPool registry, String agentId) {
         this.registry = Objects.requireNonNull(registry, "registry");
         this.agentId = Objects.requireNonNull(agentId, "agentId");
     }

@@ -76,19 +76,24 @@ public class DataAgentWorkspaceConfig {
     }
 
     @Bean
+    public SharedWorkspaceProjection sharedWorkspaceProjection(WorkspaceProperties workspaceProps) {
+        Path sharedRoot = resolveCwd(workspaceProps).resolve("shared");
+        log.info("SharedWorkspaceProjection: hostWorkspaceRoot={}", sharedRoot);
+        return new SharedWorkspaceProjection(sharedRoot);
+    }
+
+    @Bean
     public UserSandboxRegistry userSandboxRegistry(
             SandboxClient<DockerSandboxClientOptions> sandboxClient,
-            SandboxLifecycleObserver lifecycleObserver,
-            WorkspaceProperties workspaceProps) {
-        Path sharedRoot = resolveCwd(workspaceProps).resolve("shared");
+            SharedWorkspaceProjection projection,
+            SandboxLifecycleObserver lifecycleObserver) {
         Duration idleTtl = Duration.ofMinutes(idleTtlMinutes);
         Duration evictionPoll = Duration.ofSeconds(evictionPollSeconds);
         log.info(
-                "DataAgent sandbox registry: hostWorkspaceRoot={}, idleTtl={}, evictionPoll={}",
-                sharedRoot,
+                "DataAgent sandbox registry: idleTtl={}, evictionPoll={}",
                 idleTtl,
                 evictionPoll);
-        return new UserSandboxRegistry(sandboxClient, sharedRoot, idleTtl, evictionPoll, lifecycleObserver);
+        return new UserSandboxRegistry(sandboxClient, projection, idleTtl, evictionPoll, lifecycleObserver);
     }
 
     /**
@@ -106,7 +111,7 @@ public class DataAgentWorkspaceConfig {
     }
 
     @Bean
-    public WorkspaceManagerFactory workspaceManagerFactory(UserSandboxRegistry registry) {
+    public WorkspaceManagerFactory workspaceManagerFactory(SandboxPool registry) {
         return new WorkspaceManagerFactory(registry);
     }
 }

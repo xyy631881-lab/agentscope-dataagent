@@ -21,7 +21,7 @@ import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.runtime.AgentRuntimeConfigurer;
 import io.agentscope.dataagent.runtime.config.ChannelConfigEntry;
-import io.agentscope.dataagent.infrastructure.workspace.UserSandboxRegistry;
+import io.agentscope.dataagent.infrastructure.workspace.SandboxPool;
 import io.agentscope.dataagent.web.config.properties.AgentProperties;
 import io.agentscope.dataagent.web.config.properties.OllamaProperties;
 import io.agentscope.dataagent.web.config.properties.WorkspaceProperties;
@@ -74,7 +74,7 @@ public class BootstrapConfig {
     public DataAgentBootstrap builderBootstrap(
             Optional<Model> modelOpt,
             AgentRuntimeConfigurer agentRuntimeConfigurer,
-            UserSandboxRegistry userSandboxRegistry,
+            SandboxPool userSandboxRegistry,
             AgentProperties agentProps,
             WorkspaceProperties workspaceProps)
             throws IOException {
