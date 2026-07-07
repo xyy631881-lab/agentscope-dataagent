@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.runtime.middleware;
+import io.agentscope.dataagent.workspace.domain.SandboxPool;
 
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.middleware.AgentInput;
 import io.agentscope.core.middleware.MiddlewareBase;
-import io.agentscope.dataagent.infrastructure.workspace.SandboxPool;
 import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxContext;
@@ -31,12 +31,13 @@ import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 
 /**
- * 它是一个"中间人"，负责在 Agent 运行之前，把属于当前用户的 Docker 沙箱容器"递"给 Agent
-     * 每个用户 有自己专属的办公室（Docker 沙箱容器），里面有自己的文件和工具。
-     * Agent 就像一个跑腿的办事员，需要进办公室帮用户干活。
-     * 这个中间件 就是门口的前台——办事员还没进门之前，前台先查一下"你是帮哪个用户办事的？"，
-     * 然后找到那个用户的办公室钥匙，交给办事员。这样办事员就能直接进对应用户的办公室干活了。
+ * Injects the current user's Docker sandbox container into the {@link RuntimeContext} before an
+ * Agent runs, so the Agent operates inside that user's isolated workspace.
  *
+ * <p>Each user has a dedicated sandbox container (their "office") with their own files and tools.
+ * The Agent is the clerk that needs to work inside the office; this middleware is the front desk
+ * that, before the clerk enters, looks up which user is being served, borrows that user's sandbox
+ * from the {@link SandboxPool}, and hands it to the Agent as the {@link SandboxContext}.
  */
 public final class UserSandboxContextMiddleware implements MiddlewareBase {
 

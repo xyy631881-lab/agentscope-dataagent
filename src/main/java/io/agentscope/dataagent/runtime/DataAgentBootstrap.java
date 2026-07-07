@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.runtime;
+import io.agentscope.dataagent.config.DataAgentConfig;
+import io.agentscope.dataagent.conversation.application.ConversationService;
+import io.agentscope.dataagent.integration.outbound.domain.OutboundTool;
+import io.agentscope.dataagent.workspace.domain.SandboxPool;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -25,8 +29,8 @@ import io.agentscope.dataagent.runtime.config.ChannelConfigEntry;
 import io.agentscope.dataagent.runtime.config.ChannelTypeRegistry;
 import io.agentscope.dataagent.runtime.config.SkillRepositorySupport;
 import io.agentscope.harness.agent.gateway.HarnessGateway;
-import io.agentscope.dataagent.infrastructure.workspace.SandboxPool;
-import io.agentscope.dataagent.runtime.outbound.OutboundTool;
+import io.agentscope.dataagent.workspace.domain.SandboxPool;
+import io.agentscope.dataagent.integration.outbound.domain.OutboundTool;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.gateway.ChannelManager;
 import io.agentscope.harness.agent.gateway.Gateway;
@@ -325,7 +329,7 @@ public final class DataAgentBootstrap {
         private final Map<String, Channel> channels = new LinkedHashMap<>();
 
         /** 每个用户的 sandbox 池；非空时为每个 Agent 注册 UserSandboxContextMiddleware */
-        private SandboxPool userSandboxRegistry;
+        private SandboxPool sandboxPool;
 
         private Builder() {}
 
@@ -349,8 +353,8 @@ public final class DataAgentBootstrap {
             return this;
         }
 
-        public Builder userSandboxRegistry(SandboxPool registry) {
-            this.userSandboxRegistry = registry;
+        public Builder sandboxPool(SandboxPool registry) {
+            this.sandboxPool = registry;
             return this;
         }
 
@@ -404,11 +408,11 @@ public final class DataAgentBootstrap {
                 }
 
                 // 为每个 Agent 注册 sandbox 注入 middleware
-                if (userSandboxRegistry != null) {
+                if (sandboxPool != null) {
                     b.middleware(
                             new io.agentscope.dataagent.runtime.middleware
                                     .UserSandboxContextMiddleware(
-                                    userSandboxRegistry, id));
+                                    sandboxPool, id));
                 }
 
                 // 预填充出站发送工具

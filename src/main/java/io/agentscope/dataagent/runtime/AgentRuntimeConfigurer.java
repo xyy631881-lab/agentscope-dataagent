@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.runtime;
+import io.agentscope.dataagent.agent.application.AgentLifecycleService;
+import io.agentscope.dataagent.config.DataAgentConfig;
 
 import io.agentscope.core.permission.PermissionBehavior;
 import io.agentscope.core.permission.PermissionContextState;

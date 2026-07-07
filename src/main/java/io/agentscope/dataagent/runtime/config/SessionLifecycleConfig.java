@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.runtime.config;
+import io.agentscope.dataagent.conversation.application.SessionLifecycleScheduler;
+import io.agentscope.dataagent.conversation.domain.SessionMaintenanceConfig;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -34,7 +36,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * <p>镜像 OpenClaw 的 session 级别配置。运行时会映射到：
  *
  * <ul>
- *   <li>{@link io.agentscope.dataagent.runtime.session.SessionMaintenanceConfig} 用于清理/上限策略
+ *   <li>{@link io.agentscope.dataagent.conversation.domain.SessionMaintenanceConfig} 用于清理/上限策略
  *   <li>触发重置事件的定时任务（{@code SessionLifecycleScheduler}）
  * </ul>
  */

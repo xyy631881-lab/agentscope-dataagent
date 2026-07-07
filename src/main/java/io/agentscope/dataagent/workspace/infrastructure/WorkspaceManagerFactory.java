@@ -1,0 +1,143 @@
+/*
+ * Copyright 2024-2026 the original author or authors.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package io.agentscope.dataagent.workspace.infrastructure;
+import io.agentscope.dataagent.common.WorkspaceCopier;
+import io.agentscope.dataagent.workspace.domain.SandboxPool;
+
+import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
+import io.agentscope.harness.agent.sandbox.Sandbox;
+import io.agentscope.harness.agent.workspace.WorkspaceManager;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Objects;
+
+/**
+ * Builds {@link WorkspaceManager} instances whose filesystem is backed by a per-{@code (userId,
+ * agentId)} live {@link Sandbox} from a {@link SandboxPool}.
+ *
+ * <p>The same {@link Sandbox} instance backs both the agent runtime (via {@code
+ * SandboxContext.externalSandbox} injected by the HarnessGateway) and every browser controller's
+ * workspace operation. This is what makes the workspace user-isolated: each user gets their own
+ * container; there is no path-prefix namespace and no shared {@code LocalFilesystem} layer that
+ * would otherwise leak content across tenants.
+ *
+ * <p>The {@link Path} returned by {@link WorkspaceManager#getWorkspace()} is a host-side label
+ * (used for display, audit, and RuntimeContext metadata), <em>not</em> the on-disk
+ * location of the file data. Actual reads/writes go through {@link SharedSandboxFilesystem} into
+ * the container at {@code /workspace}.
+ */
+public final class WorkspaceManagerFactory {
+
+    private final SandboxPool registry;
+
+    public WorkspaceManagerFactory(SandboxPool registry) {
+        this.registry = Objects.requireNonNull(registry, "registry");
+    }
+
+    /**
+     * Returns a {@link WorkspaceManager} for a user-scoped agent. Equivalent to
+     * {@link #forAgent(String, String, String)} with {@code workspacePath=null}.
+     */
+    public WorkspaceManager forAgent(String ownerId, String agentId) {
+        return forAgent(ownerId, agentId, null);
+    }
+
+    /**
+     * 工厂接到订单"给用户 A 的 Agent B 准备一个办公室"——先找一个空闲办公室（借沙箱），
+     * 挂上门牌号（算路径），配上钥匙（文件系统），交付使用。
+     */
+    public WorkspaceManager forAgent(String ownerId, String agentId, String workspacePath) {
+        validateSegment("ownerId", ownerId);
+        validateSegment("agentId", agentId);
+        Sandbox sb = registry.borrow(ownerId, agentId);  //获取/创建用户的 Docker 容器
+        Path dataPath = resolveAgentDataPath(workspacePath, agentId);  //确定工作空间的逻辑路径
+        return new WorkspaceManager(dataPath, new SharedSandboxFilesystem(sb));  //把路径和文件系统绑定在一起
+    }
+
+    /**
+     * Returns a {@link WorkspaceManager} for a global agent accessed by a specific user.
+     * Equivalent to {@link #forAgent(String, String, String)} — once the filesystem layer is
+     * sandbox-backed, the global/user distinction disappears because the sandbox itself is keyed
+     * by {@code (userId, agentId)}. Kept as a separate entry point for call-site readability.
+     */
+    public WorkspaceManager forGlobalAgent(String userId, String agentId) {
+        return forAgent(userId, agentId, null);
+    }
+
+    /** See {@link #forGlobalAgent(String, String)}. */
+    public WorkspaceManager forGlobalAgent(String userId, String agentId, String workspacePath) {
+        return forAgent(userId, agentId, workspacePath);
+    }
+
+    /**
+     * Returns the raw per-{@code (userId, agentId)} {@link AbstractFilesystem} without the
+     * {@link WorkspaceManager} wrapper, suitable for callers that need to enumerate / copy files
+     * inside the user's isolated workspace (notably the audit/activity log and
+     * {@link io.agentscope.dataagent.common.WorkspaceCopier}).
+     */
+    public AbstractFilesystem userDataFs(String ownerId, String agentId, String workspacePath) {
+        validateSegment("ownerId", ownerId);
+        validateSegment("agentId", agentId);
+        return new SharedSandboxFilesystem(registry.borrow(ownerId, agentId));
+    }
+
+    /**
+     * Path prefix under which {@link #userDataFs(String, String, String)} reports file paths.
+     * With sandbox-backed isolation the entire container belongs to one user, so the prefix is
+     * just the container root ({@code "/"}). Kept on the API surface to avoid forcing call-site
+     * changes during the migration.
+     */
+    public String userDataPathPrefix(String ownerId, String agentId, String workspacePath) {
+        validateSegment("ownerId", ownerId);
+        validateSegment("agentId", agentId);
+        return "/";
+    }
+
+    /**
+     * 路径解析规则
+     */
+    public Path resolveAgentDataPath(String workspacePath, String fallbackAgentId) {
+        String raw =
+                (workspacePath != null && !workspacePath.isBlank())
+                        ? workspacePath.trim()
+                        : fallbackAgentId;
+        if (raw == null || raw.isBlank()) {
+            throw new IllegalArgumentException(
+                    "workspacePath and fallbackAgentId are both null/blank");
+        }
+        Path p = Paths.get(raw);
+        if (p.isAbsolute()) {
+            return p.normalize();
+        }
+        Path cwd = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        Path agentScopeBase = cwd.resolve(".agentscope").normalize();
+        Path resolvedAgainstCwd = cwd.resolve(p).normalize();
+        if (resolvedAgainstCwd.startsWith(agentScopeBase)) {
+            return resolvedAgainstCwd;
+        }
+        return agentScopeBase.resolve(p).normalize();
+    }
+
+    private static void validateSegment(String label, String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException(label + " must not be null or blank");
+        }
+        if (value.contains("/") || value.contains("\\") || value.contains("..")) {
+            throw new IllegalArgumentException(
+                    label + " must not contain path separators or '..': " + value);
+        }
+    }
+}

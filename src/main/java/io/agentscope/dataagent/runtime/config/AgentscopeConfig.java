@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.runtime.config;
+import io.agentscope.dataagent.conversation.domain.SessionMaintenanceConfig;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -58,7 +59,7 @@ public class AgentscopeConfig {
 
     /**
      * 可选的 session 生命周期配置（自动重置、维护）。映射到运行时
-     * {@link io.agentscope.dataagent.runtime.session.SessionMaintenanceConfig}
+     * {@link io.agentscope.dataagent.conversation.domain.SessionMaintenanceConfig}
      * 和用于每日/空闲重置的内部调度器。
      */
     @JsonProperty("session")

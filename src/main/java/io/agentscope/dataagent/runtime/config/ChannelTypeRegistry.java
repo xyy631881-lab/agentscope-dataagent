@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.runtime.config;
+import io.agentscope.dataagent.integration.webhook.application.WebhookChannel;
 
-import io.agentscope.dataagent.runtime.channel.webhook.WebhookChannel;
+import io.agentscope.dataagent.integration.webhook.application.WebhookChannel;
 import io.agentscope.extensions.channel.dingtalk.DingTalkChannel;
 import io.agentscope.harness.agent.gateway.channel.ChannelFactory;
 import io.agentscope.harness.agent.gateway.channel.chatui.ChatUiChannel;
