@@ -14,11 +14,13 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.conversation.api;
-import io.agentscope.dataagent.agent.domain.AgentAclService;
+import io.agentscope.dataagent.agent.application.AgentAclService;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.event.AgentEndEvent;
+import io.agentscope.core.event.ConfirmResult;
+import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.event.AgentEvent;
 import io.agentscope.core.event.TextBlockDeltaEvent;
 import io.agentscope.core.event.ToolCallDeltaEvent;
@@ -29,6 +31,7 @@ import io.agentscope.core.event.ToolResultStartEvent;
 import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.UserMessage;
+import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.dataagent.conversation.application.ConversationService;
 import io.agentscope.dataagent.conversation.domain.SessionEntry;
 import io.agentscope.dataagent.agent.domain.ActivityEvent;
@@ -38,7 +41,7 @@ import io.agentscope.dataagent.agent.domain.AgentDefinition;
 import io.agentscope.dataagent.agent.application.AgentLifecycleService;
 import io.agentscope.dataagent.security.infrastructure.IdentityLinkStore;
 import io.agentscope.dataagent.agent.application.AgentAccessGuard;
-import io.agentscope.dataagent.agent.domain.AgentAclService.Tier;
+import io.agentscope.dataagent.agent.application.AgentAclService.Tier;
 import io.agentscope.dataagent.conversation.application.UsageStore;
 import io.agentscope.harness.agent.gateway.channel.InboundMessage;
 import io.agentscope.harness.agent.gateway.channel.Peer;
@@ -51,6 +54,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
@@ -96,6 +101,7 @@ public class ChatController {
     private final AgentActivityStore activity;
 
     private final Set<String> startedSessions = ConcurrentHashMap.newKeySet();
+    private final Map<String, PendingConfirm> pendingConfirms = new ConcurrentHashMap<>();
 
     public ChatController(
             ChatUiChannel chatUiChannel,
@@ -116,7 +122,13 @@ public class ChatController {
         this.activity = activity;
     }
 
-    public record ChatRequest(String message, String sessionKey) {}
+    public record ChatRequest(String message, String sessionKey, List<ConfirmDecision> confirmResults) {}
+
+    /** A single approve/reject decision returned by the UI for a paused tool call. */
+    public record ConfirmDecision(String toolCallId, boolean approved) {}
+
+    /** Pending human-in-the-loop confirmation, keyed by conversation id. */
+    private record PendingConfirm(String replyId, List<ToolUseBlock> toolCalls) {}
 
     public record ChatResponse(String reply, String sessionKey) {}
 
@@ -167,15 +179,41 @@ public class ChatController {
         // 订阅 Agent 事件流，推送到 SseEmitter
         final Map<String, ToolBuffer> buffers = new ConcurrentHashMap<>();
 
-        executeChatStream(userId, agentId, req.message(), resolvedConversationId)
-                .mapNotNull(event -> convertToSseFrame(event, buffers, resolvedConversationId))
+        executeChatStream(userId, agentId, req, resolvedConversationId)
+                .mapNotNull(event -> {
+                    try {
+                        return convertToSseFrame(event, buffers, resolvedConversationId);
+                    } catch (Exception ex) {
+                        // 单个事件转换失败不杀死整个流（如沙箱过期等清理阶段异常）
+                        log.debug(
+                                "Skipping SSE frame conversion: event={}, error={}",
+                                event.getClass().getSimpleName(), ex.getMessage());
+                        return null;
+                    }
+                })
                 .filter(Objects::nonNull)
                 .onErrorResume(ex -> {
-                    log.warn(
-                            "Chat stream error: userId={}, agentId={}, error={}",
-                            userId, agentId, ex.getMessage());
+                    // 框架清理阶段（沙箱已回收后访问文件系统）的异常属于"事后噪音"，
+                    // Agent 已正常完成、done 事件也已发出，不应作为错误推给前端。
+                    String msg = ex.getMessage() != null ? ex.getMessage() : "";
+                    if (isCleanupNoise(msg)) {
+                        log.debug(
+                                "Suppressed post-completion cleanup noise: userId={}, agentId={}, detail={}",
+                                userId, agentId, msg);
+                        return Flux.empty(); // 静默完成，不发 error 帧
+                    }
+                    // 对 WorkspaceStartException 打印完整 cause 链，方便定位
+                    if (ex instanceof io.agentscope.harness.agent.sandbox.SandboxException.WorkspaceStartException wse) {
+                        log.error(
+                                "Chat stream error (WorkspaceStart): userId={}, agentId={}, outer={}",
+                                userId, agentId, msg, wse.getCause());
+                    } else {
+                        log.warn(
+                                "Chat stream error: userId={}, agentId={}, error={}",
+                                userId, agentId, msg);
+                    }
                     return Flux.just(sseFrame("error",
-                            Map.of("type", "error", "error", ex.getMessage())));
+                            Map.of("type", "error", "error", msg)));
                 })
                 .subscribe(
                         frame -> {
@@ -241,18 +279,22 @@ public class ChatController {
 
     private void recordRunSession(
             AgentDefinition def, String agentId, String userId, String conversationId) {
+        String gateKey = resolveGateKey(userId, agentId, conversationId);
+        if (gateKey == null) return;
+
+        // 确保会话记录在数据库中存在（全局 Agent 的 def.ownerId 为 null，但会话记录仍应创建）
+        conversationService.createSessionRecord(agentId, conversationId, userId, gateKey);
+
         if (def == null || def.ownerId() == null) {
             return;
         }
-        String dedupeKey = resolveGateKey(userId, agentId, conversationId);
-        if (dedupeKey == null) return;
-        if (!startedSessions.add(dedupeKey)) return;
+        if (!startedSessions.add(gateKey)) return;
         activity.record(
                 def.ownerId(),
                 agentId,
                 activity.actor(userId),
                 ActivityEvent.Action.RUN_SESSION,
-                dedupeKey,
+                gateKey,
                 null);
     }
 
@@ -407,8 +449,19 @@ public class ChatController {
      * 由调用方订阅。
      */
     private Flux<AgentEvent> executeChatStream(
-            String userId, String agentId, String message, String conversationId) {
-        Msg userMsg = new UserMessage("user", message);
+            String userId, String agentId, ChatRequest req, String conversationId) {
+        Msg userMsg;
+        if (req.confirmResults() != null && !req.confirmResults().isEmpty()) {
+            // Resume a paused (human-in-the-loop) agent: replay the user's decision as a
+            // confirmation result on the original tool call so the engine can proceed.
+            List<ConfirmResult> results = buildConfirmResults(req.confirmResults(), conversationId);
+            userMsg = UserMessage.builder()
+                    .textContent(req.message() != null ? req.message() : "")
+                    .metadata(Map.of(Msg.METADATA_CONFIRM_RESULTS, results))
+                    .build();
+        } else {
+            userMsg = new UserMessage("user", req.message());
+        }
         long startMs = System.currentTimeMillis();
 
         InboundMessage inbound;
@@ -428,6 +481,33 @@ public class ChatController {
         final String recordedAgentId = agentId != null ? agentId : "(default)";
         return events.doFinally(signalType ->
                 usageStore.record(userId, recordedAgentId, System.currentTimeMillis() - startMs));
+    }
+
+    /**
+     * Builds {@link ConfirmResult}s for a resumed (paused) agent. Matches each UI decision back to
+     * the original {@link ToolUseBlock} captured when the agent paused, then clears the pending entry.
+     */
+    private List<ConfirmResult> buildConfirmResults(
+            List<ConfirmDecision> decisions, String conversationId) {
+        PendingConfirm pending = pendingConfirms.remove(conversationId);
+        if (pending == null) {
+            log.warn("No pending confirmation for conversation {}; cannot resume HITL", conversationId);
+            return List.of();
+        }
+        Map<String, ToolUseBlock> byId = new HashMap<>();
+        for (ToolUseBlock tc : pending.toolCalls()) {
+            byId.put(tc.getId(), tc);
+        }
+        List<ConfirmResult> results = new ArrayList<>();
+        for (ConfirmDecision d : decisions) {
+            ToolUseBlock tc = byId.get(d.toolCallId());
+            if (tc == null) {
+                log.warn("ConfirmDecision references unknown toolCallId={}", d.toolCallId());
+                continue;
+            }
+            results.add(new ConfirmResult(d.approved(), tc));
+        }
+        return results;
     }
 
     /**
@@ -453,6 +533,7 @@ public class ChatController {
             String toolInput = (buf != null) ? buf.input.toString() : "";
             return sseFrame("tool_call", Map.of(
                     "type", "tool_call",
+                    "toolCallId", end.getToolCallId(),
                     "toolName", toolName,
                     "toolInput", toolInput));
         }
@@ -470,8 +551,27 @@ public class ChatController {
             String toolResult = (buf != null) ? buf.result.toString() : end.getState().name();
             return sseFrame("tool_result", Map.of(
                     "type", "tool_result",
+                    "toolCallId", end.getToolCallId(),
                     "toolName", end.getToolCallName(),
                     "toolResult", toolResult));
+        }
+        if (event instanceof RequireUserConfirmEvent confirm) {
+            // Stash the paused call so the UI's reply can be matched back to the right tool call.
+            log.info(
+                    "HITL confirm required: conversationId={}, replyId={}, toolCalls={}",
+                    conversationId, confirm.getReplyId(),
+                    confirm.getToolCalls().stream().map(ToolUseBlock::getName).toList());
+            pendingConfirms.put(
+                    conversationId, new PendingConfirm(confirm.getReplyId(), confirm.getToolCalls()));
+            List<Map<String, Object>> calls =
+                    confirm.getToolCalls().stream()
+                            .map(tc ->
+                                    Map.of("id", tc.getId(), "name", tc.getName(), "input", tc.getInput()))
+                            .toList();
+            return sseFrame("confirm", Map.of(
+                    "type", "confirm",
+                    "replyId", confirm.getReplyId(),
+                    "toolCalls", calls));
         }
         if (event instanceof AgentEndEvent) {
             return sseFrame("done", Map.of(
@@ -486,6 +586,20 @@ public class ChatController {
 
     private SseFrame sseFrame(String eventType, Object data) {
         return new SseFrame(eventType, ChatSupport.toJson(eventType, data));
+    }
+
+    /**
+     * 判断异常是否属于框架"事后清理噪音"——Agent 已完成执行、done 事件已发出后，
+     * 清理代码访问已过期/已回收的沙箱容器或文件系统时抛出的异常。
+     * 此类异常不应作为错误推给前端，静默吞掉即可。
+     */
+    private static boolean isCleanupNoise(String errorMessage) {
+        if (errorMessage == null) return false;
+        String lower = errorMessage.toLowerCase();
+        return lower.contains("no active sandbox")
+                || lower.contains("sandbox filesystem used outside")
+                || lower.contains("no such container")
+                || lower.contains("failed to stop container");
     }
 
 

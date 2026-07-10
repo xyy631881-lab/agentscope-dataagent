@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Optional;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -50,6 +51,13 @@ public interface SessionEntityRepository extends JpaRepository<SessionEntity, Lo
 
     /** 按最后活跃时间升序分页查询（用于 maxEntries 超量清理，只取最旧的 N 条）。 */
     List<SessionEntity> findAllByOrderByLastActivityMsAsc(Pageable pageable);
+
+    /** 按最后活跃时间降序分页查询（用于最近会话列表）。 */
+    List<SessionEntity> findAllByOrderByLastActivityMsDesc(Pageable pageable);
+
+    /** 去重统计有会话记录的用户数。 */
+    @Query("SELECT COUNT(DISTINCT s.userId) FROM SessionEntity s")
+    long countDistinctUserId();
 
     @Transactional
     void deleteBySessionKey(String sessionKey);

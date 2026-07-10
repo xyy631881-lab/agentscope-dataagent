@@ -14,8 +14,6 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.conversation.application;
-
-import io.agentscope.dataagent.conversation.application.ConversationService;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.runtime.config.SessionLifecycleConfig;
 import jakarta.annotation.PostConstruct;

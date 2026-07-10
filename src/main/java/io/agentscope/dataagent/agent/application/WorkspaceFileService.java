@@ -18,7 +18,6 @@ import io.agentscope.dataagent.agent.api.AgentWorkspaceController;
 
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.dataagent.agent.domain.ActivityEvent;
-import io.agentscope.dataagent.agent.application.AgentActivityStore;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.model.FileInfo;
 import io.agentscope.harness.agent.filesystem.model.FileUploadResponse;

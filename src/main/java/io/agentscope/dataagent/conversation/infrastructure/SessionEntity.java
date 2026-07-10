@@ -89,8 +89,7 @@ public class SessionEntity {
     @Column(name = "spawn_run_id", length = 256)
     private String spawnRunId;
 
-    @Lob
-    @Column(name = "gate_key")
+    @Column(name = "gate_key", length = 256)
     private String gateKey;
 
     @Column(name = "user_id", length = 128)

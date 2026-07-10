@@ -18,6 +18,7 @@ import io.agentscope.dataagent.capability.marketplace.application.MarketplaceCon
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.dataagent.config.properties.AgentProperties;
+import io.agentscope.dataagent.config.properties.ApiModelProperties;
 import io.agentscope.dataagent.config.properties.OllamaProperties;
 import io.agentscope.dataagent.config.properties.SessionRedisProperties;
 import io.agentscope.dataagent.config.properties.WorkspaceProperties;
@@ -50,6 +51,7 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @EnableConfigurationProperties({
     OllamaProperties.class,
+    ApiModelProperties.class,
     AgentProperties.class,
     WorkspaceProperties.class,
     SessionRedisProperties.class

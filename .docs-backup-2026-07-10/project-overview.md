@@ -1,16 +1,17 @@
 # agentscope-dataagent 项目完整文档
 
-> 版本：2.0.0-SNAPSHOT | 更新时间：2026-07-06
+> 版本：2.0.0-SNAPSHOT | 更新时间：2026-07-09
 >
-> **近期重构（2026-07-06）**：
-> - WebFlux → Spring MVC 迁移（SseEmitter 替代 Flux<ServerSentEvent>）
-> - 提取 conversation 域：SessionAgentManager/SessionStore/SessionReadStateStore → ConversationService + JPA (SessionEntity)
-> - 提取 SandboxLifecycleObserver：UserSandboxPool 降级为纯容器池
-> - 拆分 BootstrapConfig：440行 → 4个 @ConfigurationProperties + 4个 @Configuration 类
-> - 提取 WorkspaceResolutionService：消除 3 个 Controller 的重复工作空间解析逻辑
-> - 扩展贡献系统：新增 MCP_SERVER 目标类型 + 市场生命周期审计动作
+> **当前状态校准（2026-07-10）：** 本历史总览中的沙箱章节仍描述了已删除的
+> `UserSandboxPool`、`SandboxLock`、心跳和清理器等应用侧组件。当前代码直接使用
+> AgentScope `SandboxManager`；这些旧细节只能作为历史参考，已核验的事实来源为
+> [current-delivery-status-2026-07-10.md](current-delivery-status-2026-07-10.md)。
 >
-> **注意**：本文档已更新对已删除的 SessionAgentManager/SessionStore 等类的引用，相关章节已标注删除或替换说明。
+> - **2026-07-06**：WebFlux → Spring MVC 迁移（SseEmitter 替代 Flux<ServerSentEvent>）；提取 conversation 域：SessionAgentManager/SessionStore/SessionReadStateStore → ConversationService + JPA (SessionEntity)；拆分 BootstrapConfig（4 个 @ConfigurationProperties + 4 个 @Configuration）；提取 WorkspaceResolutionService；扩展贡献系统（MCP_SERVER 目标类型 + 市场生命周期审计）
+> - **2026-07-07/08**：沙箱真实生命周期下沉到 AgentScope 框架（UserSandboxPool 委托框架 SandboxManager 管理 Docker 生命周期，自身仅保留常驻持有/空闲回收/invalidate 广播/DB 审计）；严格依赖方向收口（domain 不依赖 api/application/infrastructure，application 不依赖 api，AgentStateStore 单一装配源）；frontend 插件改为默认不激活的 `frontend` profile（后端构建彻底 Node-free）；本项目三层文档全部按当前代码重校
+> - **2026-07-09（其二）**：沙箱加固——多副本并发与爆炸半径。①为 agent 的 `DockerFilesystemSpec` 注入 `SandboxSnapshotSpec` + `SandboxExecutionGuard`（由 `SandboxSnapshotConfig` 统一装配），修复**子代理（ISOLATED）沙箱无快照（`report-writer` 等产出文件回收即丢）**与 fallback 路径无快照两类 P0 隐患；②新增 `SandboxLock` 抽象（`InMemorySandboxLock` / `RedisSandboxLock`），由 `UserSandboxContextMiddleware` 在回合边界串行化同一 `(userId, agentId)`——这是 externalSandbox 路径（框架 `SandboxExecutionGuard` 被绕过）下**真正的多副本并发闸门**；③`UserSandboxPool.invalidate` 由"立即 docker rm 所有用户容器"改为**惰性 stale 标记**（下次 borrow 时再快照 + 重建），消除审批通过即打断活跃会话、峰值同时重建数十容器的爆炸半径；④新增管理台 `POST /api/agents/{id}/rebuild-workspace`（惰性重建），覆盖"绕过贡献流程手动改 shared/ 层"的共享层重载需求。详见 §14.7.6。
+> 
+>**注意**：本文档已更新对已删除的 SessionAgentManager/SessionStore 等类的引用，相关章节已标注删除或替换说明。
 
 ---
 
@@ -23,7 +24,7 @@ dataagent 是一个**多租户、自进化的企业数据分析 Agent 平台**�
 ### 1.2 核心设计理念
 
 - **多人并行进化、互不干扰。** 每个用户的 workspace 完全隔离（skills / memory / subagents / sessions），同一份初始 agent 在不同人手里会长成不同模样。
-- **能力市场，不是大杂烩。** 磨出来的好内容（SQL 技能、子智能体、memory 备忘）可以提名 → 管理员审批 → 进入 `shared/` 共享库 → 下次所有人的 agent 自动看到。知识自下而上流动，但中间有道闸。
+- **能力市场，不是大杂烩。** 磨出来的好内容（SQL 技能、子智能体、memory 备忘）可以提名 → 管理员审批 → 进入 `shared/` 共享库 → 下次所有人的 agent 自动看到。知识自下而上流动，但中间有道闸也就是需要管理员审核。
 - **Sandbox 生命周期由应用方掌握。** Agent 执行的脚本在隔离 Docker 沙箱中运行，容器规格、回收策略、驱动工具链全部可由运维团队定制。
 - **Agent 可分享。** 用户自建的 Agent 可通过 share API 授权给指定用户或全员（CLONE/RUN/EDIT 三级权限），不靠管理员中转。
 
@@ -63,11 +64,14 @@ dataagent 是一个**多租户、自进化的企业数据分析 Agent 平台**�
 ### 2.2 启动
 
 ```bash
-# 编译（跳过前端构建）
-mvn compile -DskipFrontend
+# 编译（默认不含前端构建，只需 JDK + Maven）
+mvn compile
 
-# 打包
-mvn package -DskipFrontend -DskipTests
+# 打包（默认不含前端）
+mvn package -DskipTests
+
+# 如需把 React 前端一并构建进 jar：激活 frontend profile
+mvn -Pfrontend package -DskipTests
 
 # 运行（默认 mysql profile，连接本地 MySQL root/root）
 java -jar target\agentscope-dataagent-2.0.0-SNAPSHOT-exec.jar
@@ -75,8 +79,9 @@ java -jar target\agentscope-dataagent-2.0.0-SNAPSHOT-exec.jar
 ```
 
 > **Windows 环境 Maven 注意**：Git Bash 下 `mvn` 脚本可能有路径转换问题，使用 `mvn.cmd` + Windows 路径格式即可：
+>
 > ```bash
-> JAVA_HOME="D:\\jdk21" "D:\\apache-maven-3.9.16\\bin\\mvn.cmd" compile -DskipFrontend
+> JAVA_HOME="D:\\jdk21" "D:\\apache-maven-3.9.16\\bin\\mvn.cmd" compile
 > ```
 
 ### 2.3 默认账号
@@ -85,7 +90,7 @@ java -jar target\agentscope-dataagent-2.0.0-SNAPSHOT-exec.jar
 |---|---|---|---|
 | `admin` | `admin` | user, admin | 所有 profile 都会注入（首次启动空表时由 `JpaUserStore.seedDefaultAdmin()` 创建） |
 
-> 注：之前的 `bob/bob`、`alice/alice` 是 H2 专用的演示账号，已随 H2 移除。如需测试用户，用 `admin` 登录后在 `/admin/users` 页面创建。
+> 如需测试用户，用 `admin` 登录后在 `/admin/users` 页面创建。
 
 **第一次登录建议用 `admin/admin`**——既是 owner（能管理 Agent 分享）也是管理员（能审批贡献、管用户）。
 
@@ -160,15 +165,14 @@ java -jar target\agentscope-dataagent-2.0.0-SNAPSHOT-exec.jar
 └──────────────────────┬───────────────────────────────────────────┘
                        ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  6. Agent 分享（新增）                                             │
+│  6. Agent 分享                                             │
 │     owner: POST /api/agents/{id}/shares                           │
 │     被授权者: 立刻在 /api/agents 列表里看到这个 Agent              │
 │     权限级别: CLONE / RUN / EDIT                                   │
 └──────────────────────┬───────────────────────────────────────────┘
                        ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│  7. 新用户加入 → 直接获得共享库积累的全部能力 + 被分享的 Agent      │
-│     • OverlayFilesystem 自动融合 shared/ + per-用户 workspace     │
+│  7. 新用户加入 → 直接获得共享库积累的全部能力 + 一个全局的最初的Agent      │
 │     循环回到步骤 2                                                │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -187,7 +191,36 @@ java -jar target\agentscope-dataagent-2.0.0-SNAPSHOT-exec.jar
 2. 管理用户和 Agent 实例（`/admin/users`、`/admin/agents`）
 3. 审批 marketplace 贡献（`/admin/approvals`）
 4. 查看平台用量统计（`/admin/usage`）
-5. 调整 sandbox 策略 / 通道绑定（`/admin/instances`、`/admin/channels`）
+5. **调整 sandbox 策略 / 通道绑定**（`/admin/instances`、`/admin/channels`）
+
+### 3.3 如何跑通本闭环（本地验证清单）
+
+> 本章开头 §3 的 7 步流程，所需能力**在代码里已全部接好**，无需额外开发即可端到端验证：
+> - 4 个数据分析工具：`DataAgentToolkit`（`list_data_sources` / `describe_table` / `run_sql_preview` / `render_chart`）
+> - 子代理：`AgentRuntimeConfigurer` 已声明 `code-reviewer`（ISOLATED，不暴露给用户）与 `report-writer`（ISOLATED，暴露给用户）
+> - Plan Mode：`b.enablePlanMode()` 已开启
+> - Compaction：`triggerMessages(30)` + `toolResultEviction` 已配置
+> - 权限：`PermissionMode.BYPASS` + `run_sql_preview` 单条 ASK 规则（执行 SQL 前需用户在 UI 确认）
+> - 系统提示词 `prompts/system.md` 已引导 Agent 走"列数据源 → 看表 → Planner 规划 → 派子代理 → 画图 → 执行 SQL"的链路
+
+**前置**：后端以 `mysql,redis` 启动、Docker daemon 可用、模型 API Key 已配（见 §17.1）。用 `admin/admin` 登录 Web UI 或走 SSE curl。
+
+**依次发这 7 句话即可跑通**（每一步对应 §3 的一环）：
+
+| # | 你说的话（示例） | 触发的能力 | 预期现象 |
+|---|---|---|---|
+| 1 | "列出所有可用的数据源" | `list_data_sources` | 返回 `analytics_db` |
+| 2 | "看看 analytics_db 里 orders 表的结构和样例" | `describe_table` | 返回表结构 + 采样数据 |
+| 3 | "帮我规划一下：分析最近 7 天日销售额并与去年同期对比" | **Plan Mode** | Agent 进入 plan，列出分析步骤，**等你点确认** |
+| 4 | （确认后）"按这个计划执行，并用 code-reviewer 审查你的 SQL、用 report-writer 生成报告" | `agent_spawn` → `code-reviewer` / `report-writer` | 后台派两个子代理并行（report-writer 结果对用户可见） |
+| 5 | "把日销售额趋势画成折线图" | `render_chart` | 返回 Vega-Lite spec（前端渲染图表） |
+| 6 | "查询最近 7 天的日销售额" | `run_sql_preview` | **弹出权限确认**（HITL），批准后执行返回表格 |
+| 7 | 继续多轮对话 | **Compaction** | 超过 30 轮后自动压缩上下文，早轮 tool_result 被裁剪，不爆窗口 |
+
+**常见卡点排查**：
+- 看不到确认弹窗 / 收到框架英文提示 → 见聊天链路文档的 HITL confirm 处理；`/reset` 可清掉残留确认状态。
+- 日志出现 `SandboxConfigurationException: No active sandbox` → 属框架事后清理噪音，已在 `ChatController` 静默，对话不受影响（§14.7.5）。
+- 工具报 `not implemented` → 检查 `dataagent.analytics.enabled=true` 且 `JdbcTemplate` 已注入（§6 工具表注释）。
 
 ---
 
@@ -576,6 +609,36 @@ curl http://localhost:8080/api/agents/data-agent/workspace/memory \
 
 **预期效果**：返回 `MEMORY.md` 内容（Agent 的长期记忆）。
 
+#### `POST /workspace` + `POST /workspace/scaffold` — 初始化/脚手架工作区
+
+```bash
+# 初始化工作区（确保目录与共享内容投影就位）
+curl -X POST http://localhost:8080/api/agents/data-agent/workspace \
+  -H "Authorization: Bearer $TOKEN"
+
+# 按模板脚手架（生成标准 AGENTS.md / skills / subagents 骨架）
+curl -X POST http://localhost:8080/api/agents/data-agent/workspace/scaffold \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+#### 文件管理（完整端点）
+
+```bash
+# 创建文件（与 PUT 类似，语义为"新建"）
+curl -X POST "http://localhost:8080/api/agents/data-agent/workspace/file?path=/data/new.csv" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"a,b,c\n1,2,3"}'
+
+# 移动/重命名文件
+curl -X POST "http://localhost:8080/api/agents/data-agent/workspace/file/move" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"from":"/data/old.csv","to":"/data/new.csv"}'
+```
+
+> 其余文件端点见前文：`GET /files`（文件树）、`GET/PUT /file`（读/写）、`POST /upload`（上传）、`DELETE /file`（删除）。
+
 #### 子代理管理
 
 ```bash
@@ -588,6 +651,12 @@ curl -X PUT http://localhost:8080/api/agents/data-agent/workspace/subagents/my-h
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"content":"# My Helper\n你是一个助手..."}'
+
+# 从另一个 Agent 克隆子代理
+curl -X POST http://localhost:8080/api/agents/data-agent/workspace/subagents/from-agent \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sourceAgentId":"data-agent","subagentName":"report-writer"}'
 
 # 删除子代理
 curl -X DELETE http://localhost:8080/api/agents/data-agent/workspace/subagents/my-helper \
@@ -621,6 +690,16 @@ curl http://localhost:8080/api/agents/data-agent/skills/repositories \
   -H "Authorization: Bearer $TOKEN"
 ```
 
+#### `GET /repositories/{index}/skills` — 列出某仓库的技能
+
+```bash
+curl http://localhost:8080/api/agents/data-agent/skills/repositories/0/skills \
+  -H "Authorization: Bearer $TOKEN"
+# 单个技能详情：
+curl http://localhost:8080/api/agents/data-agent/skills/repositories/0/skills/chart-rendering \
+  -H "Authorization: Bearer $TOKEN"
+```
+
 #### `POST /workspace/install` — 从仓库安装技能
 
 ```bash
@@ -628,6 +707,15 @@ curl -X POST http://localhost:8080/api/agents/data-agent/skills/workspace/instal
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"repositoryIndex":0,"skillName":"chart-rendering"}'
+```
+
+#### `POST /workspace/marketplace-install` — 从能力市场安装技能
+
+```bash
+curl -X POST http://localhost:8080/api/agents/data-agent/skills/workspace/marketplace-install \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"marketplaceId":"team-git","skillName":"chart-rendering"}'
 ```
 
 ---
@@ -656,6 +744,24 @@ curl -X PUT http://localhost:8080/api/agents/data-agent/tools/config \
   -H "Content-Type: application/json" \
   -d '{"toolsAllow":["list_data_sources","describe_table","run_sql_preview","render_chart"]}'
 ```
+
+#### `GET /catalog/builtins` — 内置工具目录
+
+```bash
+curl http://localhost:8080/api/agents/data-agent/tools/catalog/builtins \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**预期效果**：返回框架内置工具（read_file / write_file / edit_file / list_files / grep_files / glob_files / memory_search / memory_get / session_search / execute …）。
+
+#### `GET /catalog/mcp-servers` — MCP 服务目录
+
+```bash
+curl http://localhost:8080/api/agents/data-agent/tools/catalog/mcp-servers \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**预期效果**：返回 `catalog/mcp-servers.json` 里登记的 MCP 服务清单。
 
 ---
 
@@ -901,9 +1007,9 @@ curl -X POST "http://localhost:8080/api/internal/sandbox/heartbeat?containerId=x
 
 ---
 
-## 六、Agent 可调用的工具（DataAgentToolkit）
+## 六、Agent 可调用的工具
 
-Agent 在对话中可调用以下工具（由 [DataAgentToolkit.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/tools/data/DataAgentToolkit.java) 暴露）：
+Agent 在对话中可调用以下工具。其中 4 个数据分析工具由 [DataAgentToolkit.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/tools/data/DataAgentToolkit.java) 暴露，另 2 个由 `OutboundTool` / `ContributeWorkspaceTool` 暴露：
 
 | 工具名 | 参数 | 作用 | 测试话术 |
 |---|---|---|---|
@@ -911,8 +1017,12 @@ Agent 在对话中可调用以下工具（由 [DataAgentToolkit.java](file:///e:
 | `describe_table` | `source_id`, `table` | 返回表结构 + 5 行采样 | "看看 analytics_db 里 orders 表的结构" |
 | `run_sql_preview` | `source_id`, `sql`, `row_limit`(可选,默认100,上限500) | 执行只读 SELECT/WITH 查询 | "查询最近 7 天的日销售额" |
 | `render_chart` | `chart_type`, `vega_lite_spec` | 渲染 Vega-Lite 图表 | "画个折线图展示日销售额趋势" |
+| `outbound_send` | `channel_id`, `peer_kind`, `peer_id`, `text`/`markdown` | 主动向已注册 IM 通道推送消息（见 §5.11） | "把报告发到钉钉群" |
+| `contribute_to_workspace` | `source_paths`, `target_type`, `target_path`, `rationale` | 提名 workspace 文件到共享库，待管理员审批（见 §5.9） | "把这次的 SQL 模板提交到共享库" |
 
-**测试链路**：依次问"列出数据源 → 描述表 → 查询数据 → 画图"，能完整走完 4 个工具。
+> 框架内置工具（read_file / write_file / edit_file / list_files / grep_files / glob_files / memory_search / memory_get / session_search / execute）由 AgentScope harness 自身注册，不在上表内。
+
+**测试链路**：依次问"列出数据源 → 描述表 → 查询数据 → 画图"，能完整走完 4 个数据分析工具；`outbound_send` 与 `contribute_to_workspace` 需先配置通道 / 共享库后调用。
 
 ---
 
@@ -951,252 +1061,8 @@ Agent 在对话中可调用以下工具（由 [DataAgentToolkit.java](file:///e:
 
 ## 八、包结构与文件清单
 
-> 共 119 个 Java 源文件，分布在 22 个包下（4 个顶层领域：agent/、runtime/、web/、infrastructure/ + tools/）。
-
-### 8.0 `agent/` — Agent 领域层 (DDD 限界上下文)
-
-> 按领域驱动设计组织的 Agent 核心业务包，从 web/ 层剥离。
-
-#### `agent/catalog/` — Agent 目录与生命周期 (7 个)
-
-| 文件 | 职责 |
-|------|------|
-| [AgentCatalogController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentCatalogController.java) | Agent CRUD + 分享管理 REST 端点 |
-| [AgentCatalogService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentCatalogService.java) | Agent 创建/克隆/配置/分享服务（瘦身版，仅 CRUD+共享） |
-| [AgentLifecycleService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentLifecycleService.java) | Agent 运行时生命周期：构建、注册、缓存、失效（从 AgentCatalogService 拆出） |
-| [AgentCloneController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentCloneController.java) | `POST /api/agents/{id}/clone` 克隆端点 |
-| [AgentCreateRequest.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentCreateRequest.java) | 创建 Agent 的请求 DTO（提取的独立 record） |
-| [AgentDefinition.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentDefinition.java) | Agent 定义数据结构（scope=global/user、ownerId、shares、tierForCurrentUser） |
-| [UserAgentDefinitionStore.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/UserAgentDefinitionStore.java) | 按用户持久化 Agent 定义的 SPI 接口 |
-
-#### `agent/catalog/draft/` — AI 草稿生成 (4 个)
-
-| 文件 | 职责 |
-|------|------|
-| [AgentDraftController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/draft/AgentDraftController.java) | `POST /api/agents/draft` — AI 辅助生成 Agent 配置 |
-| [AgentDraftService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/draft/AgentDraftService.java) | 调用 LLM + 提示词模板生成 Agent 草稿 |
-| [AgentDraft.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/draft/AgentDraft.java) | Agent 草稿 DTO（提取的独立 record） |
-| [NamedFile.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/draft/NamedFile.java) | 文件名+内容配对 record |
-
-#### `agent/sharing/` — 权限与共享 (3 个)
-
-| 文件 | 职责 |
-|------|------|
-| [AgentAclService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/sharing/AgentAclService.java) | ACL 服务。Tier 三级(CLONE<RUN<EDIT) + Scope 三种(global/user/share) |
-| [AgentAccessGuard.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/sharing/AgentAccessGuard.java) | 访问权限守卫。可见性(404) + 权限级别(403) 两道门 |
-| [AgentShareGrant.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/sharing/AgentShareGrant.java) | 共享授权数据结构（granteeType, granteeId, tier） |
-
-#### `agent/content/` — Agent 内容管理 (4 个)
-
-| 文件 | 职责 |
-|------|------|
-| [AgentWorkspaceController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/content/AgentWorkspaceController.java) | 浏览/读写 workspace 文件 |
-| [AgentSkillsController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/content/AgentSkillsController.java) | 查看/编辑/删除 workspace 中的 skill |
-| [AgentToolsController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/content/AgentToolsController.java) | 查看/配置工具白名单/黑名单 + MCP 目录 |
-| [AgentBindingController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/content/AgentBindingController.java) | 用户通道绑定偏好 |
-
-#### `agent/activity/` — 活动日志 (3 个)
-
-| 文件 | 职责 |
-|------|------|
-| [AgentActivityController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/activity/AgentActivityController.java) | `GET /api/agents/{id}/activity` 活动日志端点 |
-| [AgentActivityStore.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/activity/AgentActivityStore.java) | JSONL 追加式活动日志存储 |
-| [ActivityEvent.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/activity/ActivityEvent.java) | 活动事件数据结构 |
-
----
-
-### 8.1 `web/` — Web 层 (Spring Boot)
-
-#### `config/` — 配置 (3 个)
-
-| 文件 | 职责 |
-|------|------|
-| [BootstrapConfig.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/config/BootstrapConfig.java) | **核心配置入口**。组装 DataAgentBootstrap，注册 Model/StateStore/ObjectMapper Bean，通过 `AgentRuntimeConfigurer` 统一配置所有 Agent 的运行时能力。可选 Redis 兜底（`@ConditionalOnExpression` 开关）。运行时能力配置已抽取到 [AgentRuntimeConfigurer](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/AgentRuntimeConfigurer.java) |
-| [SecurityConfig.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/config/SecurityConfig.java) | Spring Security 配置：JWT 过滤器、CORS、路径权限 (公开 / 用户 / 管理员) |
-| [WebConfig.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/config/WebConfig.java) | CORS 跨域配置 |
-
-#### `web/api/` — REST Controller (5 个)
-
-| 文件 | 路径前缀 | 职责 |
-|------|----------|------|
-| [ChatController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/ChatController.java) | `/api/agents/{agentId}/chat` | **核心对话端点**。POST `/stream` (SSE 流式)、POST `/send` (同步)、GET `/session` (会话检查)。**注意**：`stream()` 不查会话，会话创建/复用由 harness 框架内部处理；`currentSession()` 通过 `ConversationService` 查询会话 |
-| [SessionController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/SessionController.java) | `/api/agents/{agentId}/sessions` | Session 列表、历史消息、reset/delete、标记已读 |
-| [BindingPersistence.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/BindingPersistence.java) | — | Agent-通道绑定持久化层 |
-| [ChannelDirectoryController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/ChannelDirectoryController.java) | `/api/channels` | 通道目录 |
-| [MarketplacesController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/MarketplacesController.java) | `/api/me/marketplaces` | 用户 marketplace 订阅管理 |
-
-#### `web/sandbox/` — 沙箱基础设施 (2 个)
-
-| 文件 | 职责 |
-|------|------|
-| [SandboxHeartbeatController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/sandbox/SandboxHeartbeatController.java) | Sandbox 健康检查端点 (`/api/internal/sandbox`) |
-| [SandboxReaperService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/sandbox/SandboxReaperService.java) | Sandbox 僵尸容器回收服务 |
-
-#### `web/admin/` — 管理员领域 (1 个)
-
-| 文件 | 职责 |
-|------|------|
-| [AdminUserController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/admin/AdminUserController.java) | 管理员端：用户 CRUD、密码重置、角色管理、撤销用户的所有 share 授权 |
-
-#### `web/auth/` — 认证 (4 个)
-
-| 文件 | 职责 |
-|------|------|
-| [AuthController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/auth/AuthController.java) | 登录 / 令牌刷新 |
-| [JwtService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/auth/JwtService.java) | JWT 签发与验证 |
-| [UserController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/auth/UserController.java) | 用户信息查询 |
-| [UserStore.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/auth/UserStore.java) | 用户存储接口 |
-
-> **注**：原 `web/catalog/` 和 `web/share/` 已迁移至 `agent/catalog/` 和 `agent/sharing/`（见 8.0 节）。
-
-#### `capability/marketplace/` — 能力市场 (6 个)
-
-| 文件 | 职责 |
-|------|------|
-| [MarketContributionController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/capability/marketplace/MarketContributionController.java) | 用户提交贡献 (POST /api/me/contributions) |
-| [MarketContributionService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/capability/marketplace/MarketContributionService.java) | 贡献存储与检索。审批通过后调 `UserSandboxPool.invalidate()` 强制重建容器 |
-| [ContributionApprovalController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/capability/marketplace/ContributionApprovalController.java) | 管理员审批 (approve/reject) |
-| [ContributeWorkspaceTool.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/capability/marketplace/ContributeWorkspaceTool.java) | Agent 可调用工具：`contribute_to_workspace` |
-| [ContributionToolRegistrar.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/capability/marketplace/ContributionToolRegistrar.java) | 将 ContributeWorkspaceTool 注册到所有 GLOBAL agent |
-| [FileEntry.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/capability/marketplace/FileEntry.java) | 贡献文件实体 |
-
-#### `web/persistence/jpa/` — JPA 持久化 (14 个)
-
-| 文件 | 职责 |
-|------|------|
-| `UserEntity.java` / `UserEntityRepository.java` | 用户表 |
-| `AgentEntity.java` / `AgentEntityRepository.java` | Agent 定义表（含 shares @OneToMany） |
-| `AgentShareEntity.java` | Agent 共享记录（表 `dataagent_agent_share`） |
-| `ContributionEntity.java` / `ContributionRepository.java` | Marketplace 贡献表 |
-| `UserMarketplaceEntity.java` / `UserMarketplaceRepository.java` | 用户 marketplace 订阅 |
-| `SandboxLifecycleRecord.java` / `SandboxLifecycleRepository.java` | Sandbox 生命周期日志 |
-| `JpaPersistenceConfig.java` | JPA 自动配置 |
-| `JpaUserAgentDefinitionStore.java` | JPA 实现的 UserAgentDefinitionStore |
-| `JpaUserStore.java` | JPA 实现的 UserStore（含 `seedDefaultAdmin()` 注入 admin/admin） |
-
-#### `web/session/` — 会话管理 (2 个)
-
-| 文件 | 职责 |
-|------|------|
-| [SessionLifecycleScheduler.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/session/SessionLifecycleScheduler.java) | 定时任务：每分钟检查空闲超时会话（默认 30 分钟）自动重置、每日定时重置所有会话、每 5 分钟清理过期/超量会话 |
-| [SessionTurnParser.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/session/SessionTurnParser.java) | 把 harness 框架写入的 JSONL 日志翻译成结构化对话轮次 |
-
-> **注**：原 `SessionReadStateStore.java` 已在会话域提取重构中删除，已读状态追踪功能由 `conversation/` 包的 `ConversationService` 承担。
-
-#### `web/` 其他文件 (9 个)
-
-| 文件 | 包 | 职责 |
-|------|-----|------|
-| [DataAgentApp.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/DataAgentApp.java) | `web/` | Spring Boot 入口，启用定时任务 |
-| [WorkspaceScaffolder.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/scaffold/WorkspaceScaffolder.java) | `web/scaffold/` | 首次启动时自动创建 AGENTS.md / skills/ / subagents/ |
-| [IdentityLinkStore.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/identity/IdentityLinkStore.java) | `web/identity/` | 用户身份链接 (dock 命令) |
-| [TemplateController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/template/TemplateController.java) | `web/template/` | Agent 模板管理 |
-| [TemplateRegistry.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/template/TemplateRegistry.java) | `web/template/` | 模板注册表 |
-| [UsageStore.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/usage/UsageStore.java) | `web/usage/` | 用量统计存储 |
-
-> **注**：原 `web/ai/` 和 `web/audit/` 已迁移至 `agent/catalog/draft/` 和 `agent/activity/`（见 8.0 节）。原 `web/toolbus/`（ToolEventBus + ToolNotificationMiddleware）已移除——AgentScope 2.0 的 `dispatchStream()` SSE 已原生携带 tool 事件。原 `web/workspace/` 已提升为顶层 `workspace/infrastructure/`（见 8.3 节）。
-
----
-
-### 8.2 `infrastructure/` — 基础设施工层
-
-> 全项目共享的基础设施，从 `web/workspace/` 提升为顶层包，打断 `agent↔web` 和 `runtime↔web` 的循环依赖。依赖方向变为单向：`agent → infrastructure ← runtime ← web`。
-
-#### `workspace/infrastructure/` — Sandbox & 文件系统 (5 个)
-
-| 文件 | 职责 |
-|------|------|
-| [UserSandboxPool.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/workspace/infrastructure/UserSandboxPool.java) | **用户专属 Docker 容器池**。按 `(userId, agentId)` 懒创建、缓存复用、空闲回收 |
-| [SharedSandboxFilesystem.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/workspace/infrastructure/SharedSandboxFilesystem.java) | Sandbox 文件系统适配。用 Base64 + shell 单引号转义上传/下载文件 |
-| [SharedWorkspaceSeeder.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/workspace/infrastructure/SharedWorkspaceSeeder.java) | 新用户 workspace 初始化 (种子数据) |
-| [WorkspaceManagerFactory.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/workspace/infrastructure/WorkspaceManagerFactory.java) | 按用户创建隔离的 WorkspaceManager |
-| [DataAgentWorkspaceConfig.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/workspace/infrastructure/DataAgentWorkspaceConfig.java) | Workspace 路径/存储配置 |
-
----
-
-### 8.3 `runtime/` — 运行时核心层
-
-#### `runtime/` 根目录
-
-| 文件 | 职责 |
-|------|------|
-| [DataAgentBootstrap.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/DataAgentBootstrap.java) | **编排核心**。组装 Agent + Session + Channel + Gateway 全链路 |
-| [AgentRuntimeConfigurer.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/AgentRuntimeConfigurer.java) | **统一运行时配置器**。实现 `Consumer<HarnessAgent.Builder>`，被 DataAgentBootstrap（全局 Agent）和 AgentLifecycleService（用户自定义 Agent）共用。配置：StateStore、DockerFilesystemSpec (USER 隔离)、maxRetries=2 + fallback、Plan Mode、Compaction (trigger=30, keep=10)、ToolResultEviction、Memory (throttled flush)、SubagentDeclarations (code-reviewer + report-writer)、PermissionContextState (ALLOW/ASK 规则) |
-
-#### `runtime/session/` — ~~会话管理 (7 个)~~ 已删除
-
-> **整组已删除**（会话域提取重构）。`SessionAgentManager`、`SessionStore`、`SessionEntry`、
-> `SessionKind`、`HistoryResult`、`AgentManagerConfig`、`SessionMaintenanceConfig` 全部移除，
-> 功能由 `conversation/` 包的 `ConversationService` + JPA `SessionEntity` 承接。
-> 会话持久化从 JSON 文件（`sessions.json`）改为 MySQL 表。
-
-#### `runtime/outbound/` — 出站消息 (4 个)
-
-| 文件 | 职责 |
-|------|------|
-| [OutboundController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/outbound/OutboundController.java) | POST `/api/outbound/send` |
-| [OutboundService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/outbound/OutboundService.java) | 出站消息投递逻辑 |
-| [OutboundTool.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/outbound/OutboundTool.java) | Agent 工具：`outbound_send` |
-| `OutboundRequest.java` | 出站请求数据结构 |
-
-#### `runtime/channel/webhook/` — Webhook 通道 (7 个)
-
-| 文件 | 职责 |
-|------|------|
-| [WebhookChannel.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/channel/webhook/WebhookChannel.java) | Webhook 通道实现 |
-| `WebhookChannelProperties.java` | Webhook 配置属性 |
-| [WebhookCallbackController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/channel/webhook/WebhookCallbackController.java) | 入站 Webhook 端点 + 出站回调 |
-| `WebhookInboundMapper.java` | 入站请求 → InboundMessage 转换 |
-| `WebhookInboundRequest.java` | 入站请求数据结构 |
-| `WebhookOutboundClient.java` | 出站回调 HTTP 客户端 |
-| [WebhookSignature.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/channel/webhook/WebhookSignature.java) | HMAC-SHA256 签名验证 |
-
-#### `runtime/config/` — 配置解析 (9 个)
-
-| 文件 | 职责 |
-|------|------|
-| `AgentscopeConfig.java` | `agentscope.json` 完整数据结构 |
-| `AgentConfigEntry.java` | 单个 Agent 的 JSON 配置 |
-| `ChannelConfigEntry.java` | 单个 Channel 的 JSON 配置 |
-| `BindingConfigEntry.java` | Channel 绑定配置 |
-| `ChannelTypeRegistry.java` | Channel 类型注册表 |
-| `MarketplaceConfigEntry.java` | Marketplace 配置 |
-| `SkillRepositoryConfigEntry.java` | Skill 仓库配置 |
-| `SkillRepositorySupport.java` | SkillRepository 创建工厂 |
-| `SessionLifecycleConfig.java` | Session 生命周期配置 |
-
-#### `runtime/marketplace/` — 市场适配器 (8 个)
-
-| 文件 | 职责 |
-|------|------|
-| `DataAgentMarketplace.java` | Marketplace 接口 |
-| `LocalApprovalMarketplace.java` | 本地审批市场 |
-| `GitDataAgentMarketplace.java` | Git 仓库市场 |
-| `NacosDataAgentMarketplace.java` | Nacos 配置中心市场 |
-| `MarketSkillContent.java` | Skill 内容数据结构 |
-| `MarketSkillSummary.java` | Skill 摘要数据结构 |
-| `UserMarketplaceRegistry.java` | 按用户水化 marketplace 实例 |
-| `UserMarketplacePersistence.java` | 用户 marketplace 订阅持久化 |
-
-#### `runtime/middleware/` — 中间件 (1 个)
-
-| 文件 | 职责 |
-|------|------|
-| [UserSandboxContextMiddleware.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/middleware/UserSandboxContextMiddleware.java) | 在每个 Agent 调用前注入 per-用户的 Docker Sandbox Context |
-
-#### `tools/data/` — 数据分析工具 (8 个)
-
-| 文件 | 职责 |
-|------|------|
-| [DataAgentToolkit.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/tools/data/DataAgentToolkit.java) | **数据分析工具集**。4 个工具：`list_data_sources` / `describe_table` / `run_sql_preview` / `render_chart`。用 JdbcTemplate + ConnectionCallback + setMaxRows 实现 |
-| `DataSource.java` | 数据源定义 |
-| `DataSourceRegistry.java` | 数据源注册接口 (SPI) |
-| `InMemoryDataSourceRegistry.java` | 内存实现 |
-| `ChartRenderer.java` | 图表渲染接口 (SPI) |
-| `StubChartRenderer.java` | Stub 实现 |
-| [DataToolkitConfig.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/tools/data/DataToolkitConfig.java) | 工具配置。用 JdbcTemplate 包装 DataSource |
-| `DataToolkitRegistrar.java` | 启动时将 DataAgentToolkit 注册到所有 GLOBAL agent |
-| [MarkdownTables.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/tools/data/MarkdownTables.java) | Markdown 表格渲染工具类 |
+> 共 145 个 Java 源文件，按业务域 + 四层（api / application / domain / infrastructure）组织。
+> 依赖方向严格单向：`api → application → domain ← infrastructure`，`runtime`/`integration` 仅做框架适配。任何层都不得反向依赖（`domain` 不依赖 `api`/`application`/`infrastructure`）。
 
 ---
 
@@ -1205,68 +1071,219 @@ Agent 在对话中可调用以下工具（由 [DataAgentToolkit.java](file:///e:
 ```
 agentscope-dataagent/
 ├── src/main/java/io/agentscope/dataagent/
-│   ├── agent/                            # Agent 领域层 (DDD, 21 个文件)
-│   │   ├── api/                      # Agent 目录 + 生命周期 (7 个)
-│   │   │   └── draft/                    # AI 草稿生成 (4 个)
-│   │   ├── application/                      # 权限与共享 (3 个)
-│   │   ├── domain/                      # 内容管理: 工作区/技能/工具/绑定 (4 个)
-│   │   └── infrastructure/                     # 活动日志 (3 个)
-│   ├── infrastructure/                   # 基础设施工层 (5 个文件)
-│   │   └── workspace/                    # Sandbox + 文件系统 (5 个)
-│   ├── runtime/                          # 核心运行时 (38 个文件)
-│   │   ├── DataAgentBootstrap.java       # 编排核心
-│   │   ├── AgentRuntimeConfigurer.java   # 统一运行时能力配置
-│   │   ├── channel/webhook/              # Webhook 通道 (7 个)
-│   │   ├── config/                       # 配置解析 (9 个)
-│   │   ├── marketplace/                  # 市场适配器 (8 个)
-│   │   ├── middleware/                   # 自定义中间件 (1 个)
-│   │   ├── outbound/                     # 出站消息 (4 个)
-│   │   └── session/                      # 会话管理 (7 个)
-│   ├── tools/data/                       # 数据分析工具 (10 个)
-│   ├── web/                              # Web 层 (45 个文件)
-│   │   ├── DataAgentApp.java             # Spring Boot 入口
-│   │   ├── admin/                        # 管理员用户管理 (1 个)
-│   │   ├── api/                          # 核心 Controller (5 个)
-│   │   ├── auth/                         # 认证 (4 个)
-│   │   ├── config/                       # Spring 配置 (3 个)
-│   │   ├── identity/                     # 身份链接 (1 个)
-│   │   ├── marketplace/                  # 贡献/审批 (6 个)
-│   │   ├── persistence/jpa/              # JPA 持久化 (14 个)
-│   │   ├── sandbox/                      # 沙箱心跳+回收 (2 个)
-│   │   ├── scaffold/                     # 首次启动脚手架 (1 个)
-│   │   ├── session/                      # 会话生命周期 (3 个)
-│   │   ├── template/                     # 模板管理 (2 个)
-│   │   ├── usage/                        # 用量统计 (1 个)
-│   │   └── util/                         # 工具类 (1 个)
+│   ├── agent/                        # 0 个文件
+│   │   ├── api/                        # 10 个文件
+│   │   │   ├── AgentActivityController.java
+│   │   │   ├── AgentBindingController.java
+│   │   │   ├── AgentCatalogController.java
+│   │   │   ├── AgentCloneController.java
+│   │   │   ├── AgentDraftController.java
+│   │   │   ├── AgentSkillsController.java
+│   │   │   ├── AgentToolsController.java
+│   │   │   ├── AgentToolsSupport.java
+│   │   │   ├── AgentWorkspaceController.java
+│   │   │   ├── ChannelDirectoryController.java
+│   │   ├── application/                        # 15 个文件
+│   │   │   ├── command/                        # 3 个文件
+│   │   │   │   ├── AgentCreateRequest.java
+│   │   │   │   ├── AgentDraft.java
+│   │   │   │   ├── NamedFile.java
+│   │   │   ├── AgentAccessGuard.java
+│   │   │   ├── AgentAclService.java
+│   │   │   ├── AgentActivityStore.java
+│   │   │   ├── AgentCatalogService.java
+│   │   │   ├── AgentDraftService.java
+│   │   │   ├── AgentLifecycleService.java
+│   │   │   ├── AgentMutationService.java
+│   │   │   ├── AgentMutationSupport.java
+│   │   │   ├── SkillFileService.java
+│   │   │   ├── SkillInstallService.java
+│   │   │   ├── SubagentService.java
+│   │   │   ├── WorkspaceFileService.java
+│   │   │   ├── WorkspaceFileSupport.java
+│   │   │   ├── WorkspaceResolutionService.java
+│   │   │   ├── WorkspaceSummaryService.java
+│   │   ├── domain/                        # 4 个文件
+│   │   │   ├── ActivityEvent.java
+│   │   │   ├── AgentDefinition.java
+│   │   │   ├── AgentShareGrant.java
+│   │   │   ├── UserAgentDefinitionStore.java
+│   │   ├── infrastructure/                        # 5 个文件
+│   │   │   ├── AgentEntity.java
+│   │   │   ├── AgentEntityRepository.java
+│   │   │   ├── AgentShareEntity.java
+│   │   │   ├── BindingPersistence.java
+│   │   │   ├── JpaUserAgentDefinitionStore.java
+│   ├── capability/                        # 0 个文件
+│   │   ├── contribution/                        # 0 个文件
+│   │   │   ├── api/                        # 2 个文件
+│   │   │   │   ├── ContributionApprovalController.java
+│   │   │   │   ├── MarketContributionController.java
+│   │   │   ├── application/                        # 3 个文件
+│   │   │   │   ├── ContributeWorkspaceTool.java
+│   │   │   │   ├── ContributionToolRegistrar.java
+│   │   │   │   ├── MarketContributionService.java
+│   │   │   ├── domain/                        # 1 个文件
+│   │   │   │   ├── FileEntry.java
+│   │   │   ├── infrastructure/                        # 2 个文件
+│   │   │   │   ├── ContributionEntity.java
+│   │   │   │   ├── ContributionRepository.java
+│   │   ├── marketplace/                        # 0 个文件
+│   │   │   ├── api/                        # 1 个文件
+│   │   │   │   ├── MarketplacesController.java
+│   │   │   ├── application/                        # 3 个文件
+│   │   │   │   ├── MarketplaceConfig.java
+│   │   │   │   ├── UserMarketplacePersistence.java
+│   │   │   │   ├── UserMarketplaceRegistry.java
+│   │   │   ├── domain/                        # 4 个文件
+│   │   │   │   ├── DataAgentMarketplace.java
+│   │   │   │   ├── MarketSkillContent.java
+│   │   │   │   ├── MarketSkillSummary.java
+│   │   │   │   ├── MarketplaceConfigEntry.java
+│   │   │   ├── infrastructure/                        # 5 个文件
+│   │   │   │   ├── GitDataAgentMarketplace.java
+│   │   │   │   ├── LocalApprovalMarketplace.java
+│   │   │   │   ├── NacosDataAgentMarketplace.java
+│   │   │   │   ├── UserMarketplaceEntity.java
+│   │   │   │   ├── UserMarketplaceRepository.java
+│   │   ├── template/                        # 0 个文件
+│   │   │   ├── api/                        # 1 个文件
+│   │   │   │   ├── TemplateController.java
+│   │   │   ├── application/                        # 1 个文件
+│   │   │   │   ├── TemplateRegistry.java
+│   ├── common/                        # 1 个文件
+│   │   ├── WorkspaceCopier.java
+│   ├── config/                        # 6 个文件
+│   │   ├── properties/                        # 4 个文件
+│   │   │   ├── AgentProperties.java
+│   │   │   ├── OllamaProperties.java
+│   │   │   ├── SessionRedisProperties.java
+│   │   │   ├── WorkspaceProperties.java
+│   │   ├── BootstrapConfig.java
+│   │   ├── DataAgentConfig.java
+│   │   ├── JpaPersistenceConfig.java
+│   │   ├── ModelConfig.java
+│   │   ├── StateStoreConfig.java
+│   │   ├── WebConfig.java
+│   ├── conversation/                        # 0 个文件
+│   │   ├── api/                        # 3 个文件
+│   │   │   ├── ChatController.java
+│   │   │   ├── ChatSupport.java
+│   │   │   ├── SessionController.java
+│   │   ├── application/                        # 6 个文件
+│   │   │   ├── ConversationMigrationService.java
+│   │   │   ├── ConversationService.java
+│   │   │   ├── ConversationSupport.java
+│   │   │   ├── SessionLifecycleScheduler.java
+│   │   │   ├── SessionTurnParser.java
+│   │   │   ├── UsageStore.java
+│   │   ├── domain/                        # 5 个文件
+│   │   │   ├── AgentManagerConfig.java
+│   │   │   ├── HistoryResult.java
+│   │   │   ├── SessionEntry.java
+│   │   │   ├── SessionKind.java
+│   │   │   ├── SessionMaintenanceConfig.java
+│   │   ├── infrastructure/                        # 4 个文件
+│   │   │   ├── SessionEntity.java
+│   │   │   ├── SessionEntityRepository.java
+│   │   │   ├── SessionReadStateEntity.java
+│   │   │   ├── SessionReadStateRepository.java
+│   ├── integration/                        # 0 个文件
+│   │   ├── outbound/                        # 0 个文件
+│   │   │   ├── api/                        # 1 个文件
+│   │   │   │   ├── OutboundController.java
+│   │   │   ├── application/                        # 1 个文件
+│   │   │   │   ├── OutboundService.java
+│   │   │   ├── domain/                        # 2 个文件
+│   │   │   │   ├── OutboundRequest.java
+│   │   │   │   ├── OutboundTool.java
+│   │   ├── webhook/                        # 0 个文件
+│   │   │   ├── api/                        # 1 个文件
+│   │   │   │   ├── WebhookCallbackController.java
+│   │   │   ├── application/                        # 1 个文件
+│   │   │   │   ├── WebhookChannel.java
+│   │   │   ├── domain/                        # 2 个文件
+│   │   │   │   ├── WebhookChannelProperties.java
+│   │   │   │   ├── WebhookInboundRequest.java
+│   │   │   ├── infrastructure/                        # 3 个文件
+│   │   │   │   ├── WebhookInboundMapper.java
+│   │   │   │   ├── WebhookOutboundClient.java
+│   │   │   │   ├── WebhookSignature.java
+│   ├── runtime/                        # 2 个文件
+│   │   ├── config/                        # 8 个文件
+│   │   │   ├── AgentConfigEntry.java
+│   │   │   ├── AgentscopeConfig.java
+│   │   │   ├── BindingConfigEntry.java
+│   │   │   ├── ChannelConfigEntry.java
+│   │   │   ├── ChannelTypeRegistry.java
+│   │   │   ├── SessionLifecycleConfig.java
+│   │   │   ├── SkillRepositoryConfigEntry.java
+│   │   │   ├── SkillRepositorySupport.java
+│   │   ├── middleware/                        # 1 个文件
+│   │   │   ├── UserSandboxContextMiddleware.java
+│   │   ├── AgentRuntimeConfigurer.java
+│   │   ├── DataAgentBootstrap.java
+│   ├── security/                        # 1 个文件
+│   │   ├── api/                        # 3 个文件
+│   │   │   ├── AdminUserController.java
+│   │   │   ├── AuthController.java
+│   │   │   ├── UserController.java
+│   │   ├── application/                        # 1 个文件
+│   │   │   ├── JwtService.java
+│   │   ├── domain/                        # 1 个文件
+│   │   │   ├── UserStore.java
+│   │   ├── infrastructure/                        # 4 个文件
+│   │   │   ├── IdentityLinkStore.java
+│   │   │   ├── JpaUserStore.java
+│   │   │   ├── UserEntity.java
+│   │   │   ├── UserEntityRepository.java
+│   │   ├── SecurityConfig.java
+│   ├── tools/                        # 0 个文件
+│   │   ├── data/                        # 10 个文件
+│   │   │   ├── AnalyticsDataConfig.java
+│   │   │   ├── ChartRenderer.java
+│   │   │   ├── DataAgentToolkit.java
+│   │   │   ├── DataSource.java
+│   │   │   ├── DataSourceRegistry.java
+│   │   │   ├── DataToolkitConfig.java
+│   │   │   ├── DataToolkitRegistrar.java
+│   │   │   ├── InMemoryDataSourceRegistry.java
+│   │   │   ├── MarkdownTables.java
+│   │   │   ├── StubChartRenderer.java
+│   ├── workspace/                        # 0 个文件
+│   │   ├── api/                        # 1 个文件
+│   │   │   ├── SandboxHeartbeatController.java
+│   │   ├── application/                        # 3 个文件
+│   │   │   ├── SandboxReaperService.java
+│   │   │   ├── SharedWorkspaceSeeder.java
+│   │   │   ├── WorkspaceScaffolder.java
+│   │   ├── domain/                        # 2 个文件
+│   │   │   ├── SandboxPool.java
+│   │   │   ├── SharedWorkspaceProjection.java
+│   │   ├── infrastructure/                        # 7 个文件
+│   │   │   ├── DataAgentWorkspaceConfig.java
+│   │   │   ├── SandboxLifecycleObserver.java
+│   │   │   ├── SandboxLifecycleRecord.java
+│   │   │   ├── SandboxLifecycleRepository.java
+│   │   │   ├── SharedSandboxFilesystem.java
+│   │   │   ├── UserSandboxPool.java
+│   │   │   ├── WorkspaceManagerFactory.java
+│   ├── DataAgentApp.java
 ├── src/main/resources/
-│   ├── application.yml                   # Spring Boot 主配置
-│   ├── application-mysql.yml             # MySQL profile
-│   ├── application-prod.yml              # 生产 profile
-│   ├── application-redis.yml             # Redis profile
+│   ├── application.yml / application-mysql.yml / application-prod.yml / application-redis.yml
 │   ├── catalog/mcp-servers.json          # MCP 服务目录
-│   ├── data-analytics-mysql.sql          # 电商测试数据库种子
-│   ├── logback-spring.xml                # 日志配置
-│   ├── prompts/
-│   │   ├── agent-draft.md                # AI Draft 提示词
-│   │   └── system.md                     # Agent 系统提示词
-│   ├── shared/agents/data-agent/         # 共享技能/子代理
-│   │   ├── skills/
-│   │   │   ├── chart-rendering/SKILL.md
-│   │   │   └── sql-analysis/SKILL.md
-│   │   └── subagents/
-│   │       ├── data-explorer.md
-│   │       └── report-writer.md
-│   └── workspace-template/               # 工作区模板
-│       └── agentscope.json
+│   ├── data-analytics-mysql.sql         # 电商测试库种子
+│   ├── logback-spring.xml               # 日志配置
+│   ├── prompts/agent-draft.md           # AI Draft 提示词
+│   ├── shared/agents/data-agent/        # 共享技能/子代理（投影进每个新容器）
+│   └── workspace-template/              # 工作区模板
 ├── docs/
 │   ├── project-overview.md               # 本文档
 │   ├── 使用测试.md                        # 用户测试指南
 │   └── 聊天链路协作详解.md                # 聊天链路文档
 ├── frontend/                             # React 前端源码
-└── pom.xml                               # Maven 项目定义
+└── pom.xml                               # Maven 定义（默认不构建前端；`mvn -Pfrontend package` 才打包 React SPA）
 ```
-
----
 
 ## 十、配置参考
 
@@ -1288,26 +1305,30 @@ agentscope-dataagent/
 | `dataagent.analytics.password` | `${spring.datasource.password}` | 分析库密码（默认继承主库） |
 | `dataagent.analytics.init-script` | `data-analytics-mysql.sql` | 启动时执行的种子脚本（幂等） |
 | `server.port` | `8080` | HTTP 端口 |
+| `dataagent.sandbox.idle-ttl-min` | `15` | 沙箱空闲多久（分钟）后被回收（`close()` + docker rm） |
+| `dataagent.sandbox.eviction-poll-sec` | `60` | 后台空闲回收扫描间隔（秒） |
+| `dataagent.session.redis.enabled` | `false`（默认 profile 含 `redis`→`true`） | 同时切换**状态后端**（`RedisAgentStateStore`）与**快照后端**（`RedisSnapshotSpec`）为 Redis，构成双分布式、消除重启丢沙箱 |
+| `dataagent.sandbox.snapshot.jdbc.enabled` | `false` | 预留的 JDBC 快照开关；启用需先引入 `agentscope-extensions-mysql` 依赖并补一个 `JdbcSnapshotSpec(dataSource)` Bean（详见 §14.7.2） |
 
 ---
 
 ## 十一、构建与运行
 
 ```bash
-# 编译（跳过前端构建）
-mvn compile -DskipFrontend
+# 编译（默认不含前端构建）
+mvn compile
 
-# 打包
-mvn package -DskipFrontend -DskipTests
+# 打包（默认不含前端）
+mvn package -DskipTests
 
 # 运行
 java -jar target/agentscope-dataagent-*-exec.jar
-# 打开 http://localhost:8080, 默认账号: admin/admin (或 bob/bob)
+# 打开 http://localhost:8080, 默认账号: admin/admin
 ```
 
 > **Windows 环境 Maven 注意**：Git Bash 下 `mvn` 脚本可能有路径转换问题，使用 `mvn.cmd` + Windows 路径格式即可：
 > ```bash
-> JAVA_HOME="D:\\jdk21" "D:\\apache-maven-3.9.16\\bin\\mvn.cmd" compile -DskipFrontend
+> JAVA_HOME="D:\\jdk21" "D:\\apache-maven-3.9.16\\bin\\mvn.cmd" compile
 > ```
 
 ---
@@ -1329,7 +1350,7 @@ java -jar target/agentscope-dataagent-*-exec.jar
 | 文件 | 看什么 |
 |------|--------|
 | [application.yml](file:///e:/demo/agentscope-dataagent/src/main/resources/application.yml) | 默认 MySQL 启动。同文件内含 `redis` profile（`---` 分隔），另有 `application-mysql.yml`/`application-prod.yml`/`application-redis.yml` 独立 profile 文件 |
-| [BootstrapConfig.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/config/BootstrapConfig.java) | **全项目最重要文件**——组装 DataAgentBootstrap，注册 Model Bean，通过 `AgentRuntimeConfigurer` 统一配置所有 Agent 的 Plan Mode/Compaction/Memory/Permission/Subagents |
+| [BootstrapConfig.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/config/BootstrapConfig.java) | **启动装配入口**——创建 `AgentRuntimeConfigurer` 和 `DataAgentBootstrap` 两个 Spring Bean。全局 Agent（如 `data-agent`）在 `DataAgentBootstrap.build()` 时从 `agentscope.json` 构建、注册进 `HarnessGateway`，并应用 `AgentRuntimeConfigurer`（Plan Mode/Compaction/Memory/Permission/Subagents/Sandbox）。用户自定义 Agent 在运行时由 `AgentLifecycleService` **注入这两个 Bean 后**，调用框架原生 `HarnessAgent.builder()` 创建、复用同一个 configurer 和 gateway 注册——BootstrapConfig 本身不直接装配 UCA |
 
 ### Step 2 — 启动管线（10 分钟）
 
@@ -1344,26 +1365,26 @@ java -jar target/agentscope-dataagent-*-exec.jar
 
 | 文件 | 看什么 |
 |------|--------|
-| [ChatController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/web/api/ChatController.java) | **入口**。`POST /stream` 是核心——把一个用户消息变成 SSE 事件流：token → tool_call → tool_result → done |
+| [ChatController.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/conversation/api/ChatController.java) | **入口**。`POST /stream` 是核心——把一个用户消息变成 SSE 事件流：token → tool_call → tool_result → done |
 | [DataAgentToolkit.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/tools/data/DataAgentToolkit.java) | Agent 实际调用的四个工具：`list_data_sources` / `describe_table` / `run_sql_preview` / `render_chart` |
 | [AnalyticsDataConfig.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/tools/data/AnalyticsDataConfig.java) | 独立的 MySQL 分析数据库 + DataSourceRegistry |
-| [OutboundTool.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/runtime/outbound/OutboundTool.java) | Agent 向 IM 通道推送消息的 `outbound_send` 工具 |
+| [OutboundTool.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/integration/outbound/domain/OutboundTool.java) | Agent 向 IM 通道推送消息的 `outbound_send` 工具 |
 
 ### Step 4 — 权限与分享（10 分钟）
 
 | 文件 | 看什么 |
 |------|--------|
-| [AgentAclService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/sharing/AgentAclService.java) | Tier 三级(CLONE<RUN<EDIT) + Scope 三种(global/user/share)。`tierFor()` 算用户最高权限 |
-| [AgentAccessGuard.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/sharing/AgentAccessGuard.java) | `guard.require(userId, agentId, tier)` 两道门：可见性(404) + 权限级别(403) |
-| [AgentCatalogService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentCatalogService.java) | `grantShare()`/`revokeShare()` 实现，upsert 语义。另见 [AgentLifecycleService](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/catalog/AgentLifecycleService.java)（运行时生命周期） |
+| [AgentAclService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/application/AgentAclService.java) | Tier 三级(CLONE<RUN<EDIT) + Scope 三种(global/user/share)。`tierFor()` 算用户最高权限 |
+| [AgentAccessGuard.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/application/AgentAccessGuard.java) | `guard.require(userId, agentId, tier)` 两道门：可见性(404) + 权限级别(403) |
+| [AgentCatalogService.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/agent/application/AgentCatalogService.java) | `grantShare()`/`revokeShare()` 实现，upsert 语义。另见 [AgentLifecycleService](file:///e:/demo/agentscope/dataagent/src/main/java/io/agentscope/dataagent/agent/application/AgentLifecycleService.java)（运行时生命周期） |
 
 ### Step 5 — 高级功能（选读）
 
 | 文件 | 看什么 |
 |------|--------|
 | `capability/marketplace/` | 技能贡献 → 审批 → 共享库流程 |
-| `runtime/marketplace/` | Git/Nacos 市场的适配器 |
-| `runtime/channel/webhook/` | HTTP Webhook 入站通道（签名验证） |
+| `capability/marketplace/` | Git/Nacos 市场的适配器 |
+| `integration/webhook/` | HTTP Webhook 入站通道（签名验证） |
 | [UserSandboxPool.java](file:///e:/demo/agentscope-dataagent/src/main/java/io/agentscope/dataagent/workspace/infrastructure/UserSandboxPool.java) | Docker 沙箱按 (userId, agentId) 生命周期管理 |
 
 ---
@@ -1419,32 +1440,39 @@ private final ConcurrentHashMap<Key, Entry> entries = new ConcurrentHashMap<>();
 |------|------|--------|
 | `borrow(userId, agentId)` | 已有缓存→返回+刷新时间；没有→创建新容器 | WorkspaceManagerFactory（浏览器端）、UserSandboxContextMiddleware（Agent 运行时） |
 | `peek(userId, agentId)` | 只看不创建，返回 `Optional<Sandbox>` | 前端刚加载页面时，避免触发冷启动 |
-| `invalidate(userId, agentId)` | 关闭并移除沙箱；userId=null 时清该 Agent 所有用户的 | MarketContributionService（审批通过后强制重建容器加载新共享内容） |
+| `invalidate(userId, agentId)` | **惰性标记 stale**（不立即销毁活跃容器）：标记后下次该用户 `borrow()` 时自动 `close()`（快照）+ 清状态 + 重建（加载新共享层 + 恢复用户文件）；userId=null 时标记该 Agent 所有用户 | MarketContributionService.approve（审批通过后让共享层变化生效）；管理台 `POST /api/agents/{id}/rebuild-workspace` |
 | `evictIdle()` | 后台定时扫描，超过 idleTtl（默认 15 分钟）的容器自动关闭 | 内部定时线程 |
 | `shutdownAll()` | 关闭所有沙箱，清空缓存 | Spring `@PreDestroy`（应用停机时） |
 
-### 14.4 容器创建过程
+### 14.4 容器创建 / 恢复过程
+
+> 注意：当前实现**不再直接调用 `client.create`**，而是委托框架 `SandboxManager.acquire()`，由它根据持久化状态决定「恢复同一容器」还是「新建」。快照后端（`SandboxSnapshotSpec`）也是注入的，不再是写死的 `NoopSnapshotSpec`。
 
 ```
-borrow() 首次调用
+borrow(userId, agentId) 首次调用
     │
     ▼
-createAndStart()
+acquireAndStart(key)
     ├── 1. buildWorkspaceSpec(key)
     │       构建 WorkspaceSpec：把 {cwd}/shared/agents/{agentId}/ 下的
     │       AGENTS.md / skills/ / subagents/ / knowledge/ 投影（挂载）到容器
     │
-    ├── 2. client.create(ws, NoopSnapshotSpec, options)
-    │       创建 Docker 容器
+    ├── 2. SandboxManager.acquire(ctx, rtc)   ← 框架决定 恢复 / 新建
+    │       • Priority 3: AgentStateStore 中有该 (userId,agentId) 的 SandboxState
+    │         → resume 同一容器；若 RedisSnapshotSpec 有工作区 tar → 自动恢复文件
+    │       • Priority 4: 无状态 / 状态过期 → 全新创建 Docker 容器
+    │       （ctx 携带注入的 snapshotSpec，由 SandboxSnapshotConfig 决定 Redis/Noop）
     │
     ├── 3. sandbox.start()
     │       启动容器
     │
-    └── 4. recordLifecycle(key, sandbox)
+    ├── 4. SandboxManager.persistState(...)   ← 把运行中状态写回 AgentStateStore
+    │
+    └── 5. recordLifecycle(key, sandbox)
             写 DB 记录（SandboxLifecycleRecord），跟踪容器 ID/状态/心跳
 ```
 
-**共享内容投影**：每个新容器启动时，自动获得该 Agent 的共享内容（技能、子代理、知识库、AGENTS.md），但用户自己的文件是空的。
+**共享内容投影**：每个新容器启动时，自动获得该 Agent 的共享内容（技能、子代理、知识库、AGENTS.md），但用户自己的文件是空的。若快照后端命中（Redis 中有该用户的 tar），则连上次跑出的 `MEMORY.md`、上传文件等一并恢复。
 
 ```
 宿主机                              容器内部
@@ -1460,21 +1488,109 @@ createAndStart()
 
 | 约束 | 说明 |
 |------|------|
-| **纯内存** | `entries` 是 `ConcurrentHashMap`，重启即丢失。DB 记录用于重启后识别孤儿容器 |
-| **单副本** | 多副本部署必须用 sticky session（按 userId 粘性路由），否则两个 pod 会为同一用户创建两个容器 |
-| **懒创建** | 容器不会预创建，首次 `borrow()` 才启动（冷启动延迟） |
-| **空闲回收** | 默认 15 分钟不活跃就关闭，下次 `borrow()` 重新创建 |
+| **常驻缓存表在内存** | `entries`（`ConcurrentHashMap<Key,Entry>`）是进程内路由表，重启即清空——它只决定"本 pod 是否已有该用户的容器引用"，**不存工作区数据**。真正的工作区文件由 `SandboxSnapshotSpec`（Redis 默认）持久化，容器引用由 `AgentStateStore` 持久化，二者配合实现跨重启恢复（见 §14.7） |
+| **单副本路由** | 多副本部署必须用 sticky session（按 userId 粘性路由），否则不同 pod 会为同一用户重复 `borrow()` 创建多个容器。注意：**默认 `redis` profile 下工作区已能跨重启/跨副本恢复**，sticky 只是避免"重复建容器"的浪费与竞态，并非数据丢失的救命绳 |
+| **懒创建** | 容器不会预创建，首次 `borrow()`（前端打开工作区或 Agent 运行时借沙箱）才启动（冷启动延迟） |
+| **空闲回收** | 默认 15 分钟（`dataagent.sandbox.idle-ttl-min`，可通过 `dataagent.sandbox.eviction-poll-sec` 调扫描间隔）不活跃就 `close()`（docker rm），下次 `borrow()` 凭快照后端重建并恢复工作区 |
+| **保留式关闭** | 应用 `@PreDestroy`（`shutdownAll()`）只 `stop()` 不 `docker rm`，保留容器于宿主机；重启后 `acquire` 的 Priority-3 恢复路径重新挂载同一容器（见 §14.7.3） |
 | **共享内容投影** | 新容器自动挂载 `{cwd}/shared/agents/{agentId}/` 下的只读内容 |
 
 ### 14.6 用一个比喻总结
 
 > **UserSandboxPool 就像酒店的"房间管理台"**：
+>
 > - `borrow()` = 客人来了，有房间就给钥匙，没房间就开一间新的
 > - `peek()` = 只是看看客人有没有房间，不开新房
 > - `invalidate()` = 客房服务更新了，让客人换一间新房间
 > - `evictIdle()` = 客人走了很久，把房间收回
 > - `shutdownAll()` = 酒店打烊，所有房间都关了
 > - 每个房间（Docker 容器）里都有标准配置（共享内容投影），但客人的私人物品互不可见
+
+---
+
+### 14.7 Sandbox 生命周期由应用方掌握——当前方案详解
+
+> 设计原则（见 §1.2 第 3 条）：**Sandbox 生命周期由应用方掌握**。框架（AgentScope Harness）只提供 Docker 原语与状态/快照存储机制，**何时创建/复用/回收/跨重启恢复**由本项目的 `UserSandboxPool` 决定，并通过注入两个"持久化后端" Bean 选择耐久策略。下面拆解当前落地方案。
+
+#### 14.7.1 职责划分：应用方 vs 框架
+
+| 层 | 负责什么 | 本项目具体落点 |
+|---|---|---|
+| **应用方（本项目）** | 生命周期决策：复合键、懒创建、常驻持有、空闲回收、关闭策略；并**注入持久化后端选型** | `UserSandboxPool`（实现 `SandboxPool`） |
+| **框架 Harness** | Docker 容器原语（create/resume/stop/close/destroy）、`SandboxState` 序列化、`SandboxSnapshotSpec` 的 tar 打包/恢复 | `SandboxManager` / `DockerSandbox` / `RedisSnapshotSpec` |
+| **注入的存储后端** | 持久化"容器引用"与"工作区 tar"，决定能否跨重启/跨副本恢复 | `AgentStateStore`（Redis/InMemory）+ `SandboxSnapshotSpec`（Redis/Noop） |
+
+**关键认知**：应用方**不亲自调 `docker`**。它把"容器怎么活、状态存哪"取决于注入的两个 Bean——这正是"生命周期由应用方掌握"的真实含义：应用通过装配选择后端，框架照做。运维想换策略（如改用 JDBC 存快照），只需在 `SandboxSnapshotConfig` 加一个 Bean，无需碰 `UserSandboxPool`。
+
+#### 14.7.2 四个可插拔后端（持久化 + 并发）
+
+`UserSandboxPool` 现在构造时接收两类持久化后端，`UserSandboxContextMiddleware` 额外持有一个回合锁；全部由 `SandboxSnapshotConfig`（Redis / Noop 兜底）统一装配：
+
+1. **隔离状态后端 `AgentStateStore`**（`StateStoreConfig` 装配）
+   - `dataagent.session.redis.enabled=true`（默认 profile 含 `redis`）→ `RedisAgentStateStore`，持久化容器引用（`DockerSandboxState`）。
+   - 否则 → `InMemoryAgentStateStore`（仅本 pod）。
+
+2. **工作区快照后端 `SandboxSnapshotSpec`**（`SandboxSnapshotConfig` 装配）
+   - `redis` 开启 → `RedisSnapshotSpec`：容器 `stop()`/`close()` 时框架把 `/workspace` 打成 tar 存进 Redis；下次 `acquire` 重建容器时**自动恢复**工作区文件（含 `MEMORY.md`、上传文件等）。
+   - 未开启 → `NoopSnapshotSpec`：不单独存快照，依赖"保留容器"策略。
+   - *JDBC 备选*（`JdbcSnapshotSpec`，复用应用 `DataSource`）因离线构建环境缺 `agentscope-extensions-mysql` 暂未接入，联网构建一次 + 加一个 `@ConditionalOnProperty` Bean 即启用。
+
+3. **并发守卫 `SandboxExecutionGuard`**（`SandboxSnapshotConfig` 装配，注入到 agent 的 `DockerFilesystemSpec`）
+   - `redis` 开启 → `RedisSandboxExecutionGuard`：对**框架托管**的沙箱（Priority 3/4、子代理 ISOLATED）用 Redis 租约串行化，避免多副本对同一隔离槽位竞态。
+   - 否则 → `SandboxExecutionGuard.noop()`。
+   - **关键限制**：主 Agent 走 `externalSandbox`（Priority 1），框架守卫在此路径被**绕过**，故它只保护子代理路径（见下文 `SandboxLock`）。
+
+4. **回合级串行锁 `SandboxLock`**（`SandboxSnapshotConfig` 装配）
+   - `redis` 开启 → `RedisSandboxLock`：跨进程串行化同一 `(userId, agentId)` 的 Agent 回合，覆盖 externalSandbox 路径（守卫够不到处）。
+   - 否则 → `InMemorySandboxLock`（仅本 JVM 内有效）。
+   - 由 `UserSandboxContextMiddleware` 在回合开始时 `lock()`、整条 Flux 终止时（`doFinally`）`unlock()`，覆盖 `acquire → run → release` 整段窗口。这是多副本下**真正的并发闸门**。
+
+**为什么需要这四样**：①`AgentStateStore`（容器引用）只能恢复"同一个容器对象"，但容器被 recreate 后工作区文件是空的；②`SandboxSnapshotSpec` 补上"文件持久化"，二者配合才真正**彻底消除重启丢沙箱**；③④则是多副本并发的两道闸门——③保护子代理，④（external 路径）保护主 Agent 回合。
+
+#### 14.7.3 生命周期状态机
+
+```
+          borrow(userId, agentId)
+                 │
+   ┌─────────────┴──────────────┐
+   │ entries 命中？              │
+   ├─ 是 → 刷新 lastAccessMs     │  （复用同一容器，跨会话续上工作区）
+   └─ 否 → SandboxManager.acquire(ctx, rtc)
+                 │
+       ┌─────────┴──────────┐
+       │ P3: 从持久化 state    │  ← RedisAgentStateStore 里有该 (userId,agentId) 的 SandboxState
+       │     resume 同容器     │     且 RedisSnapshotSpec 里有工作区 tar → 恢复文件
+       ├─────────┬───────────┤
+       │ P4: 新建容器          │  ← 首跑 / 状态过期 / 无快照
+       └─────────┴───────────┘
+                 │ sandbox.start()
+                 │ SandboxManager.persistState(...)  ← 把运行中状态写回 AgentStateStore
+                 ▼
+           返回并常驻持有（不释放，直到 evict / invalidate / shutdown）
+
+   evictIdle() [后台, 每 evictionPollSec]
+       lastAccessMs 超过 idleTtl(默认15m) → close() = stop()+docker rm + clearState
+
+   shutdownAll() [@PreDestroy]
+       detachQuietly() → sandbox.stop() 仅停不删，保留容器于宿主机
+       → 重启后 acquire 的 P3 恢复路径凭持久化 SandboxState 重新挂载同一容器
+```
+
+#### 14.7.4 当前默认行为（开箱即用）
+
+`application.yml` 默认 profile = `mysql,redis` → `dataagent.session.redis.enabled=true`：
+
+- **状态后端 = Redis**，**快照后端 = RedisSnapshotSpec**（同一 Redis 实例，Jedis 客户端；与 `StateStoreConfig` 的 Lettuce 客户端共存无碍）。
+- 因此**默认即"双分布式"**：应用关闭/容器被回收后，工作区 tar 在 Redis，下次重建自动恢复，**无需任何额外配置即消除重启丢沙箱**。
+- 启动日志会打印：`沙箱快照后端 = RedisSnapshotSpec: redis=...`、`沙箱并发守卫(guard) = RedisSandboxExecutionGuard: ...`、`沙箱回合锁(lock) = RedisSandboxLock: ...`。
+- **并发默认即防护**：`DataAgentBootstrap` 为每个 Agent 注册 `UserSandboxContextMiddleware`（持有 `RedisSandboxLock`），同一 `(userId, agentId)` 的回合被跨进程串行化；子代理（ISOLATED）路径额外由 `RedisSandboxExecutionGuard` 兜底。单副本（仅 `mysql`）则退化为 `InMemorySandboxLock` / `noop` 守卫，但 externalSandbox 路径仍由内存锁串行化。
+- 若仅 `mysql`（无 `redis` profile）：状态后端=内存、快照后端=Noop，回到"单副本保留容器"模式——宿主机不被清、容器不 prune 时仍可用，但跨主机/被 prune 即丢。
+
+#### 14.7.5 与早前"重启丢沙箱 / SandboxConfigurationException"的关系
+
+- **"重启丢沙箱"**：上一轮（2026-07-08 之前）快照后端是写死的 `NoopSnapshotSpec`，容器重建即空工作区。本轮（2026-07-09）已改为注入式 `SandboxSnapshotSpec`，默认 Redis，**该问题彻底解决**。
+- **`SandboxConfigurationException: No active sandbox` 日志**：属于**框架清理阶段的时序噪音**（call context 结束后中间件访问已回收沙箱文件系统），与持久化策略无关；已在 `ChatController.onErrorResume` 中以 `isCleanupNoise()` 静默吞掉，对话前端不再出现该报错（详见聊天链路文档与 §15）。
+- **`invalidate` 不再打断活跃会话（P1 爆炸半径）**：原先 `MarketContributionService.approve` 通过 `invalidate(null, targetAgentId)` **立即 `close()`（docker rm）该 Agent 下所有用户容器**——审批通过即销毁数十个活跃会话、峰值同时重建。现已改为**惰性 stale 标记**：只标记、不立即销毁；标记后用户**下一次 `borrow()`** 才 `close()`（快照私有文件）+ 清状态 + 重建（挂载新共享层 + 从快照恢复私有文件）。进行中的会话不受影响，重建分散到各用户下次访问时；已被空闲回收的用户无需处理（下次冷启动本就加载新层）。管理台另提供 `POST /api/agents/{id}/rebuild-workspace` 显式触发同一惰性重建，覆盖"绕过贡献流程手动改 `shared/` 层"的场景。
 
 ---
 
@@ -1536,7 +1652,7 @@ MySQL (SessionEntity) ←── ConversationService 读写 ──→ SessionCont
 | AgentStateStore | ✅ 可选 Redis | `--spring.profiles.active=mysql,redis` 启用，跨副本共享会话状态 |
 | SandboxLifecycleRecord | ✅ 已支持 | 容器生命周期记录在 MySQL，跨副本可见 |
 | SandboxHeartbeatController | ✅ 已支持 | 心跳上报到共享 DB |
-| **UserSandboxPool** | ⚠️ 默认纯内存，可插拔 | 隔离状态后端默认 `InMemoryAgentStateStore`；多副本需注入分布式 `AgentStateStore` Bean（并配套快照后端），否则仍靠 sticky session 按 userId 路由 |
+| **UserSandboxPool** | ✅ 默认四后端双分布式（`redis` profile） | 四个后端均由 `SandboxSnapshotConfig` 装配：`AgentStateStore`（Redis/InMemory）+ `SandboxSnapshotSpec`（Redis/Noop）+ `SandboxExecutionGuard`（Redis/Noop）+ `SandboxLock`（Redis/InMemory）。**默认 `mysql,redis` profile 下**：状态/快照进 Redis、`Guard`/`Lock` 进 Redis——容器引用、工作区 tar、并发闸门都跨副本共享（详见 §14.7）。`invalidate` 已改**惰性 stale**（不立即 docker rm 活跃容器，下次 borrow 再重建），消除审批即打断会话的爆炸半径。`SandboxLock` 是 externalSandbox 路径（框架守卫够不到）下**真正的并发闸门**；**仍需 sticky session** 的原因只剩"避免不同 pod 重复 `borrow()` 建多个容器 / 冷启动浪费"，正确性由粘性路由保证，`SandboxLock` 仅作防错安全网 |
 | **ConversationService** | ✅ 已支持 | 会话数据在 MySQL（`SessionEntity` JPA），跨副本天然共享 |
 | **SandboxReaperService** | ❌ 无分布式锁 | 每副本都跑 `@Scheduled` 清理，会重复 `docker rm` + 误杀其他副本活跃容器 |
 | **SharedSandboxFilesystem** | ❌ 绑定单容器 | 持有单个 `Sandbox` 实例，跨副本无法访问容器文件 |
@@ -1914,56 +2030,4 @@ hey -z 60s -c 50 -m POST \
 # - JVM 堆内存（Agent 上下文 + 工具结果缓存）
 ```
 
----
 
-## 十九、近期变更
-
-### 运行时配置统一 + 模块优化 (2026.07.06)
-
-| 模块 | 变更 | 效果 |
-|------|------|------|
-| **AgentRuntimeConfigurer 提取** | 将 BootstrapConfig 内联的 `configureAllAgents` lambda（Plan Mode/Compaction/Memory/Subagents/Permissions/Sandbox）抽取为独立类，实现 `Consumer<HarnessAgent.Builder>` | 全局 Agent 和用户自定义 Agent 共用同一套运行时配置；BootstrapConfig 从 619 行简化至 287 行 |
-| **ToolEventBus 移除** | 删除 ToolEventBus + ToolNotificationMiddleware（159 行） | AgentScope 2.0 的 `dispatchStream()` SSE 已原生携带 tool_call/tool_result 事件，自建事件总线多余 |
-| **agent/api/ 领域化** | SandboxHeartbeatController + SandboxReaperService → `web/sandbox/`；AdminUserController → `web/admin/` | agent/api/ 从 8 文件精简至 5 个核心 Controller |
-| **workspace 提升为 infrastructure** | `web/workspace/` → `workspace/infrastructure/`（5 文件，16 处 import 更新） | 打断 `agent↔web` 和 `runtime↔web` 的循环依赖，依赖方向变为单向 `agent → infrastructure ← runtime ← web` |
-| **测试编译修复** | JpaPersistenceIntegrationTest 旧导入路径更新 | DDD 迁移后包路径变更的遗漏修复 |
-
-### DDD 领域收拢重构 (2026.07.06)
-
-| 模块 | 变更 | 效果 |
-|------|------|------|
-| **Agent 领域包** | 17 个 Agent*.java 从 9 个散乱的 web/ 子包迁移到 `agent/` 下 5 个 DDD 子包：catalog/、catalog/draft/、sharing/、content/、infrastructure/ | 业务内聚、职责清晰 |
-| **AgentCatalogService 拆分** | 从 1075 行上帝类拆为 AgentCatalogService（CRUD+共享）+ AgentLifecycleService（运行时构建/注册/缓存/失效），零循环依赖 | 单一职责、可维护性 |
-| **DTO 提取** | AgentDraft、NamedFile、AgentCreateRequest 从内部 record 提取为独立文件 | 跨层复用、编译解耦 |
-| **空包清理** | 删除 web/ai/、web/audit/、web/catalog/、web/share/ 4 个空目录 | 目录整洁 |
-| **资源文件补回** | 新建 `prompts/agent-draft.md`（LLM 提示词模板）和 `catalog/mcp-servers.json`（MCP 服务目录） | 消除启动 WARN |
-
-### 历史变更 (2026.07.02)
-
-### 本次更新
-
-| 模块 | 变更 | 效果 |
-|------|------|------|
-| **H2 → MySQL 迁移** | 彻底移除 H2 依赖：删除 `application-dev.yml`、`data-h2.sql`、`data-analytics.sql`、`H2DemoSeedTest`、pom.xml H2 依赖；改造 `AnalyticsDataConfig` 为可配置 MySQL 数据源；新建 `data-analytics-mysql.sql`（幂等）；默认 profile 从 `dev` 改为 `mysql` | 生产/开发统一用 MySQL，项目不再依赖 H2。两个独立数据库：`agentscope_dataagent`（主业务）+ `dataagent_analytics`（演示数据） |
-| **Agent 分享 API** | 新增 `POST/DELETE /api/agents/{id}/shares` 端点 + `grantShare`/`revokeShare` Service 方法 | 补全了之前"地基打好了楼没盖"的架构缺口——ACL 引擎、存储映射、撤销逻辑都齐了，现在写入端点也齐了 |
-| **前端分享管理** | 新增 `/configure/shares` 页面 + `grantShare`/`revokeShare` API 函数 + ChatHeader 导航按钮 | owner 可在 UI 上管理 Agent 分享，非 owner 看到只读列表 |
-| **SharedSandboxFilesystem** | 用框架 `FilesystemUtils.shellQuote()` 替代手写 `shellSingleQuote`；base64Content 也包单引号 | 对齐父类 quoting 逻辑，消除重复代码，增强防御性 |
-| **DataAgentToolkit** | 重写为 JdbcTemplate 实现，用 ConnectionCallback + setMaxRows 解决 LIMIT 方言问题 | 402→347 行，修复 Oracle 不兼容的 LIMIT 子句 |
-| **MarkdownTables** | 新建工具类，集中 markdown 表格渲染逻辑 | 消除 DataAgentToolkit 里的重复渲染代码 |
-| **SandboxReaperService** | 修复 4 个问题：抽 `runDockerCmd()` 方法、ProcessBuilder.redirectOutput(DISCARD)、waitFor(60, SECONDS) 超时 | 解决死锁和调度线程阻塞 |
-| **BootstrapConfig** | Redis 兜底（`@ConditionalOnExpression` 开关 + Lettuce 原生 RedisClient）、ModelRegistry 字符串、toolResultEviction、fallback model、弱化 JSON 配置 | 对齐 AgentScope 2.0 |
-| **DataAgentBootstrap** | 删除死函数 `loadConfig()` | 清理 633→496 行 |
-| **SandboxLifecycleRepository** | 新增 `findByStatus(Status)` 和 `findByStatusIn(List<Status>)` | 支持按状态查询容器 |
-
-### 历史变更 (2026.06.30)
-
-| 模块 | 变更 | 效果 |
-|------|------|------|
-| 子代理系统 | 删除自建 SessionsTool(579行)+AnnounceDispatcher(318行)，改用 2.0 SubagentsMiddleware | 子代理原生支持 |
-| Session 管理 | SessionAgentManager 955→270 行，session/ 目录 19→7 文件 → 后续完全删除，由 `conversation/` 包（ConversationService + JPA SessionEntity）取代 | 会话数据从 JSON 文件迁移到 MySQL |
-| SSE 事件流 | 3 个 ConcurrentHashMap → 1 个 ToolBuffer | 代码量 -60% |
-| Session 查找 | O(n) 扫描 → O(1) gateKeyToSessionKey 索引 | 性能提升 |
-
-### 编译状态
-
-`mvn clean compile test-compile` → **BUILD SUCCESS**（119 源文件，0 errors）

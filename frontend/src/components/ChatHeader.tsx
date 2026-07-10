@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { AgentDefinition } from '../api/agents';
+import { listModels, updateAgentConfig } from '../api/admin';
+import type { ModelOption } from '../api/admin';
 
 const CONFIG_BUTTONS: { key: string; label: string; icon: string }[] = [
   { key: 'skills',    label: '技能',    icon: '🛠' },
@@ -19,6 +21,30 @@ export default function ChatHeader({ agent }: ChatHeaderProps) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const sessionKey = searchParams.get('session');
+
+  // ── 模型选择 ──
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('');
+  const [changing, setChanging] = useState(false);
+
+  useEffect(() => {
+    if (!agent) return;
+    listModels()
+      .then(opts => {
+        setModelOptions(opts);
+        if (agent.model) setSelectedModel(agent.model);
+      })
+      .catch(() => { /* 静默 */ });
+  }, [agent]);
+
+  async function onModelChange(id: string) {
+    if (!agent) return;
+    setSelectedModel(id);
+    setChanging(true);
+    try { await updateAgentConfig(agent.id, { name: agent.id, model: id || undefined }); }
+    catch { /* ignore */ }
+    finally { setChanging(false); }
+  }
 
   const canEdit = agent?.tierForCurrentUser === 'EDIT';
   const name = agent?.name ?? 'data-agent';
@@ -40,6 +66,24 @@ export default function ChatHeader({ agent }: ChatHeaderProps) {
       </div>
 
       <div style={S.right}>
+        {/* 模型选择器（紧凑内嵌） */}
+        {modelOptions.length > 0 && (
+          <div style={S.modelWrap}>
+            <span style={S.modelLabel}>模型</span>
+            <select
+              value={selectedModel}
+              onChange={e => onModelChange(e.target.value)}
+              disabled={changing}
+              title="切换当前会话使用的 AI 模型"
+              style={S.modelSelect}
+            >
+              <option value="">默认</option>
+              {modelOptions.map(opt => (
+                <option key={opt.id} value={opt.id}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+        )}
         {canEdit && CONFIG_BUTTONS.map(b => (
           <button
             key={b.key}
@@ -98,5 +142,19 @@ const S: Record<string, React.CSSProperties> = {
     padding: '7px 12px', borderRadius: 8, cursor: 'pointer',
     fontSize: '0.84rem', fontWeight: 500,
     transition: 'background 0.12s ease, color 0.12s ease',
+  },
+  // 模型选择器（顶栏紧凑内嵌）
+  modelWrap: {
+    display: 'flex', alignItems: 'center', gap: 6,
+    marginRight: 6,
+    padding: '4px 10px 4px 6px',
+    background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8,
+  },
+  modelLabel: { fontSize: '0.76rem', color: '#64748b', fontWeight: 500, whiteSpace: 'nowrap' },
+  modelSelect: {
+    border: 'none', background: 'transparent',
+    color: '#3730a3', fontSize: '0.82rem', fontWeight: 600,
+    cursor: 'pointer', outline: 'none',
+    maxWidth: 200,
   },
 };

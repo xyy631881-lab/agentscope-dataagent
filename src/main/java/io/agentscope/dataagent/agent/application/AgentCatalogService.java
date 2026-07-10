@@ -22,7 +22,6 @@ import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.harness.agent.gateway.HarnessGateway;
 import io.agentscope.dataagent.security.domain.UserStore;
 import io.agentscope.dataagent.security.domain.UserStore.UserRecord;
-import io.agentscope.dataagent.agent.domain.AgentAclService;
 import io.agentscope.harness.agent.HarnessAgent;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;

@@ -16,7 +16,6 @@
 package io.agentscope.dataagent.agent.domain;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import io.agentscope.dataagent.agent.domain.AgentShareGrant;
 import java.util.List;
 
 /**

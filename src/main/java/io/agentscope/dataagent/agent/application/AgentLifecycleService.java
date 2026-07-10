@@ -15,6 +15,7 @@
  */
 package io.agentscope.dataagent.agent.application;
 import io.agentscope.dataagent.agent.domain.AgentDefinition;
+import io.agentscope.dataagent.agent.domain.GlobalAgentOverrideStore;
 import io.agentscope.dataagent.agent.domain.UserAgentDefinitionStore;
 import io.agentscope.dataagent.integration.outbound.api.OutboundController;
 import io.agentscope.dataagent.integration.outbound.application.OutboundService;
@@ -68,6 +69,7 @@ public class AgentLifecycleService {
 
     private final DataAgentBootstrap builderBootstrap;
     private final UserAgentDefinitionStore store;
+    private final GlobalAgentOverrideStore overrideStore;
     private final Model model;
     private final AgentRuntimeConfigurer runtimeConfigurer;
     private final io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory workspaceManagerFactory;
@@ -81,11 +83,13 @@ public class AgentLifecycleService {
     public AgentLifecycleService(
             DataAgentBootstrap builderBootstrap,
             UserAgentDefinitionStore store,
+            GlobalAgentOverrideStore overrideStore,
             Optional<Model> modelOpt,
             AgentRuntimeConfigurer runtimeConfigurer,
             io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory workspaceManagerFactory) {
         this.builderBootstrap = builderBootstrap;
         this.store = store;
+        this.overrideStore = overrideStore;
         this.model = modelOpt.orElse(null);
         this.runtimeConfigurer = runtimeConfigurer;
         this.workspaceManagerFactory = workspaceManagerFactory;
@@ -105,7 +109,7 @@ public class AgentLifecycleService {
      */
     public String resolveGatewayAgentId(String userId, String agentId) {
         if (builderBootstrap.agents().containsKey(agentId)) {
-            return agentId;
+            return agentId;  // 全局 Agent，直接返回
         }
         UserAgentDefinitionStore.StoredEntry entry =
                 store.findById(userId, agentId)
@@ -115,6 +119,7 @@ public class AgentLifecycleService {
                                                 HttpStatus.NOT_FOUND,
                                                 "Agent not found or not accessible: " + agentId));
         String cacheKey = ucaCacheKey(userId, agentId);
+        // 用户自定义 Agent：查找定义并注册为 HarnessAgent
         return registeredUcaIds.computeIfAbsent(cacheKey, k -> buildAndRegisterUca(userId, entry));
     }
 
@@ -199,7 +204,7 @@ public class AgentLifecycleService {
             AgentConfigEntry.GroupChatConfig gc = cfg != null ? cfg.getGroupChat() : null;
             AgentConfigEntry.SkillsConfig sk = cfg != null ? cfg.getSkills() : null;
 
-            result.add(
+            AgentDefinition base =
                     new AgentDefinition(
                             id,
                             name,
@@ -220,15 +225,65 @@ public class AgentLifecycleService {
                             null,
                             0L,
                             0L,
-                            null, // shares — globals are never shared individually
+                            null, // shares — populated from the override store below
                             AgentDefinition.RUN_AS_INVOKER,
                             null, // forkOf
                             cfg != null ? cfg.getWorkspace() : null, // mirror runtime workspace
                             null, // sandboxMode — globals follow the platform default
                             null, // sandboxScope
-                            null)); // tierForCurrentUser — populated by the controller
+                            null); // tierForCurrentUser — populated by the controller
+
+            // Layer any admin override (name/sysPrompt/model/tools/skills/identity/shares/...) on
+            // top of the bootstrap definition so the catalog reflects the admin's edits.
+            result.add(
+                    overrideStore
+                            .findById(id)
+                            .map(o -> overlayGlobal(base, o))
+                            .orElse(base));
         }
         return result;
+    }
+
+    /**
+     * Overlays a persisted admin {@link GlobalAgentOverrideStore.GlobalOverride} on top of the
+     * bootstrap-derived global definition. A non-null override field wins; a null override field
+     * falls back to the bootstrap value. The effective runtime {@code tools} list and
+     * {@code workspacePath} are intentionally kept from the bootstrap base (not editable for
+     * globals).
+     */
+    private static AgentDefinition overlayGlobal(
+            AgentDefinition base, GlobalAgentOverrideStore.GlobalOverride o) {
+        return new AgentDefinition(
+                base.id(),
+                o.name() != null ? o.name() : base.name(),
+                o.description() != null ? o.description() : base.description(),
+                o.sysPrompt() != null ? o.sysPrompt() : base.sysPrompt(),
+                o.model() != null ? o.model() : base.model(),
+                o.maxIters() != null ? o.maxIters() : base.maxIters(),
+                base.tools(),
+                o.toolsAllow() != null ? o.toolsAllow() : base.toolsAllow(),
+                o.toolsDeny() != null ? o.toolsDeny() : base.toolsDeny(),
+                o.identityName() != null ? o.identityName() : base.identityName(),
+                o.identityEmoji() != null ? o.identityEmoji() : base.identityEmoji(),
+                o.groupChatMentionPatterns() != null
+                        ? o.groupChatMentionPatterns()
+                        : base.groupChatMentionPatterns(),
+                o.groupChatRequireMention() != null
+                        ? o.groupChatRequireMention()
+                        : base.groupChatRequireMention(),
+                o.skillsAllow() != null ? o.skillsAllow() : base.skillsAllow(),
+                o.skillsDeny() != null ? o.skillsDeny() : base.skillsDeny(),
+                base.scope(),
+                base.ownerId(),
+                base.createdAt(),
+                o.updatedAt(),
+                o.shares() != null ? o.shares() : base.shares(),
+                o.runAs() != null ? o.runAs() : base.runAs(),
+                base.forkOf(),
+                base.workspacePath(),
+                o.sandboxMode() != null ? o.sandboxMode() : base.sandboxMode(),
+                o.sandboxScope() != null ? o.sandboxScope() : base.sandboxScope(),
+                base.tierForCurrentUser());
     }
 
     // -----------------------------------------------------------------

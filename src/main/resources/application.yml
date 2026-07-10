@@ -71,6 +71,15 @@ dataagent:
       # Ollama 中已拉取的模型名称
       chat: ${DATAAGENT_MODEL_NAME:qwen2.5:1.5b}
 
+  # 模型选择：本地 Ollama 与 LongCat API 二选一作为全局默认；
+  # 也可在管理台按 Agent 单独指定 model 字段（local / longcat）。
+  model:
+    active: ${DATAAGENT_MODEL_ACTIVE:longcat}    # ollama(本地) | longcat(API)
+    longcat:
+      api-key: ${LONGCAT_API_KEY:ak_2NX5nj7y16ja2Y91Dt4oe06V89q1u}             # LongCat API Key，建议用环境变量注入
+      model-name: ${LONGCAT_MODEL:LongCat-2.0}
+      base-url: ${LONGCAT_BASE_URL:https://api.longcat.chat/openai}
+
   agent:
     name: ${DATAAGENT_AGENT_NAME:data-agent}
     description: 基于 AgentScope 2.0 的企业数据分析助手
@@ -98,3 +107,13 @@ dataagent:
       enabled: false  # Redis 默认关闭，redis profile 打开
       ttl: 30m
       key-prefix: "dataagent:session:"
+
+  sandbox:
+    # 沙箱工作区快照后端（与 StateStoreConfig 的状态后端配对，彻底消除"重启丢沙箱"）
+    # - 默认（启用 redis profile 即 dataagent.session.redis.enabled=true）→ RedisSnapshotSpec：开箱即用
+    # - 未启用 redis → Noop：单副本、保留容器策略（应用关闭 stop() 保留容器于宿主机）
+    # - 可选 JDBC 快照：需引入 agentscope-extensions-mysql 并补一个 JdbcSnapshotSpec(dataSource) Bean，
+    #   本离线构建环境未含该扩展，故默认关闭
+    snapshot:
+      jdbc:
+        enabled: false  # JDBC 快照开关（需 mysql 扩展；与 redis 快照互斥，优先级低于 redis）

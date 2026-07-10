@@ -50,6 +50,7 @@
         <agentscope-extensions-skill-git-repository.version>${agentscope.version}</agentscope-extensions-skill-git-repository.version>
         <agentscope-extensions-nacos-skill.version>${agentscope.version}</agentscope-extensions-nacos-skill.version>
         <agentscope-extensions-redis.version>${agentscope.version}</agentscope-extensions-redis.version>
+        <agentscope-extensions-mysql.version>${agentscope.version}</agentscope-extensions-mysql.version>
         <!-- 第三方依赖版本 -->
         <nacos-client.version>3.2.1-2026.03.30</nacos-client.version>
         <sqlite-jdbc.version>3.47.2.0</sqlite-jdbc.version>
@@ -129,6 +130,20 @@
             <version>${agentscope-extensions-redis.version}</version>
             <optional>true</optional>
         </dependency>
+
+        <!--
+          Optional: JDBC-backed sandbox snapshot store. Uncomment + build online
+          (mvn -U compile) to pull agentscope-extensions-mysql from the upstream repo.
+          Then set dataagent.sandbox.snapshot.jdbc.enabled=true to route snapshots
+          through your existing DataSource instead of Redis. Requires the
+          jdbcSandboxSnapshotSpec(dataSource) bean in SandboxSnapshotConfig.
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-mysql</artifactId>
+            <version>${agentscope-extensions-mysql.version}</version>
+            <optional>true</optional>
+        </dependency>
+        -->
 
         <!--
           Optional: Spring Boot Redis starter.
@@ -256,34 +271,67 @@
                 </executions>
             </plugin>
 
-            <!-- Frontend build: npm run build -> src/main/resources/static -->
-            <!-- 如遇到 frontend-maven-plugin 执行失败，可跳过前端构建：
-                 mvn compile -DskipFrontend -->
-            <plugin>
-                <groupId>com.github.eirslett</groupId>
-                <artifactId>frontend-maven-plugin</artifactId>
-                <version>1.15.1</version>
-                <configuration>
-                    <workingDirectory>frontend</workingDirectory>
-                    <installDirectory>target</installDirectory>
-                    <nodeVersion>v20.19.2</nodeVersion>
-                    <npmVersion>10.9.2</npmVersion>
-                </configuration>
-                <executions>
-                    <execution>
-                        <id>install-node-npm</id>
-                        <phase>none</phase>
-                    </execution>
-                    <execution>
-                        <id>npm-install</id>
-                        <phase>none</phase>
-                    </execution>
-                    <execution>
-                        <id>npm-build</id>
-                        <phase>none</phase>
-                    </execution>
-                </executions>
-            </plugin>
+            <!--
+              Frontend (React SPA) 默认不绑定到 Maven 生命周期：
+              后端构建（compile / package / test-compile）只需 JDK + Maven，无需 Node/npm。
+              如需随 jar 一起构建前端并产出到 src/main/resources/static，
+              激活 frontend profile：  mvn -Pfrontend package
+            -->
         </plugins>
     </build>
+
+    <!--
+      Optional profile: 仅当需要用 Maven 一并构建 React 前端时才激活。
+      默认不激活，避免每次 mvn package 都触发 npm install / build（依赖网络、耗时较长）。
+      frontend/vite.config.ts 的 outDir 已指向 src/main/resources/static。
+    -->
+    <profiles>
+        <profile>
+            <id>frontend</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>com.github.eirslett</groupId>
+                        <artifactId>frontend-maven-plugin</artifactId>
+                        <version>1.15.1</version>
+                        <configuration>
+                            <workingDirectory>frontend</workingDirectory>
+                            <installDirectory>target</installDirectory>
+                            <nodeVersion>v20.19.2</nodeVersion>
+                            <npmVersion>10.9.2</npmVersion>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>install-node-npm</id>
+                                <phase>generate-resources</phase>
+                                <goals>
+                                    <goal>install-node-and-npm</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>npm-install</id>
+                                <phase>generate-resources</phase>
+                                <goals>
+                                    <goal>npm</goal>
+                                </goals>
+                                <configuration>
+                                    <arguments>install</arguments>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>npm-build</id>
+                                <phase>generate-resources</phase>
+                                <goals>
+                                    <goal>npm</goal>
+                                </goals>
+                                <configuration>
+                                    <arguments>run build</arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

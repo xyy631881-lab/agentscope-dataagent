@@ -22,7 +22,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
-import io.agentscope.dataagent.workspace.domain.SandboxPool;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
@@ -69,17 +68,14 @@ public class MarketContributionService {
             new TypeReference<>() {};
 
     private final ContributionRepository repository;
-    private final SandboxPool sandboxRegistry;
     private final ObjectMapper objectMapper;
     private final Path sharedRoot;
 
     public MarketContributionService(
             ContributionRepository repository,
             DataAgentBootstrap bootstrap,
-            SandboxPool sandboxRegistry,
             ObjectMapper objectMapper) {
         this.repository = Objects.requireNonNull(repository, "repository");
-        this.sandboxRegistry = Objects.requireNonNull(sandboxRegistry, "sandboxRegistry");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
         this.sharedRoot = bootstrap.cwd().resolve("shared");
     }
@@ -214,9 +210,6 @@ public class MarketContributionService {
         entity.setUpdatedAt(System.currentTimeMillis());
         ContributionEntity saved = repository.save(entity);
 
-        // Force every existing sandbox of the target agent to be torn down so the next borrow
-        // re-creates a container that picks up the new files from the shared projection.
-        sandboxRegistry.invalidate(null, entity.getTargetAgentId());
         return saved;
     }
 

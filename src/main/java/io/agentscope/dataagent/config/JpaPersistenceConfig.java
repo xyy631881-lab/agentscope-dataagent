@@ -16,7 +16,10 @@
 package io.agentscope.dataagent.config;
 
 import io.agentscope.dataagent.agent.infrastructure.AgentEntityRepository;
+import io.agentscope.dataagent.agent.infrastructure.GlobalOverrideRepository;
+import io.agentscope.dataagent.agent.infrastructure.JpaGlobalAgentOverrideStore;
 import io.agentscope.dataagent.agent.infrastructure.JpaUserAgentDefinitionStore;
+import io.agentscope.dataagent.agent.domain.GlobalAgentOverrideStore;
 import io.agentscope.dataagent.agent.domain.UserAgentDefinitionStore;
 import io.agentscope.dataagent.security.infrastructure.JpaUserStore;
 import io.agentscope.dataagent.security.infrastructure.UserEntityRepository;
@@ -56,5 +59,12 @@ public class JpaPersistenceConfig {
     public UserAgentDefinitionStore jpaUserAgentDefinitionStore(AgentEntityRepository repository) {
         log.info("Persistence: agent definition store backed by JPA");
         return new JpaUserAgentDefinitionStore(repository);
+    }
+
+    // ← 创建全局 Agent 覆盖存储实现（admin 在线编辑全局 Agent 的持久化层）
+    @Bean
+    public GlobalAgentOverrideStore jpaGlobalAgentOverrideStore(GlobalOverrideRepository repository) {
+        log.info("Persistence: global agent override store backed by JPA");
+        return new JpaGlobalAgentOverrideStore(repository);
     }
 }

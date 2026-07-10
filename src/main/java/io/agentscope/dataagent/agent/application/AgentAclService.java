@@ -13,7 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.agent.domain;
+package io.agentscope.dataagent.agent.application;
+import io.agentscope.dataagent.agent.domain.AgentDefinition;
+import io.agentscope.dataagent.agent.domain.AgentShareGrant;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.stereotype.Service;
@@ -51,9 +53,17 @@ public class AgentAclService {
         if (def == null) {
             return null;
         }
-        // 规则1：全局 Agent → 所有人都有 RUN 权限
+        // 规则1：全局 Agent → 普通用户有 RUN 权限；管理员可 EDIT（以便配置全局
+        // Agent 如 data-agent 的名称/提示词/工具开关等）。后续若需支持多管理员，可改为
+        // 从 SecurityContext 取角色或注入可编辑全局 Agent 的用户名列表。
+        // 若管理员通过分享授权给某用户更高权限（如 EDIT），则按授权升级。
         if (AgentDefinition.SCOPE_GLOBAL.equals(def.scope())) {
-            return Tier.RUN;
+            Tier base = "admin".equals(userId) ? Tier.EDIT : Tier.RUN;
+            Tier granted = highestMatchingGrant(userId, def.shares());
+            if (granted != null && granted.implies(base)) {
+                return granted;
+            }
+            return base;
         }
         // 规则2：自己创建的 Agent → 有 EDIT（全权） 权限
         if (userId != null && userId.equals(def.ownerId())) {

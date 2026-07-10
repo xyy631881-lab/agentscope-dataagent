@@ -1,18 +1,33 @@
 import { getToken } from './auth';
 
+export interface ConfirmDecision {
+  toolCallId: string;
+  approved: boolean;
+}
+
+export interface PendingToolCall {
+  id: string;
+  name: string;
+  input?: unknown;
+}
+
 export interface ChatRequest {
   message: string;
   sessionKey?: string;
+  confirmResults?: ConfirmDecision[];
 }
 
 export interface ChatEvent {
-  type: 'token' | 'tool_call' | 'tool_result' | 'done' | 'error' | string;
+  type: 'token' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'confirm' | string;
   data?: string;
   toolName?: string;
+  toolCallId?: string;
   toolInput?: string;
   toolResult?: string;
   error?: string;
   sessionKey?: string;
+  replyId?: string;
+  toolCalls?: PendingToolCall[];
 }
 
 export interface CurrentSession {

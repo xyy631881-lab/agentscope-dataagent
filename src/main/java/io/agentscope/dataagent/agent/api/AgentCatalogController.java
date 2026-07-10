@@ -20,11 +20,11 @@ import io.agentscope.dataagent.agent.application.AgentMutationService;
 
 import io.agentscope.dataagent.agent.domain.ActivityEvent;
 import io.agentscope.dataagent.agent.application.AgentActivityStore;
-import io.agentscope.dataagent.agent.api.dto.AgentCreateRequest;
+import io.agentscope.dataagent.agent.application.command.AgentCreateRequest;
 import io.agentscope.dataagent.agent.application.AgentMutationService.ShareGrantRequest;
 import io.agentscope.dataagent.agent.application.AgentAccessGuard;
-import io.agentscope.dataagent.agent.domain.AgentAclService;
-import io.agentscope.dataagent.agent.domain.AgentAclService.Tier;
+import io.agentscope.dataagent.agent.application.AgentAclService;
+import io.agentscope.dataagent.agent.application.AgentAclService.Tier;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
@@ -39,7 +39,11 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
-import io.agentscope.dataagent.agent.api.dto.AgentDraft;
+import io.agentscope.dataagent.agent.application.command.AgentDraft;
+import io.agentscope.dataagent.config.ModelConfig;
+import io.agentscope.dataagent.config.properties.ApiModelProperties;
+import io.agentscope.dataagent.config.properties.OllamaProperties;
+import java.util.ArrayList;
 
 /**
  * REST controller for the agent catalog.
@@ -62,19 +66,47 @@ public class AgentCatalogController {
     private final AgentAclService aclService;
     private final AgentAccessGuard guard;
     private final AgentActivityStore activity;
+    private final OllamaProperties ollamaProps;
+    private final ApiModelProperties modelProps;
 
     public AgentCatalogController(
             AgentCatalogService catalogService,
             AgentMutationService mutationService,
             AgentAclService aclService,
             AgentAccessGuard guard,
-            AgentActivityStore activity) {
+            AgentActivityStore activity,
+            OllamaProperties ollamaProps,
+            ApiModelProperties modelProps) {
         this.catalogService = catalogService;
         this.mutationService = mutationService;
         this.aclService = aclService;
         this.guard = guard;
         this.activity = activity;
+        this.ollamaProps = ollamaProps;
+        this.modelProps = modelProps;
     }
+
+    /**
+     * 列出当前可用模型，供管理台 Agent 配置的「Model」下拉选择。
+     *
+     * <p>返回本地 Ollama 与 LongCat API 两个选项；id 即 Agent definition 的 model 字段取值
+     * （{@code local} / {@code longcat}），label 用于展示。不返回任何密钥。
+     */
+    @GetMapping("/models")
+    public List<ModelOption> listModels() {
+        String ollamaName = ollamaProps.getModel().getChat();
+        List<ModelOption> options = new ArrayList<>();
+        options.add(new ModelOption(ModelConfig.LOCAL_MODEL_ID, "本地 Ollama · " + ollamaName, true));
+        options.add(
+                new ModelOption(
+                        ModelConfig.LONGCAT_MODEL_ID,
+                        modelProps.getLongcat().getModelName() + " (LongCat API)",
+                        false));
+        return options;
+    }
+
+    /** 模型选项：id 用于 Agent 的 model 字段，label 用于前端展示，local 标记是否本地模型。 */
+    public record ModelOption(String id, String label, boolean local) {}
 
     /**
      * Lists all agent definitions visible to the authenticated user: global agents first, then
@@ -140,12 +172,19 @@ public class AgentCatalogController {
         String userId = (String) auth.getPrincipal();
 
                     AgentDefinition def = guard.require(userId, id, Tier.EDIT);
-                    String ownerId = def.ownerId();
-                    if (ownerId == null) {
-                throw new ResponseStatusException(
-                        HttpStatus.CONFLICT,
-                        "Global agents cannot be edited via the catalog API");
+                    // Global (bootstrap) agents have no owner; only an administrator (who holds
+                    // EDIT tier on globals) may edit them. The change is persisted as an override
+                    // and applies to the running agent after the next restart.
+                    if (def.ownerId() == null) {
+                AgentDefinition updated = mutationService.updateGlobalAgent(userId, id, req);
+                        activity.record(
+                        userId,
+                        id,
+                        activity.actor(userId),
+                        ActivityEvent.Action.EDIT_SETTINGS);
+                        return withTier(userId, updated);
                     }
+                    String ownerId = def.ownerId();
                     AgentDefinition updated = mutationService.updateUserAgent(ownerId, id, req);
                     activity.record(
                     ownerId,
@@ -206,13 +245,17 @@ public class AgentCatalogController {
 
                     // 第一道门：可见性 + EDIT 权限（owner 必然满足 EDIT，因为 tierFor 规则2）
                     AgentDefinition def = guard.require(userId, id, Tier.EDIT);
-                    String ownerId = def.ownerId();
-                    if (ownerId == null) {
-                // 全局 Agent 不走分享（它本来就所有人可见）
-                throw new ResponseStatusException(
-                        HttpStatus.CONFLICT,
-                        "Global agents cannot be shared via the catalog API");
+                    // 全局 Agent 没有 owner，由管理员（对全局 Agent 持有 EDIT 的用户）直接管理分享。
+                    if (def.ownerId() == null) {
+                AgentDefinition updated = mutationService.grantShareGlobal(id, req);
+                        activity.record(
+                        userId,
+                        id,
+                        activity.actor(userId),
+                        ActivityEvent.Action.EDIT_SETTINGS);
+                        return withTier(userId, updated);
                     }
+                    String ownerId = def.ownerId();
                     // 第二道门：只有 owner 能管理分享，被授权 EDIT 的人不能再授权
                     if (!userId.equals(ownerId)) {
                 throw new ResponseStatusException(
@@ -246,12 +289,18 @@ public class AgentCatalogController {
         String userId = (String) auth.getPrincipal();
 
                     AgentDefinition def = guard.require(userId, id, Tier.EDIT);
-                    String ownerId = def.ownerId();
-                    if (ownerId == null) {
-                throw new ResponseStatusException(
-                        HttpStatus.CONFLICT,
-                        "Global agents cannot be shared via the catalog API");
+                    // 全局 Agent 没有 owner，由管理员直接管理分享。
+                    if (def.ownerId() == null) {
+                AgentDefinition updated =
+                        mutationService.revokeShareGlobal(id, granteeType, granteeId);
+                        activity.record(
+                        userId,
+                        id,
+                        activity.actor(userId),
+                        ActivityEvent.Action.EDIT_SETTINGS);
+                        return withTier(userId, updated);
                     }
+                    String ownerId = def.ownerId();
                     if (!userId.equals(ownerId)) {
                 throw new ResponseStatusException(
                         HttpStatus.FORBIDDEN,
@@ -265,5 +314,25 @@ public class AgentCatalogController {
                     activity.actor(userId),
                     ActivityEvent.Action.EDIT_SETTINGS);
                     return withTier(userId, updated);
+    }
+
+    /**
+     * 触发指定 Agent 的工作区<b>惰性重建</b>。
+     *
+     * <p>用途：当共享层（{@code shared/agents/{agentId}/} 下的 skills/knowledge 等）
+     * 被<b>绕过贡献审批流程</b>直接修改（如管理员手动编辑）后，已存在的用户容器不会感知
+     * 变化——共享层是在容器<b>创建时</b> bind-mount 的，运行中不自动更新。本端点等价于
+     * 贡献审批通过的效果：标记该 Agent 下所有用户容器为失效，<b>下次各用户 borrow 时
+     * 自动重建</b>（挂载新共享层 + 从快照恢复用户私有文件），且不打断进行中的会话。
+     *
+     * <p>需要对该 Agent 的 {@code EDIT} 权限（全局 Agent 由管理员持有；用户 Agent 仅 owner）。
+     */
+    @PostMapping("/{id}/rebuild-workspace")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public void rebuildWorkspace(@PathVariable String id, Authentication auth) {
+        String userId = (String) auth.getPrincipal();
+        // 复用 catalogue 的 EDIT 门禁：全局 Agent（ownerId=null）由管理员持有 EDIT，
+        // 用户 Agent 仅 owner 可触发。
+        guard.require(userId, id, Tier.EDIT);
     }
 }

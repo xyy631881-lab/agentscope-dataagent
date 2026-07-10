@@ -28,7 +28,6 @@ import io.agentscope.dataagent.runtime.config.AgentscopeConfig;
 import io.agentscope.dataagent.conversation.domain.SessionEntry;
 import io.agentscope.dataagent.conversation.domain.SessionKind;
 import io.agentscope.dataagent.conversation.domain.SessionMaintenanceConfig;
-import io.agentscope.dataagent.conversation.application.SessionTurnParser;
 import io.agentscope.dataagent.conversation.application.SessionTurnParser.TurnEntry;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
@@ -69,18 +68,21 @@ public class ConversationService {
     private final DataAgentBootstrap bootstrap;
     private final AgentLifecycleService lifecycleService;
     private final SessionMaintenanceConfig maintenanceConfig;
+    private final io.agentscope.core.state.AgentStateStore agentStateStore;
 
     public ConversationService(
             SessionEntityRepository sessionRepo,
             SessionReadStateRepository readStateRepo,
             DataAgentBootstrap bootstrap,
             AgentLifecycleService lifecycleService,
-            ConversationMigrationService migrationService) {
+            ConversationMigrationService migrationService,
+            io.agentscope.core.state.AgentStateStore agentStateStore) {
         this.sessionRepo = sessionRepo;
         this.readStateRepo = readStateRepo;
         this.bootstrap = bootstrap;
         this.lifecycleService = lifecycleService;
         this.maintenanceConfig = ConversationSupport.resolveMaintenanceConfig(bootstrap.loadedConfig());
+        this.agentStateStore = agentStateStore;
         // migrationService is injected to guarantee it initializes (and runs migration) first
     }
 
@@ -103,6 +105,40 @@ public class ConversationService {
     }
 
     /** 按 conversationId 查找会话（前端只知道 conversationId）。 */
+    public SessionEntry createSessionRecord(
+            String agentId, String sessionKey, String userId, String gateKey) {
+        if (sessionKey == null || sessionKey.isBlank()) {
+            return null;
+        }
+        Optional<SessionEntity> existing = sessionRepo.findBySessionKey(sessionKey.trim());
+        if (existing.isPresent()) {
+            SessionEntity e = existing.get();
+            e.setLastActivityMs(System.currentTimeMillis());
+            sessionRepo.save(e);
+            return e.toEntry();
+        }
+
+        SessionEntity entity = new SessionEntity();
+        entity.setSessionKey(sessionKey.trim());
+        entity.setAgentId(agentId);
+        entity.setSessionId("main-" + UUID.randomUUID());
+        entity.setLabel(null);
+        entity.setKind("main");
+        entity.setSpawnedBy(null);
+        entity.setSpawnDepth(0);
+        entity.setCreatedAtMs(System.currentTimeMillis());
+        entity.setLastActivityMs(System.currentTimeMillis());
+        entity.setSessionFilePath(resolveSessionFilePath(userId, agentId, entity.getSessionId()));
+        entity.setSpawnRunId(null);
+        entity.setGateKey(gateKey);
+        entity.setUserId(userId);
+        sessionRepo.save(entity);
+        log.info(
+                "Created new session record: sessionKey={}, agentId={}, userId={}",
+                sessionKey, agentId, userId);
+        return entity.toEntry();
+    }
+
     public SessionEntry findSessionByConversationId(String agentId, String key, String userId) {
         if (key == null || key.isBlank()) return null;
         String gatewayAgentId = lifecycleService.peekGatewayAgentId(userId, agentId);
@@ -201,8 +237,58 @@ public class ConversationService {
     @Transactional(readOnly = true)
     public List<TurnEntry> getTurns(String agentId, String key, String userId) {
         SessionEntry entry = requireOwnedSession(agentId, key, userId);
-        String content = readSessionLogContent(agentId, entry);
-        return SessionTurnParser.parse(content != null ? content : "");
+        // 优先从 workspace 读取；若当前请求无沙箱上下文（如 HTTP 会话查询），
+        // readSessionLogContent 会抛出 SandboxConfigurationException，此时降级到 AgentStateStore。
+        try {
+            String content = readSessionLogContent(agentId, entry);
+            if (content != null && !content.isEmpty()) {
+                return SessionTurnParser.parse(content);
+            }
+        } catch (Exception ex) {
+            if (log.isDebugEnabled()) {
+                log.debug("从 workspace 读取会话日志失败 (agentId={}, key={})，尝试 AgentStateStore: {}",
+                        agentId, key, ex.getMessage());
+            }
+        }
+        // 备选：从 AgentStateStore 读取（workspace 文件可能存储在 Docker 沙箱内，本地文件系统不可见）
+        return getTurnsFromAgentStateStore(userId, entry);
+    }
+
+    private List<TurnEntry> getTurnsFromAgentStateStore(String userId, SessionEntry entry) {
+        if (entry.gateKey() == null || entry.gateKey().isBlank()) {
+            return List.of();
+        }
+        try {
+            java.util.Optional<io.agentscope.core.state.AgentState> opt =
+                    agentStateStore.get(userId, entry.gateKey(), "agent_state", io.agentscope.core.state.AgentState.class);
+            if (opt.isEmpty()) {
+                return List.of();
+            }
+            List<io.agentscope.core.message.Msg> context = opt.get().getContext();
+            List<TurnEntry> turns = new ArrayList<>();
+            long now = System.currentTimeMillis();
+            for (int i = 0; i < context.size(); i++) {
+                io.agentscope.core.message.Msg msg = context.get(i);
+                String roleStr = msg.getRole() != null ? msg.getRole().name().toUpperCase() : "UNKNOWN";
+                String text = msg.getTextContent();
+                if (text != null && !text.isBlank()) {
+                    turns.add(new TurnEntry(
+                            "m" + i,           // id
+                            null,              // parentId
+                            roleStr,           // role
+                            text,              // content
+                            now,               // timestampMs
+                            null,              // toolName
+                            null,              // toolInput
+                            null               // toolResult
+                    ));
+                }
+            }
+            return turns;
+        } catch (Exception e) {
+            log.warn("从 AgentStateStore 读取历史失败 (gateKey={}): {}", entry.gateKey(), e.getMessage());
+            return List.of();
+        }
     }
 
     // ==============================================================
@@ -366,11 +452,9 @@ public class ConversationService {
         HarnessAgent ha =
                 gatewayAgentId != null ? bootstrap.gateway().findAgent(gatewayAgentId) : null;
         if (ha != null && ha.getWorkspaceManager() != null) {
-            RuntimeContext rc =
-                    userId != null && !userId.isBlank()
-                            ? RuntimeContext.builder().userId(userId).build()
-                            : RuntimeContext.empty();
-            return ha.getWorkspaceManager().resolveSessionFile(rc, agentId, sessionId).toString();
+            // 使用 RuntimeContext.empty() 与 readSessionLogContent 保持一致，
+            // 避免 userId 被加入路径前缀导致数据库中 session_file_path 与实际文件路径不一致
+            return ha.getWorkspaceManager().resolveSessionFile(RuntimeContext.empty(), agentId, sessionId).toString();
         }
         return null;
     }
@@ -464,6 +548,26 @@ public class ConversationService {
             log.info("Session 维护: 移除了 {} 个 session", removed);
         }
         return removed;
+    }
+
+    // ==============================================================
+    //  运行时统计（供 RuntimeController 调用）
+    // ==============================================================
+
+    /** 会话总数。 */
+    public long sessionCount() {
+        return sessionRepo.count();
+    }
+
+    /** 有会话记录的去重用户数。 */
+    public long userCount() {
+        return sessionRepo.countDistinctUserId();
+    }
+
+    /** 最近活跃的 N 条会话（按 lastActivityMs 倒序）。 */
+    public List<SessionEntity> recentSessions(int limit) {
+        return sessionRepo.findAllByOrderByLastActivityMsDesc(
+                org.springframework.data.domain.PageRequest.of(0, limit));
     }
 
     // ==============================================================

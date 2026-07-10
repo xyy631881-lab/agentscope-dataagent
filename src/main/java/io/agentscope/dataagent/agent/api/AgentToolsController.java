@@ -15,7 +15,7 @@
  */
 package io.agentscope.dataagent.agent.api;
 import io.agentscope.dataagent.agent.application.WorkspaceResolutionService;
-import io.agentscope.dataagent.agent.domain.AgentAclService;
+import io.agentscope.dataagent.agent.application.AgentAclService;
 import io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
@@ -34,7 +34,7 @@ import io.agentscope.dataagent.agent.application.AgentCatalogService;
 import io.agentscope.dataagent.agent.domain.AgentDefinition;
 import io.agentscope.dataagent.agent.application.AgentLifecycleService;
 import io.agentscope.dataagent.agent.application.AgentAccessGuard;
-import io.agentscope.dataagent.agent.domain.AgentAclService.Tier;
+import io.agentscope.dataagent.agent.application.AgentAclService.Tier;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.tools.McpServerConfig;
 import io.agentscope.harness.agent.tools.ToolsConfig;

@@ -14,71 +14,46 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.workspace.infrastructure;
-import io.agentscope.dataagent.config.BootstrapConfig;
-import io.agentscope.dataagent.workspace.domain.SandboxPool;
-import io.agentscope.dataagent.workspace.domain.SharedWorkspaceProjection;
-import io.agentscope.core.state.AgentStateStore;
-import io.agentscope.core.state.InMemoryAgentStateStore;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.dataagent.config.properties.WorkspaceProperties;
+import io.agentscope.dataagent.workspace.domain.SharedWorkspaceProjection;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
+import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClient;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClientOptions;
+import io.agentscope.harness.agent.sandbox.json.HarnessSandboxJacksonModule;
+import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-/**
- * Spring configuration for the per-tenant workspace filesystem used by every per-agent
- * {@code WorkspaceManager}.
- *
- * <p>DataAgent is a multi-tenant deployable. Both the browser workspace controllers and the agent
- * runtime read/write through one live Docker {@link
- * io.agentscope.harness.agent.sandbox.Sandbox} per {@code (userId, agentId)} owned by
- * {@link UserSandboxPool}. This is what makes the workspace user-isolated — every other route
- * the old {@code CompositeFilesystem} fell through to a shared {@code LocalFilesystem}, which
- * leaked content across tenants.
- *
- * <p>The shared, read-only seed content (AGENTS.md / skills/ / subagents/ / knowledge/) lives
- * under {@code ${cwd}/shared/} on the host and is projected into every fresh container via the
- * registry's {@code __workspace_projection__} entry.
- *
- * <p>Multi-replica deployments must use sticky load-balancing by {@code userId} so a user's
- * traffic lands on the same pod — the pool's isolation-state store is in-memory by default, and
- * two pods otherwise spin up independent containers for the same user (override the
- * {@code AgentStateStore} bean with a distributed backend to share state across pods).
- */
+/** Framework adapters and browser workspace access. */
 @Configuration
 public class DataAgentWorkspaceConfig {
 
     private static final Logger log = LoggerFactory.getLogger(DataAgentWorkspaceConfig.class);
 
-    @Value("${dataagent.sandbox.idle-ttl-min:15}")
-    private long idleTtlMinutes;
-
-    @Value("${dataagent.sandbox.eviction-poll-sec:60}")
-    private long evictionPollSeconds;
-
     /**
-     * Default {@link SandboxClient} bean — a no-arg {@link DockerSandboxClient}. Operators can
-     * override by declaring their own {@code SandboxClient<DockerSandboxClientOptions>} bean.
+     * The framework remains the sandbox lifecycle owner. This client only repairs Windows Docker
+     * path handling and rebinds remote snapshots after JSON deserialization.
      */
     @Bean
     @ConditionalOnMissingBean(SandboxClient.class)
-    public SandboxClient<DockerSandboxClientOptions> sandboxClient() {
-        log.info("Wiring default DockerSandboxClient for per-user workspace sandboxes");
+    public SandboxClient<DockerSandboxClientOptions> sandboxClient(
+            SandboxSnapshotSpec snapshotSpec) {
         ObjectMapper mapper =
                 new ObjectMapper()
+                        .findAndRegisterModules()
+                        .registerModule(new HarnessSandboxJacksonModule())
                         .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-        return new DockerSandboxClient(mapper); // ← 直接调用 docker 命令
+        return new FrameworkDockerSandboxClient(new DockerSandboxClient(mapper), snapshotSpec);
     }
 
     @Bean
@@ -88,55 +63,22 @@ public class DataAgentWorkspaceConfig {
         return new SharedWorkspaceProjection(sharedRoot);
     }
 
-    /**
-     * Framework isolation-state backend for the sandbox pool.
-     *
-     * <p>Defaults to an in-process {@link InMemoryAgentStateStore}, which is correct for a
-     * single-replica DataAgent or any deployment that pins a user to one pod via sticky
-     * load-balancing (the sandbox containers are themselves in-memory and pod-local). For a
-     * multi-replica deployment that must recover a user's container after a pod failure, override
-     * this bean with a distributed {@link AgentStateStore} — and pair it with a real
-     * {@code SandboxSnapshotSpec} backend, otherwise a recovered container starts with an empty
-     * workspace.
-     */
     @Bean
-    @ConditionalOnMissingBean(AgentStateStore.class)
-    public AgentStateStore agentStateStore() {
-        return new InMemoryAgentStateStore();
-    }
-
-    @Bean
-    public SandboxPool sandboxPool(
+    public WorkspaceManagerFactory workspaceManagerFactory(
             SandboxClient<DockerSandboxClientOptions> sandboxClient,
             SharedWorkspaceProjection projection,
-            SandboxLifecycleObserver lifecycleObserver,
-            AgentStateStore agentStateStore) {
-        Duration idleTtl = Duration.ofMinutes(idleTtlMinutes);
-        Duration evictionPoll = Duration.ofSeconds(evictionPollSeconds);
-        log.info(
-                "DataAgent sandbox pool: idleTtl={}, evictionPoll={}",
-                idleTtl,
-                evictionPoll);
-        return new UserSandboxPool(
-                sandboxClient, projection, idleTtl, evictionPoll, lifecycleObserver, agentStateStore);
+            AgentStateStore stateStore,
+            SandboxSnapshotSpec snapshotSpec,
+            SandboxExecutionGuard executionGuard) {
+        return new WorkspaceManagerFactory(
+                sandboxClient, projection, stateStore, snapshotSpec, executionGuard);
     }
 
-    /**
-     * Resolves the workspace root from {@link WorkspaceProperties} — same source as
-     * {@code BootstrapConfig} uses. Injecting the properties bean directly (instead of
-     * {@code DataAgentBootstrap}) avoids a circular dependency: the bootstrap depends
-     * on this pool's {@link UserSandboxPool} bean.
-     */
     private Path resolveCwd(WorkspaceProperties props) {
         String root = props.getRoot();
         if (root != null && !root.isBlank()) {
             return Paths.get(root).toAbsolutePath().normalize();
         }
         return Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
-    }
-
-    @Bean
-    public WorkspaceManagerFactory workspaceManagerFactory(SandboxPool registry) {
-        return new WorkspaceManagerFactory(registry);
     }
 }

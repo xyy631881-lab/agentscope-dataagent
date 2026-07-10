@@ -1,17 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { currentSession, stream } from '../api/chat';
+import type { ConfirmDecision, PendingToolCall } from '../api/chat';
 import { TurnEntry, turns as fetchTurns } from '../api/sessions';
-import ToolCallBlock from './ToolCallBlock';
+import { ExecutionTrace } from './ToolCallBlock';
+import type { ToolCallStatus, ToolCallView } from './ToolCallBlock';
 
 type Role = 'user' | 'assistant' | 'system';
 
-interface ToolEntry {
-  id: string;
-  name: string;
-  input?: string;
-  result?: string;
-}
+interface ToolEntry extends ToolCallView {}
 
 interface Message {
   id: string;
@@ -19,78 +16,115 @@ interface Message {
   text: string;
   tools: ToolEntry[];
   pending?: boolean;
+  timestampMs: number;
+}
+
+interface PendingConfirmation {
+  replyId: string;
+  messageId: string;
+  toolCalls: PendingToolCall[];
 }
 
 const S: Record<string, React.CSSProperties> = {
   root: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: '#f8fafc' },
-  thread: { flex: 1, overflowY: 'auto', padding: '28px 36px', display: 'flex', flexDirection: 'column', gap: 18 },
-  empty: { color: '#94a3b8', fontSize: '0.95rem', textAlign: 'center', marginTop: 100 },
+  thread: { flex: 1, overflowY: 'auto', padding: '24px 32px', display: 'flex', flexDirection: 'column', gap: 16 },
+  empty: { color: '#64748b', fontSize: '0.92rem', textAlign: 'center', marginTop: 100 },
+  messageRow: { width: '100%', display: 'flex', flexDirection: 'column', gap: 5 },
+  messageRowUser: { alignItems: 'flex-end' },
+  messageRowAssistant: { alignItems: 'flex-start' },
+  messageMeta: { display: 'flex', alignItems: 'center', gap: 8, color: '#94a3b8', fontSize: '0.72rem', padding: '0 3px' },
+  actor: { color: '#475569', fontWeight: 650 },
   bubble: {
-    maxWidth: '78%', padding: '14px 18px', borderRadius: 14,
-    fontSize: '0.95rem', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+    width: 'fit-content', maxWidth: 'min(860px, 100%)', padding: '13px 15px', borderRadius: 8,
+    fontSize: '0.94rem', lineHeight: 1.65, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
   },
-  user: {
-    alignSelf: 'flex-end',
-    background: 'linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%)',
-    color: '#ffffff',
-    boxShadow: '0 2px 6px rgba(99,102,241,0.25)',
-  },
-  assistant: {
-    alignSelf: 'flex-start', background: '#ffffff', color: '#0f172a',
-    border: '1px solid #e2e8f0',
-    boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
-  },
-  system: {
-    alignSelf: 'center', background: 'transparent', color: '#94a3b8',
-    fontSize: '0.85rem', fontStyle: 'italic',
-  },
-  composer: {
-    borderTop: '1px solid #e2e8f0', padding: '18px 28px',
-    display: 'flex', gap: 12, background: '#ffffff',
-  },
+  user: { background: '#1d4ed8', color: '#ffffff', boxShadow: '0 1px 2px rgba(30,64,175,0.22)' },
+  assistant: { background: '#ffffff', color: '#0f172a', border: '1px solid #dbe4ee', boxShadow: '0 1px 2px rgba(15,23,42,0.04)' },
+  system: { alignSelf: 'center', background: 'transparent', color: '#64748b', fontSize: '0.82rem', fontStyle: 'italic', padding: '4px 0' },
+  responseText: { minWidth: 24 },
+  waiting: { color: '#64748b', fontSize: '0.85rem' },
+  composer: { borderTop: '1px solid #dbe4ee', padding: '14px 28px 18px', display: 'flex', gap: 10, background: '#ffffff' },
   textarea: {
-    flex: 1, padding: '12px 16px',
-    background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 10,
-    color: '#0f172a', fontSize: '0.95rem', resize: 'none',
-    minHeight: 48, maxHeight: 200, lineHeight: 1.55,
+    flex: 1, padding: '11px 13px', background: '#ffffff', border: '1px solid #b8c5d6', borderRadius: 7,
+    color: '#0f172a', fontSize: '0.94rem', resize: 'none', minHeight: 46, maxHeight: 180, lineHeight: 1.55,
   },
-  send: {
-    padding: '0 24px',
-    background: 'linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%)',
-    color: '#ffffff', border: 'none',
-    borderRadius: 10, cursor: 'pointer', fontSize: '0.95rem', fontWeight: 600,
-    boxShadow: '0 2px 6px rgba(99,102,241,0.35), inset 0 1px 0 rgba(255,255,255,0.18)',
-  },
-  sendDisabled: { background: '#e2e8f0', color: '#94a3b8', cursor: 'not-allowed', boxShadow: 'none' },
+  send: { minWidth: 76, background: '#1d4ed8', color: '#ffffff', border: 'none', borderRadius: 7, cursor: 'pointer', fontSize: '0.9rem', fontWeight: 650 },
+  sendDisabled: { background: '#e2e8f0', color: '#94a3b8', cursor: 'not-allowed' },
+  approval: { marginTop: 10, border: '1px solid #fbbf24', borderRadius: 7, background: '#fffbeb', overflow: 'hidden' },
+  approvalHeader: { padding: '9px 11px', display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid #fde68a' },
+  approvalTitle: { fontWeight: 700, color: '#92400e', fontSize: '0.84rem' },
+  approvalHint: { color: '#a16207', fontSize: '0.77rem', marginTop: 2 },
+  approvalList: { padding: '8px 11px', display: 'flex', flexDirection: 'column', gap: 5 },
+  approvalTool: { display: 'flex', alignItems: 'center', gap: 7, color: '#78350f', fontSize: '0.78rem' },
+  approvalCode: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontWeight: 650 },
+  approvalInput: { color: '#a16207', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  approvalActions: { padding: '9px 11px 10px', display: 'flex', justifyContent: 'flex-end', gap: 8, borderTop: '1px solid #fde68a' },
+  denyBtn: { padding: '6px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid #cbd5e1', fontSize: '0.8rem', fontWeight: 600, background: '#ffffff', color: '#475569' },
+  allowBtn: { padding: '6px 12px', borderRadius: 6, cursor: 'pointer', border: '1px solid #15803d', fontSize: '0.8rem', fontWeight: 650, background: '#15803d', color: '#ffffff' },
+  orphanedBanner: { marginTop: 10, padding: '10px 11px', borderRadius: 7, background: '#fef2f2', border: '1px solid #fecaca', display: 'flex', flexDirection: 'column', gap: 8 },
+  orphanedTitle: { fontSize: '0.82rem', fontWeight: 700, color: '#b91c1c' },
+  orphanedText: { fontSize: '0.78rem', color: '#991b1b', lineHeight: 1.5 },
+  orphanedActions: { display: 'flex', gap: 8 },
+  resetBtn: { padding: '5px 10px', borderRadius: 6, cursor: 'pointer', border: 'none', background: '#b91c1c', color: '#ffffff', fontSize: '0.78rem', fontWeight: 600 },
+  retryBtn: { padding: '5px 10px', borderRadius: 6, cursor: 'pointer', border: '1px solid #fca5a5', background: '#ffffff', color: '#b91c1c', fontSize: '0.78rem', fontWeight: 600 },
 };
 
 let counter = 0;
 const nextId = () => `m${Date.now().toString(36)}-${counter++}`;
-
 const STORAGE_PREFIX = 'claw_chat_session:';
 const storageKey = (agentId: string) => `${STORAGE_PREFIX}${agentId}`;
 
-function turnsToMessages(turns: TurnEntry[]): Message[] {
+const ORPHANED_CONFIRM_PATTERNS = [
+  /To resume.*ConfirmResult/i,
+  /agentscope_confirm_results/i,
+  /human-in-the-loop confirmation/i,
+  /paused for human-in-the-loop/i,
+  /cannot proceed.*confirm/i,
+  /pending confirmation/i,
+];
+
+function isOrphanedConfirmText(text: string): boolean {
+  return ORPHANED_CONFIRM_PATTERNS.some(pattern => pattern.test(text));
+}
+
+function inputText(input: unknown): string | undefined {
+  if (input == null) return undefined;
+  if (typeof input === 'string') return input;
+  try { return JSON.stringify(input); } catch { return String(input); }
+}
+
+function inputPreview(input: unknown): string {
+  return (inputText(input) ?? '').replace(/\s+/g, ' ').slice(0, 84);
+}
+
+function timeLabel(timestampMs: number): string {
+  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(timestampMs);
+}
+
+function failedResult(value?: string): boolean {
+  return /^(error|failed|exception|错误|失败)/i.test(value?.trim() ?? '');
+}
+
+function turnsToMessages(entries: TurnEntry[]): Message[] {
   const out: Message[] = [];
-  for (const t of turns) {
-    const role = String(t.role).toUpperCase();
+  for (const turn of entries) {
+    const role = String(turn.role).toUpperCase();
     if (role === 'USER') {
-      out.push({ id: t.id, role: 'user', text: t.content ?? '', tools: [] });
+      out.push({ id: turn.id, role: 'user', text: turn.content ?? '', tools: [], timestampMs: turn.timestampMs });
     } else if (role === 'ASSISTANT') {
-      out.push({ id: t.id, role: 'assistant', text: t.content ?? '', tools: [] });
+      out.push({ id: turn.id, role: 'assistant', text: turn.content ?? '', tools: [], timestampMs: turn.timestampMs });
     } else if (role === 'TOOL') {
-      const last = out.length > 0 ? out[out.length - 1] : null;
+      const host = [...out].reverse().find(message => message.role === 'assistant');
+      const result = turn.toolResult ?? undefined;
       const tool: ToolEntry = {
-        id: t.id,
-        name: t.toolName ?? 'tool',
-        input: t.toolInput ?? undefined,
-        result: t.toolResult ?? undefined,
+        id: turn.id,
+        name: turn.toolName ?? 'tool',
+        input: turn.toolInput ?? undefined,
+        result,
+        status: result ? (failedResult(result) ? 'failed' : 'completed') : 'running',
       };
-      if (last && last.role === 'assistant') {
-        last.tools = [...last.tools, tool];
-      } else {
-        out.push({ id: `${t.id}-host`, role: 'assistant', text: '', tools: [tool] });
-      }
+      if (host) host.tools = [...host.tools, tool];
+      else out.push({ id: `${turn.id}-host`, role: 'assistant', text: '', tools: [tool], timestampMs: turn.timestampMs });
     }
   }
   return out;
@@ -98,7 +132,6 @@ function turnsToMessages(turns: TurnEntry[]): Message[] {
 
 export interface ChatPanelProps {
   agentId: string;
-  /** Called after each successful message turn so the sessions sidebar can refresh. */
   onSessionUpdate?: () => void;
 }
 
@@ -109,35 +142,32 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
   const [busy, setBusy] = useState(false);
   const [restoring, setRestoring] = useState(true);
   const [sessionKey, setSessionKey] = useState<string | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirmation | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const urlSession = searchParams.get('session');
 
   const persistSession = useCallback((key: string | null) => {
-    if (key) {
-      try { localStorage.setItem(storageKey(agentId), key); } catch { /* ignore quota */ }
-    } else {
-      try { localStorage.removeItem(storageKey(agentId)); } catch { /* ignore */ }
-    }
+    try {
+      if (key) localStorage.setItem(storageKey(agentId), key);
+      else localStorage.removeItem(storageKey(agentId));
+    } catch { /* local storage is optional */ }
   }, [agentId]);
 
-  // On agent or URL session change: pick a session (URL > localStorage > backend default) and rehydrate.
-  const urlSession = searchParams.get('session');
   useEffect(() => {
     let cancelled = false;
     setMessages([]);
     setInput('');
+    setPendingConfirm(null);
     setRestoring(true);
-
     const stored = (() => { try { return localStorage.getItem(storageKey(agentId)); } catch { return null; } })();
 
-    async function run() {
-      // URL-provided session always wins: it may be a freshly-minted UUID that the
-      // backend has never seen yet, and we must not let `currentSession` overwrite it.
+    async function restore() {
       let key: string | null = urlSession;
       if (!key) {
         try {
-          const cur = await currentSession(agentId, stored ?? undefined);
-          key = cur.sessionKey || stored || null;
+          const current = await currentSession(agentId, stored ?? undefined);
+          key = current.sessionKey || stored || null;
         } catch {
           key = stored || null;
         }
@@ -146,11 +176,10 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
       setSessionKey(key);
       if (key) {
         try {
-          const list = await fetchTurns(agentId, key);
-          if (cancelled) return;
-          setMessages(turnsToMessages(list));
+          const entries = await fetchTurns(agentId, key);
+          if (!cancelled) setMessages(turnsToMessages(entries));
         } catch {
-          // missing/empty session is fine — we just start empty
+          // New or expired session keys legitimately have no stored turns.
         }
       }
       if (cancelled) return;
@@ -161,87 +190,177 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
         setSearchParams(next, { replace: true });
       }
     }
-    run();
+    restore();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId, urlSession]);
 
   useEffect(() => {
-    threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
-  }, [messages]);
+    threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
+  }, [messages, pendingConfirm]);
 
-  const canSend = useMemo(() => !busy && !restoring && input.trim().length > 0, [busy, restoring, input]);
+  const canSend = useMemo(
+    () => !busy && !restoring && !pendingConfirm && input.trim().length > 0,
+    [busy, restoring, pendingConfirm, input],
+  );
 
-  async function handleSend() {
-    if (!canSend) return;
-    const text = input.trim();
-    setInput('');
+  const updateTool = useCallback((toolId: string | undefined, toolName: string | undefined, patch: Partial<ToolEntry>, fallbackMessageId?: string) => {
+    setMessages(previous => {
+      let matched = false;
+      const updated = previous.map(message => {
+        const index = message.tools.findIndex(tool => toolId ? tool.id === toolId : tool.name === toolName && !tool.result);
+        if (index < 0) return message;
+        matched = true;
+        const tools = [...message.tools];
+        tools[index] = { ...tools[index], ...patch };
+        return { ...message, tools };
+      });
+      if (matched || !fallbackMessageId) return updated;
+      return updated.map(message => message.id === fallbackMessageId
+        ? { ...message, tools: [...message.tools, {
+          id: toolId ?? `${toolName ?? 'tool'}-${Date.now()}`,
+          name: toolName ?? 'tool',
+          ...patch,
+        }] }
+        : message);
+    });
+  }, []);
+
+  async function runStream(
+    req: { message: string; sessionKey?: string; confirmResults?: ConfirmDecision[] },
+    options?: { systemNote?: string; skipUserMessage?: boolean },
+  ) {
     setBusy(true);
-    const userMsg: Message = { id: nextId(), role: 'user', text, tools: [] };
-    const replyMsg: Message = { id: nextId(), role: 'assistant', text: '', tools: [], pending: true };
-    setMessages(prev => [...prev, userMsg, replyMsg]);
+    const now = Date.now();
+    const additions: Message[] = [];
+    if (!options?.skipUserMessage && req.message) additions.push({ id: nextId(), role: 'user', text: req.message, tools: [], timestampMs: now });
+    if (options?.systemNote) additions.push({ id: nextId(), role: 'system', text: options.systemNote, tools: [], timestampMs: now });
+    const reply: Message = { id: nextId(), role: 'assistant', text: '', tools: [], pending: true, timestampMs: now };
+    additions.push(reply);
+    setMessages(previous => [...previous, ...additions]);
+    let streamDone = false;
 
     try {
-      for await (const evt of stream(agentId, { message: text, sessionKey: sessionKey ?? undefined })) {
-        if (evt.type === 'token') {
-          const chunk = evt.data ?? '';
-          setMessages(prev => prev.map(m => m.id === replyMsg.id ? { ...m, text: m.text + chunk } : m));
-        } else if (evt.type === 'tool_call') {
-          const entry: ToolEntry = {
-            id: `${evt.toolName ?? 'tool'}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-            name: evt.toolName ?? 'tool',
-            input: evt.toolInput,
-          };
-          setMessages(prev => prev.map(m => m.id === replyMsg.id ? { ...m, tools: [...m.tools, entry] } : m));
-        } else if (evt.type === 'tool_result') {
-          setMessages(prev => prev.map(m => {
-            if (m.id !== replyMsg.id) return m;
-            const tools = [...m.tools];
-            for (let i = tools.length - 1; i >= 0; i--) {
-              if (tools[i].name === evt.toolName && !tools[i].result) {
-                tools[i] = { ...tools[i], result: evt.toolResult };
-                return { ...m, tools };
-              }
+      for await (const event of stream(agentId, req)) {
+        if (event.type === 'token') {
+          const chunk = event.data ?? '';
+          setMessages(previous => previous.map(message => message.id === reply.id ? { ...message, text: message.text + chunk } : message));
+        } else if (event.type === 'tool_call') {
+          updateTool(event.toolCallId, event.toolName, {
+            input: event.toolInput,
+            status: 'running',
+          }, reply.id);
+        } else if (event.type === 'tool_result') {
+          const result = event.toolResult;
+          updateTool(event.toolCallId, event.toolName, {
+            result,
+            status: failedResult(result) ? 'failed' : 'completed',
+          }, reply.id);
+        } else if (event.type === 'confirm') {
+          const calls = event.toolCalls ?? [];
+          setMessages(previous => previous.map(message => {
+            if (message.id !== reply.id) return message;
+            const existing = new Map(message.tools.map(tool => [tool.id, tool]));
+            for (const call of calls) {
+              const current = existing.get(call.id);
+              existing.set(call.id, {
+                id: call.id,
+                name: call.name,
+                input: inputText(call.input) ?? current?.input,
+                result: current?.result,
+                status: 'awaiting_approval',
+              });
             }
-            tools.push({
-              id: `${evt.toolName ?? 'tool'}-${Date.now()}`,
-              name: evt.toolName ?? 'tool',
-              result: evt.toolResult,
-            });
-            return { ...m, tools };
+            return { ...message, pending: false, tools: [...existing.values()] };
           }));
-        } else if (evt.type === 'done') {
-          if (evt.sessionKey) {
-            setSessionKey(evt.sessionKey);
-            persistSession(evt.sessionKey);
+          setBusy(false);
+          setPendingConfirm({ replyId: event.replyId ?? '', messageId: reply.id, toolCalls: calls });
+        } else if (event.type === 'done') {
+          streamDone = true;
+          setBusy(false);
+          if (event.sessionKey) {
+            setSessionKey(event.sessionKey);
+            persistSession(event.sessionKey);
             const next = new URLSearchParams(searchParams);
-            if (next.get('session') !== evt.sessionKey) {
-              next.set('session', evt.sessionKey);
+            if (next.get('session') !== event.sessionKey) {
+              next.set('session', event.sessionKey);
               setSearchParams(next, { replace: true });
             }
           }
-          setMessages(prev => prev.map(m => m.id === replyMsg.id ? { ...m, pending: false } : m));
-        } else if (evt.type === 'error') {
-          setMessages(prev => prev.map(m => m.id === replyMsg.id
-            ? { ...m, pending: false, text: m.text + (m.text ? '\n' : '') + `[错误] ${evt.error ?? '未知'}` }
-            : m));
+          setMessages(previous => previous.map(message => message.id === reply.id ? { ...message, pending: false } : message));
+        } else if (event.type === 'error') {
+          if (streamDone) continue;
+          const raw = event.error ?? '未知错误';
+          const text = raw.includes('No active sandbox')
+            ? '当前会话的沙箱不可用。请新建会话后重试。'
+            : raw.includes('paused for human-in-the-loop') || raw.includes('cannot proceed')
+              ? '上一次人工确认已失效。请重置会话后重试。'
+              : raw;
+          setMessages(previous => previous.map(message => {
+            if (message.id !== reply.id) return message;
+            return {
+              ...message,
+              pending: false,
+              text: message.text + (message.text ? '\n' : '') + `执行错误：${text}`,
+              tools: message.tools.map(tool => tool.status === 'running' ? { ...tool, status: 'failed' } : tool),
+            };
+          }));
         }
       }
       onSessionUpdate?.();
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : '流连接失败';
-      setMessages(prev => prev.map(m => m.id === replyMsg.id
-        ? { ...m, pending: false, text: m.text + (m.text ? '\n' : '') + `[错误] ${msg}` }
-        : m));
+    } catch (error: unknown) {
+      const raw = error instanceof Error ? error.message : '流连接失败';
+      const text = raw.includes('No active sandbox') ? '当前会话的沙箱不可用。请新建会话后重试。' : raw;
+      setMessages(previous => previous.map(message => message.id === reply.id
+        ? {
+          ...message,
+          pending: false,
+          text: message.text + (message.text ? '\n' : '') + `执行错误：${text}`,
+          tools: message.tools.map(tool => tool.status === 'running' ? { ...tool, status: 'failed' } : tool),
+        }
+        : message));
     } finally {
       setBusy(false);
       inputRef.current?.focus();
     }
   }
 
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
+  function resetConversation() {
+    setSessionKey(null);
+    persistSession(null);
+    setMessages([]);
+    setPendingConfirm(null);
+    setSearchParams({}, { replace: true });
+  }
+
+  async function handleSend() {
+    if (!canSend) return;
+    const text = input.trim();
+    setInput('');
+    if (text === '/reset') {
+      resetConversation();
+      return;
+    }
+    runStream({ message: text, sessionKey: sessionKey ?? undefined });
+  }
+
+  async function handleConfirm(approved: boolean) {
+    if (!pendingConfirm || !sessionKey) return;
+    const decisions: ConfirmDecision[] = pendingConfirm.toolCalls.map(call => ({ toolCallId: call.id, approved }));
+    const nextStatus: ToolCallStatus = approved ? 'running' : 'rejected';
+    setMessages(previous => previous.map(message => message.id === pendingConfirm.messageId
+      ? { ...message, tools: message.tools.map(tool => decisions.some(decision => decision.toolCallId === tool.id) ? { ...tool, status: nextStatus } : tool) }
+      : message));
+    setPendingConfirm(null);
+    runStream(
+      { message: '', sessionKey, confirmResults: decisions },
+      { systemNote: approved ? '已批准，继续执行。' : '已拒绝该操作。', skipUserMessage: true },
+    );
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
       handleSend();
     }
   }
@@ -249,53 +368,82 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
   return (
     <div style={S.root}>
       <div style={S.thread} ref={threadRef}>
-        {restoring && messages.length === 0 && (
-          <div style={S.empty}>正在加载对话…</div>
-        )}
+        {restoring && messages.length === 0 && <div style={S.empty}>正在加载对话记录...</div>}
         {!restoring && messages.length === 0 && (
-          <div style={S.empty}>
-            开始新对话。输入 <code style={{ background: '#e2e8f0', padding: '1px 6px', borderRadius: 4 }}>/reset</code> 可清空当前会话。
-          </div>
+          <div style={S.empty}>开始新对话。输入 <code style={{ background: '#e2e8f0', padding: '1px 5px', borderRadius: 3 }}>/reset</code> 可清空当前会话。</div>
         )}
-        {messages.map(m => (
-          <div key={m.id} style={{
-            ...S.bubble,
-            ...(m.role === 'user' ? S.user : m.role === 'system' ? S.system : S.assistant),
-          }}>
-            {m.tools.length > 0 && (
-              <div style={{ marginBottom: m.text ? 10 : 0 }}>
-                {m.tools.map(t => (
-                  <ToolCallBlock
-                    key={t.id}
-                    toolName={t.name}
-                    toolCallId={t.id}
-                    result={t.result}
-                  />
-                ))}
+        {messages.map(message => {
+          const orphaned = message.role === 'assistant' && !message.pending && isOrphanedConfirmText(message.text);
+          const confirmation = pendingConfirm?.messageId === message.id ? pendingConfirm : null;
+          if (message.role === 'system') return <div key={message.id} style={S.system}>{message.text}</div>;
+          const isUser = message.role === 'user';
+          return (
+            <div key={message.id} style={{ ...S.messageRow, ...(isUser ? S.messageRowUser : S.messageRowAssistant) }}>
+              <div style={S.messageMeta}>
+                <span style={S.actor}>{isUser ? '你' : '数据助手'}</span>
+                <time>{timeLabel(message.timestampMs)}</time>
               </div>
-            )}
-            {m.text || (m.pending ? <span style={{ color: '#94a3b8' }}>…</span> : null)}
-          </div>
-        ))}
+              <div style={{ ...S.bubble, ...(isUser ? S.user : S.assistant) }}>
+                {!isUser && message.tools.length > 0 && <ExecutionTrace tools={message.tools} pending={message.pending} />}
+                {message.text && <div style={S.responseText}>{message.text}</div>}
+                {!message.text && message.pending && message.tools.length === 0 && <span style={S.waiting}>正在思考...</span>}
+                {confirmation && (
+                  <section style={S.approval} aria-label="人工确认">
+                    <div style={S.approvalHeader}>
+                      <span aria-hidden="true">!</span>
+                      <div>
+                        <div style={S.approvalTitle}>需要人工确认</div>
+                        <div style={S.approvalHint}>批准后将继续当前执行流程。</div>
+                      </div>
+                    </div>
+                    <div style={S.approvalList}>
+                      {confirmation.toolCalls.map(call => (
+                        <div key={call.id} style={S.approvalTool}>
+                          <code style={S.approvalCode}>{call.name}</code>
+                          {inputPreview(call.input) && <span style={S.approvalInput}>{inputPreview(call.input)}</span>}
+                        </div>
+                      ))}
+                    </div>
+                    <div style={S.approvalActions}>
+                      <button type="button" style={S.denyBtn} onClick={() => handleConfirm(false)}>拒绝</button>
+                      <button type="button" style={S.allowBtn} onClick={() => handleConfirm(true)}>批准并继续</button>
+                    </div>
+                  </section>
+                )}
+                {orphaned && (
+                  <div style={S.orphanedBanner}>
+                    <div style={S.orphanedTitle}>人工确认状态已失效</div>
+                    <div style={S.orphanedText}>原操作无法安全恢复。重置会话后可重新发起请求。</div>
+                    <div style={S.orphanedActions}>
+                      <button type="button" style={S.resetBtn} onClick={resetConversation}>重置会话</button>
+                      <button type="button" style={S.retryBtn} onClick={() => {
+                        const lastUser = [...messages].reverse().find(item => item.role === 'user');
+                        if (!lastUser) return;
+                        resetConversation();
+                        runStream({ message: lastUser.text });
+                      }}>重试上一条</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
       <div style={S.composer}>
         <textarea
           ref={inputRef}
           style={S.textarea}
           value={input}
-          onChange={e => setInput(e.target.value)}
+          onChange={event => setInput(event.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={restoring ? '加载中…' : `向 ${agentId} 发送消息…`}
+          placeholder={restoring ? '加载中...' : pendingConfirm ? '请先处理当前的人工确认' : `向 ${agentId} 发送消息...`}
           rows={1}
           autoFocus
-          disabled={restoring}
+          disabled={restoring || Boolean(pendingConfirm)}
         />
-        <button
-          style={{ ...S.send, ...(canSend ? {} : S.sendDisabled) }}
-          onClick={handleSend}
-          disabled={!canSend}
-        >
-          {busy ? '…' : '发送'}
+        <button type="button" style={{ ...S.send, ...(canSend ? {} : S.sendDisabled) }} onClick={handleSend} disabled={!canSend}>
+          {busy ? '处理中' : '发送'}
         </button>
       </div>
     </div>

@@ -25,6 +25,8 @@ import {
   WorkspaceSkillEntry,
   WorkspaceSubagentEntry,
   WorkspaceMemoryView,
+  listModels,
+  ModelOption,
 } from '../../api/admin';
 
 // ---------------------------------------------------------------------------
@@ -100,6 +102,7 @@ function ConfigPanel({ detail, agentId }: { detail: AgentDetailView; agentId: st
   const [desc,        setDesc]        = useState(d.description ?? '');
   const [sysPrompt,   setSysPrompt]   = useState(d.sysPrompt ?? '');
   const [model,       setModel]       = useState(d.model ?? '');
+  const [models,      setModels]      = useState<ModelOption[]>([]);
   const [maxIters,    setMaxIters]    = useState(d.maxIters != null ? String(d.maxIters) : '');
   const [identName,   setIdentName]   = useState(d.identityName ?? '');
   const [identEmoji,  setIdentEmoji]  = useState(d.identityEmoji ?? '');
@@ -113,6 +116,10 @@ function ConfigPanel({ detail, agentId }: { detail: AgentDetailView; agentId: st
   const [sbxScope,    setSbxScope]    = useState(d.sandboxScope ?? '');
   const [saving,  setSaving]  = useState(false);
   const [message, setMessage] = useState<{ text: string; kind: 'ok' | 'warn' | 'err' } | null>(null);
+
+  useEffect(() => {
+    listModels().then(setModels).catch(() => setModels([]));
+  }, []);
 
   async function save() {
     setSaving(true); setMessage(null);
@@ -190,7 +197,12 @@ function ConfigPanel({ detail, agentId }: { detail: AgentDetailView; agentId: st
             <div style={SF.row2}>
               <div>
                 <label style={SF.label}>Model</label>
-                <input style={SF.input} value={model} onChange={e => setModel(e.target.value)} placeholder="qwen-max" />
+                <select style={SF.select} value={model} onChange={e => setModel(e.target.value)}>
+                  <option value="">(默认 / 跟随全局配置)</option>
+                  {models.map(m => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                </select>
               </div>
               <div>
                 <label style={SF.label}>Max Iterations</label>

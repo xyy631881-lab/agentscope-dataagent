@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.agent.application;
-import io.agentscope.dataagent.agent.api.dto.AgentDraft;
+import io.agentscope.dataagent.agent.application.command.AgentDraft;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.message.ContentBlock;

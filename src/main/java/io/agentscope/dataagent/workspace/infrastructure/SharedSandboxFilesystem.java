@@ -16,15 +16,25 @@
 package io.agentscope.dataagent.workspace.infrastructure;
 
 import io.agentscope.core.agent.RuntimeContext;
-import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
+import io.agentscope.core.state.AgentStateStore;
+import io.agentscope.dataagent.workspace.domain.SharedWorkspaceProjection;
+import io.agentscope.harness.agent.IsolationScope;
+import io.agentscope.harness.agent.filesystem.sandbox.BaseSandboxFilesystem;
 import io.agentscope.harness.agent.filesystem.model.ExecuteResponse;
 import io.agentscope.harness.agent.filesystem.model.FileDownloadResponse;
 import io.agentscope.harness.agent.filesystem.model.FileUploadResponse;
-import io.agentscope.harness.agent.filesystem.sandbox.BaseSandboxFilesystem;
 import io.agentscope.harness.agent.filesystem.util.FilesystemUtils;
 import io.agentscope.harness.agent.sandbox.ExecResult;
 import io.agentscope.harness.agent.sandbox.Sandbox;
+import io.agentscope.harness.agent.sandbox.SandboxAcquireResult;
+import io.agentscope.harness.agent.sandbox.SandboxClient;
+import io.agentscope.harness.agent.sandbox.SandboxContext;
+import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
 import io.agentscope.harness.agent.sandbox.SandboxException;
+import io.agentscope.harness.agent.sandbox.SandboxManager;
+import io.agentscope.harness.agent.sandbox.SessionSandboxStateStore;
+import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClientOptions;
+import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -36,128 +46,189 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * 给浏览器端 Controller 用的文件系统适配器——让 Web 界面能直接操作 Docker 容器里的文件
- * （看目录树、读写文件、上传下载、执行命令）。
+ * Browser-facing filesystem backed by the same AgentScope sandbox lifecycle as agent execution.
+ *
+ * <p>The filesystem never keeps a raw container reference. Every operation receives a framework
+ * lease, starts the sandbox, persists the state, and releases the lease. This lets web workspace
+ * APIs and agent tools share one isolation key without a second application-owned container pool.
  */
 public final class SharedSandboxFilesystem extends BaseSandboxFilesystem {
 
     private static final Logger log = LoggerFactory.getLogger(SharedSandboxFilesystem.class);
 
-    private final String fsId;  // 唯一 ID（"shared-sandbox-xxxxxxxx"）
-    private final Sandbox sandbox;  // 容器沙箱实例
+    private final String fsId;
+    private final SandboxManager sandboxManager;
+    private final SandboxContext sandboxContext;
+    private final RuntimeContext sandboxRuntimeContext;
 
-    public SharedSandboxFilesystem(Sandbox sandbox) {
-        this.sandbox = Objects.requireNonNull(sandbox, "sandbox");
-        this.fsId = "shared-sandbox-" + UUID.randomUUID().toString().substring(0, 8);
+    public SharedSandboxFilesystem(
+            SandboxClient<DockerSandboxClientOptions> sandboxClient,
+            SharedWorkspaceProjection projection,
+            AgentStateStore stateStore,
+            SandboxSnapshotSpec snapshotSpec,
+            SandboxExecutionGuard executionGuard,
+            String userId,
+            String agentId) {
+        Objects.requireNonNull(sandboxClient, "sandboxClient");
+        Objects.requireNonNull(projection, "projection");
+        Objects.requireNonNull(stateStore, "stateStore");
+        Objects.requireNonNull(snapshotSpec, "snapshotSpec");
+        Objects.requireNonNull(executionGuard, "executionGuard");
+        Objects.requireNonNull(userId, "userId");
+        Objects.requireNonNull(agentId, "agentId");
+        this.sandboxManager =
+                new SandboxManager(
+                        sandboxClient,
+                        new SessionSandboxStateStore(stateStore, agentId),
+                        agentId,
+                        executionGuard);
+        this.sandboxContext =
+                SandboxContext.builder()
+                        .client(sandboxClient)
+                        .clientOptions(new DockerSandboxClientOptions())
+                        .workspaceSpec(projection.buildSpec(userId, agentId))
+                        .snapshotSpec(snapshotSpec)
+                        .isolationScope(IsolationScope.USER)
+                        .build();
+        this.sandboxRuntimeContext = RuntimeContext.builder().userId(userId).build();
+        this.fsId = "framework-sandbox-" + UUID.randomUUID().toString().substring(0, 8);
     }
 
-    //返回文件系统唯一 ID，用于在 UI 显示和管理
     @Override
     public String id() {
         return fsId;
     }
 
-    //在容器里执行命令，返回执行结果，
-    // 前端要区分"命令失败"和"系统崩了"，前者是用户代码问题，后者要告警。
     @Override
     public ExecuteResponse execute(
             RuntimeContext runtimeContext, String command, Integer timeoutSeconds) {
         try {
-            ExecResult result = sandbox.exec(runtimeContext, command, timeoutSeconds);
-            return new ExecuteResponse(
-                    result.combinedOutput(), result.exitCode(), result.truncated());
+            return withSandbox(
+                    sandbox -> {
+                        ExecResult result = sandbox.exec(runtimeContext, command, timeoutSeconds);
+                        return new ExecuteResponse(
+                                result.combinedOutput(), result.exitCode(), result.truncated());
+                    });
         } catch (SandboxException.ExecTimeoutException e) {
-            // 超时异常
             return new ExecuteResponse(e.getMessage(), 124, false);
         } catch (SandboxException.ExecException e) {
-            String combined =
-                    (e.getStdout() != null ? e.getStdout() : "")
-                            + (e.getStderr() != null && !e.getStderr().isBlank()
-                                    ? "\n" + e.getStderr()
-                                    : "");
-            // 执行异常
-            return new ExecuteResponse(combined, e.getExitCode(), false);
+            return new ExecuteResponse(combinedOutput(e), e.getExitCode(), false);
         } catch (Exception e) {
-            log.error("[shared-sandbox-fs] execute failed: {}", command, e);
-            // 内部异常
+            log.error("[framework-sandbox-fs] execute failed: {}", command, e);
             return new ExecuteResponse("Internal sandbox error: " + e.getMessage(), -1, false);
         }
     }
 
-    //上传文件
-    // Docker exec API 不支持直接传二进制流，只能传字符串。
-    // Base64 编码后全是 ASCII，安全通过 shell 传输。
-    // shell 引号转义统一复用框架的 FilesystemUtils.shellQuote()，与父类 ls/read/grep 行为对齐。
     @Override
     public List<FileUploadResponse> uploadFiles(
             RuntimeContext runtimeContext, List<Map.Entry<String, byte[]>> files) {
+        try {
+            return withSandbox(sandbox -> uploadFiles(sandbox, runtimeContext, files));
+        } catch (Exception e) {
+            log.warn("[framework-sandbox-fs] uploadFiles failed", e);
+            return files.stream()
+                    .map(file -> FileUploadResponse.fail(file.getKey(), e.getMessage()))
+                    .toList();
+        }
+    }
+
+    @Override
+    public List<FileDownloadResponse> downloadFiles(
+            RuntimeContext runtimeContext, List<String> paths) {
+        try {
+            return withSandbox(sandbox -> downloadFiles(sandbox, runtimeContext, paths));
+        } catch (Exception e) {
+            log.warn("[framework-sandbox-fs] downloadFiles failed", e);
+            return paths.stream().map(path -> FileDownloadResponse.fail(path, e.getMessage())).toList();
+        }
+    }
+
+    private List<FileUploadResponse> uploadFiles(
+            Sandbox sandbox,
+            RuntimeContext runtimeContext,
+            List<Map.Entry<String, byte[]>> files) {
         List<FileUploadResponse> results = new ArrayList<>(files.size());
         for (Map.Entry<String, byte[]> file : files) {
             String path = file.getKey();
-            byte[] content = file.getValue();
             try {
-                String base64Content = Base64.getEncoder().encodeToString(content);
-                String escapedPath = FilesystemUtils.shellQuote(path);
-                // base64Content 也走 shellQuote 转义：当前 Base64 字符集不含单引号（安全），
-                // 但万一未来换编码或数据异常，转义能兜底，更稳。
-                String quotedB64 = FilesystemUtils.shellQuote(base64Content);
-                String cmd =
+                String quotedPath = FilesystemUtils.shellQuote(path);
+                String quotedB64 =
+                        FilesystemUtils.shellQuote(Base64.getEncoder().encodeToString(file.getValue()));
+                String command =
                         "mkdir -p $(dirname "
-                                + escapedPath
+                                + quotedPath
                                 + ") && printf '%s' "
                                 + quotedB64
                                 + " | base64 -d > "
-                                + escapedPath;
-                ExecResult r = sandbox.exec(runtimeContext, cmd, null);
-                if (r.ok()) {
-                    results.add(FileUploadResponse.success(path));
-                } else {
-                    results.add(FileUploadResponse.fail(path, r.combinedOutput()));
-                }
+                                + quotedPath;
+                ExecResult result = sandbox.exec(runtimeContext, command, null);
+                results.add(
+                        result.ok()
+                                ? FileUploadResponse.success(path)
+                                : FileUploadResponse.fail(path, result.combinedOutput()));
             } catch (SandboxException.ExecException e) {
-                String combined =
-                        (e.getStdout() != null ? e.getStdout() : "")
-                                + (e.getStderr() != null && !e.getStderr().isBlank()
-                                        ? "\n" + e.getStderr()
-                                        : "");
-                results.add(FileUploadResponse.fail(path, combined));
+                results.add(FileUploadResponse.fail(path, combinedOutput(e)));
             } catch (Exception e) {
-                log.warn("[shared-sandbox-fs] uploadFiles failed for path: {}", path, e);
                 results.add(FileUploadResponse.fail(path, e.getMessage()));
             }
         }
         return results;
     }
 
-    //从容器下载文件，容器内 base64 命令把文件编码成 ASCII，传回宿主机后解码成 byte[]。
-    @Override
-    public List<FileDownloadResponse> downloadFiles(
-            RuntimeContext runtimeContext, List<String> paths) {
+    private List<FileDownloadResponse> downloadFiles(
+            Sandbox sandbox, RuntimeContext runtimeContext, List<String> paths) {
         List<FileDownloadResponse> results = new ArrayList<>(paths.size());
         for (String path : paths) {
             try {
-                String cmd = "base64 " + FilesystemUtils.shellQuote(path);
-                ExecResult r = sandbox.exec(runtimeContext, cmd, null);
-                if (r.ok()) {
-                    byte[] decoded =
-                            Base64.getDecoder()
-                                    .decode(r.stdout().trim().getBytes(StandardCharsets.UTF_8));
-                    results.add(FileDownloadResponse.success(path, decoded));
-                } else {
-                    results.add(FileDownloadResponse.fail(path, r.combinedOutput()));
-                }
+                ExecResult result =
+                        sandbox.exec(runtimeContext, "base64 " + FilesystemUtils.shellQuote(path), null);
+                results.add(
+                        result.ok()
+                                ? FileDownloadResponse.success(
+                                        path,
+                                        Base64.getDecoder()
+                                                .decode(result.stdout().trim().getBytes(StandardCharsets.UTF_8)))
+                                : FileDownloadResponse.fail(path, result.combinedOutput()));
             } catch (SandboxException.ExecException e) {
-                String combined =
-                        (e.getStdout() != null ? e.getStdout() : "")
-                                + (e.getStderr() != null && !e.getStderr().isBlank()
-                                        ? "\n" + e.getStderr()
-                                        : "");
-                results.add(FileDownloadResponse.fail(path, combined));
+                results.add(FileDownloadResponse.fail(path, combinedOutput(e)));
             } catch (Exception e) {
-                log.warn("[shared-sandbox-fs] downloadFiles failed for path: {}", path, e);
                 results.add(FileDownloadResponse.fail(path, e.getMessage()));
             }
         }
         return results;
+    }
+
+    private <T> T withSandbox(SandboxAction<T> action) throws Exception {
+        SandboxAcquireResult acquired = sandboxManager.acquire(sandboxContext, sandboxRuntimeContext);
+        boolean started = false;
+        try {
+            acquired.getSandbox().start();
+            started = true;
+            return action.apply(acquired.getSandbox());
+        } finally {
+            try {
+                if (started) {
+                    sandboxManager.persistState(acquired, sandboxContext, sandboxRuntimeContext);
+                }
+            } finally {
+                try {
+                    sandboxManager.release(acquired);
+                } finally {
+                    acquired.getLease().close();
+                }
+            }
+        }
+    }
+
+    private static String combinedOutput(SandboxException.ExecException e) {
+        return (e.getStdout() != null ? e.getStdout() : "")
+                + (e.getStderr() != null && !e.getStderr().isBlank()
+                        ? "\n" + e.getStderr()
+                        : "");
+    }
+
+    @FunctionalInterface
+    private interface SandboxAction<T> {
+        T apply(Sandbox sandbox) throws Exception;
     }
 }

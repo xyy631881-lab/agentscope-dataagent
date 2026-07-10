@@ -14,14 +14,15 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.agent.application;
-import io.agentscope.dataagent.agent.api.dto.AgentCreateRequest;
+import io.agentscope.dataagent.agent.application.command.AgentCreateRequest;
 import io.agentscope.dataagent.agent.domain.AgentDefinition;
+import io.agentscope.dataagent.agent.domain.AgentShareGrant;
+import io.agentscope.dataagent.agent.domain.GlobalAgentOverrideStore;
 import io.agentscope.dataagent.agent.domain.UserAgentDefinitionStore;
 import io.agentscope.dataagent.common.WorkspaceCopier;
 
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.workspace.application.WorkspaceScaffolder;
-import io.agentscope.dataagent.agent.domain.AgentAclService;
 import io.agentscope.dataagent.agent.domain.AgentShareGrant;
 import io.agentscope.dataagent.capability.template.application.TemplateRegistry;
 import io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory;
@@ -34,13 +35,14 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Function;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
-import io.agentscope.dataagent.agent.api.dto.AgentDraft;
-import io.agentscope.dataagent.agent.api.dto.NamedFile;
+import io.agentscope.dataagent.agent.application.command.AgentDraft;
+import io.agentscope.dataagent.agent.application.command.NamedFile;
 
 /**
  * Mutation operations for the agent catalog: create, update, delete, clone, and share-grant
@@ -61,6 +63,7 @@ public class AgentMutationService {
 
     private final DataAgentBootstrap builderBootstrap;
     private final UserAgentDefinitionStore store;
+    private final GlobalAgentOverrideStore overrideStore;
     private final AgentLifecycleService lifecycleService;
     private final TemplateRegistry templateRegistry;
     private final WorkspaceManagerFactory workspaceManagerFactory;
@@ -68,11 +71,13 @@ public class AgentMutationService {
     public AgentMutationService(
             DataAgentBootstrap builderBootstrap,
             UserAgentDefinitionStore store,
+            GlobalAgentOverrideStore overrideStore,
             AgentLifecycleService lifecycleService,
             TemplateRegistry templateRegistry,
             WorkspaceManagerFactory workspaceManagerFactory) {
         this.builderBootstrap = builderBootstrap;
         this.store = store;
+        this.overrideStore = overrideStore;
         this.lifecycleService = lifecycleService;
         this.templateRegistry = templateRegistry;
         this.workspaceManagerFactory = workspaceManagerFactory;
@@ -228,6 +233,193 @@ public class AgentMutationService {
         // Invalidate the cached UCA registration.
         lifecycleService.invalidateUca(userId, agentId);
         log.info("User '{}' deleted custom agent '{}'", userId, agentId);
+    }
+
+    // -----------------------------------------------------------------
+    //  Global-agent overrides (admin-editable bootstrap agents)
+    // -----------------------------------------------------------------
+
+    /**
+     * Persists an administrator's edit to a global (bootstrap-registered) agent. The change is
+     * stored as an override delta and immediately hot-applied to the running agent instance via
+     * {@link io.agentscope.dataagent.runtime.DataAgentBootstrap#rebuildGlobalAgent} (no restart
+     * needed); the catalog read-path also reflects it instantly. Returns the merged definition.
+     *
+     * @param adminId the administrator performing the edit (used only for the activity record)
+     * @param agentId the global agent id (must exist in the bootstrap registry)
+     */
+    public AgentDefinition updateGlobalAgent(
+            String adminId, String agentId, AgentCreateRequest req) {
+        AgentMutationSupport.validateRequest(req);
+        if (!isGlobal(agentId)) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "Not a global agent: " + agentId);
+        }
+
+        GlobalAgentOverrideStore.GlobalOverride existing =
+                overrideStore.findById(agentId).orElse(null);
+        long now = System.currentTimeMillis();
+        long createdAt = existing != null ? existing.createdAt() : now;
+
+        GlobalAgentOverrideStore.GlobalOverride updated =
+                new GlobalAgentOverrideStore.GlobalOverride(
+                        agentId,
+                        req.name() != null
+                                ? req.name()
+                                : (existing != null && existing.name() != null
+                                        ? existing.name()
+                                        : agentId),
+                        req.description() != null ? req.description() : existingOrNull(existing, o -> o.description()),
+                        req.sysPrompt() != null ? req.sysPrompt() : existingOrNull(existing, o -> o.sysPrompt()),
+                        req.model() != null ? req.model() : existingOrNull(existing, o -> o.model()),
+                        req.maxIters() != null ? req.maxIters() : existingOrNull(existing, o -> o.maxIters()),
+                        req.toolsAllow() != null ? req.toolsAllow() : existingOrNull(existing, o -> o.toolsAllow()),
+                        req.toolsDeny() != null ? req.toolsDeny() : existingOrNull(existing, o -> o.toolsDeny()),
+                        req.identityName() != null ? req.identityName() : existingOrNull(existing, o -> o.identityName()),
+                        req.identityEmoji() != null ? req.identityEmoji() : existingOrNull(existing, o -> o.identityEmoji()),
+                        req.groupChatMentionPatterns() != null
+                                ? req.groupChatMentionPatterns()
+                                : existingOrNull(existing, o -> o.groupChatMentionPatterns()),
+                        req.groupChatRequireMention() != null
+                                ? req.groupChatRequireMention()
+                                : existingOrNull(existing, o -> o.groupChatRequireMention()),
+                        req.skillsAllow() != null ? req.skillsAllow() : existingOrNull(existing, o -> o.skillsAllow()),
+                        req.skillsDeny() != null ? req.skillsDeny() : existingOrNull(existing, o -> o.skillsDeny()),
+                        createdAt,
+                        now,
+                        existing != null ? existing.shares() : null,
+                        existing != null && existing.runAs() != null
+                                ? existing.runAs()
+                                : AgentDefinition.RUN_AS_INVOKER,
+                        req.sandboxMode() != null ? req.sandboxMode() : existingOrNull(existing, o -> o.sandboxMode()),
+                        req.sandboxScope() != null ? req.sandboxScope() : existingOrNull(existing, o -> o.sandboxScope()));
+        GlobalAgentOverrideStore.GlobalOverride saved = overrideStore.save(updated);
+        // 让运行中的 Agent 立即热生效（无需重启）：重建并原子替换网关中的实例。
+        builderBootstrap.rebuildGlobalAgent(agentId);
+        log.info("Admin '{}' updated global agent override '{}'", adminId, agentId);
+        return saved.toDefinition();
+    }
+
+    /**
+     * Appends or updates a share grant on a global agent's override. Globals have no owner, so any
+     * administrator (EDIT tier) may manage their shares; the grant's {@code createdBy} is the
+     * acting admin.
+     */
+    public AgentDefinition grantShareGlobal(String agentId, ShareGrantRequest req) {
+        AgentMutationSupport.validateShareGrantRequest(req);
+        if (!isGlobal(agentId)) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "Not a global agent: " + agentId);
+        }
+
+        GlobalAgentOverrideStore.GlobalOverride existing =
+                overrideStore.findById(agentId).orElse(null);
+        long now = System.currentTimeMillis();
+        long createdAt = existing != null ? existing.createdAt() : now;
+
+        String granteeId =
+                AgentShareGrant.GRANTEE_WORKSPACE.equals(req.granteeType())
+                        ? AgentShareGrant.WORKSPACE_ID
+                        : req.granteeId();
+
+        List<AgentShareGrant> oldShares =
+                existing != null && existing.shares() != null
+                        ? existing.shares()
+                        : List.of();
+        List<AgentShareGrant> newShares = new ArrayList<>(oldShares.size() + 1);
+        boolean updated = false;
+        for (AgentShareGrant g : oldShares) {
+            if (g.granteeType().equals(req.granteeType()) && g.granteeId().equals(granteeId)) {
+                newShares.add(
+                        new AgentShareGrant(
+                                g.granteeType(),
+                                g.granteeId(),
+                                req.tier().trim().toUpperCase(),
+                                now,
+                                g.createdBy()));
+                updated = true;
+            } else {
+                newShares.add(g);
+            }
+        }
+        if (!updated) {
+            newShares.add(
+                    new AgentShareGrant(
+                            req.granteeType(),
+                            granteeId,
+                            req.tier().trim().toUpperCase(),
+                            now,
+                            "admin"));
+        }
+
+        GlobalAgentOverrideStore.GlobalOverride saved =
+                overrideStore.save(applyShares(agentId, existing, createdAt, newShares));
+        log.info(
+                "Granted {} on global agent {} to {}/{}",
+                req.tier(),
+                agentId,
+                req.granteeType(),
+                granteeId);
+        return saved.toDefinition();
+    }
+
+    /**
+     * Revokes a share grant from a global agent's override. Exact match on (granteeType,
+     * granteeId).
+     */
+    public AgentDefinition revokeShareGlobal(
+            String agentId, String granteeType, String granteeId) {
+        if (!AgentShareGrant.GRANTEE_USER.equals(granteeType)
+                && !AgentShareGrant.GRANTEE_WORKSPACE.equals(granteeType)) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "Invalid granteeType: " + granteeType);
+        }
+        String normalizedId =
+                AgentShareGrant.GRANTEE_WORKSPACE.equals(granteeType)
+                        ? AgentShareGrant.WORKSPACE_ID
+                        : granteeId;
+        if (!isGlobal(agentId)) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "Not a global agent: " + agentId);
+        }
+
+        GlobalAgentOverrideStore.GlobalOverride existing =
+                overrideStore
+                        .findById(agentId)
+                        .orElseThrow(
+                                () ->
+                                        new ResponseStatusException(
+                                                HttpStatus.NOT_FOUND,
+                                                "Global agent has no override: " + agentId));
+
+        List<AgentShareGrant> oldShares = existing.shares();
+        if (oldShares == null || oldShares.isEmpty()) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "No shares to revoke on global agent " + agentId);
+        }
+        List<AgentShareGrant> newShares = new ArrayList<>(oldShares.size());
+        boolean removed = false;
+        for (AgentShareGrant g : oldShares) {
+            if (g.granteeType().equals(granteeType) && g.granteeId().equals(normalizedId)) {
+                removed = true;
+                continue;
+            }
+            newShares.add(g);
+        }
+        if (!removed) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND,
+                    "Share grant not found: " + granteeType + "/" + normalizedId);
+        }
+
+        GlobalAgentOverrideStore.GlobalOverride saved =
+                overrideStore.save(applyShares(agentId, existing, existing.createdAt(), newShares));
+        log.info(
+                "Revoked share on global agent {} from {}/{}",
+                agentId,
+                granteeType,
+                normalizedId);
+        return saved.toDefinition();
     }
 
     // -----------------------------------------------------------------
@@ -504,6 +696,49 @@ public class AgentMutationService {
      */
     private boolean isGlobal(String agentId) {
         return builderBootstrap.agents().containsKey(agentId);
+    }
+
+    /**
+     * Returns {@code fn.apply(existing)} when an override already exists, otherwise {@code null}.
+     * Used so that a null field in an update request keeps the previously-stored override value.
+     */
+    private static <T> T existingOrNull(
+            GlobalAgentOverrideStore.GlobalOverride existing,
+            Function<GlobalAgentOverrideStore.GlobalOverride, T> fn) {
+        return existing != null ? fn.apply(existing) : null;
+    }
+
+    /**
+     * Rebuilds a global-agent override preserving every metadata field from {@code existing} (or
+     * {@code null} when no override exists yet) but with the supplied share list and timestamps.
+     */
+    private static GlobalAgentOverrideStore.GlobalOverride applyShares(
+            String agentId,
+            GlobalAgentOverrideStore.GlobalOverride existing,
+            long createdAt,
+            List<AgentShareGrant> newShares) {
+        long now = System.currentTimeMillis();
+        return new GlobalAgentOverrideStore.GlobalOverride(
+                agentId,
+                existing != null ? existing.name() : null,
+                existing != null ? existing.description() : null,
+                existing != null ? existing.sysPrompt() : null,
+                existing != null ? existing.model() : null,
+                existing != null ? existing.maxIters() : null,
+                existing != null ? existing.toolsAllow() : null,
+                existing != null ? existing.toolsDeny() : null,
+                existing != null ? existing.identityName() : null,
+                existing != null ? existing.identityEmoji() : null,
+                existing != null ? existing.groupChatMentionPatterns() : null,
+                existing != null ? existing.groupChatRequireMention() : null,
+                existing != null ? existing.skillsAllow() : null,
+                existing != null ? existing.skillsDeny() : null,
+                createdAt,
+                now,
+                newShares.isEmpty() ? null : newShares,
+                existing != null ? existing.runAs() : AgentDefinition.RUN_AS_INVOKER,
+                existing != null ? existing.sandboxMode() : null,
+                existing != null ? existing.sandboxScope() : null);
     }
 
     // -----------------------------------------------------------------

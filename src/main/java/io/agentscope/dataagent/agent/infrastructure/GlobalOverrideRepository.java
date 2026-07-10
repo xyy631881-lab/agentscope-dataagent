@@ -13,18 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.agent.api.dto;
+package io.agentscope.dataagent.agent.infrastructure;
 
-import java.util.List;
+import java.util.Optional;
+import org.springframework.data.jpa.repository.JpaRepository;
 
-/**
- * Optional AI-generated draft attached to a creation request. Carries the suggested
- * configuration plus optional skill/subagent files to scaffold into the new agent's workspace.
- */
-public record AgentDraft(
-        String name,
-        String description,
-        String sysPrompt,
-        List<String> suggestedTools,
-        List<NamedFile> suggestedSkills,
-        List<NamedFile> suggestedSubagents) {}
+/** Spring Data repository for {@link GlobalOverrideEntity}. */
+public interface GlobalOverrideRepository extends JpaRepository<GlobalOverrideEntity, Long> {
+
+    /** Single override lookup by the global agent id (the primary key). */
+    Optional<GlobalOverrideEntity> findByAgentId(String agentId);
+}

@@ -16,7 +16,7 @@
 package io.agentscope.dataagent.agent.api;
 import io.agentscope.dataagent.agent.application.AgentDraftService;
 
-import io.agentscope.dataagent.agent.api.dto.AgentDraft;
+import io.agentscope.dataagent.agent.application.command.AgentDraft;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PostMapping;

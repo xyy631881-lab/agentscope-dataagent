@@ -18,11 +18,11 @@ import io.agentscope.dataagent.agent.application.SubagentService;
 import io.agentscope.dataagent.agent.application.WorkspaceFileService;
 import io.agentscope.dataagent.agent.application.WorkspaceResolutionService;
 import io.agentscope.dataagent.agent.application.WorkspaceSummaryService;
-import io.agentscope.dataagent.agent.domain.AgentAclService;
+import io.agentscope.dataagent.agent.application.AgentAclService;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import io.agentscope.dataagent.agent.application.AgentAccessGuard;
-import io.agentscope.dataagent.agent.domain.AgentAclService.Tier;
+import io.agentscope.dataagent.agent.application.AgentAclService.Tier;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;

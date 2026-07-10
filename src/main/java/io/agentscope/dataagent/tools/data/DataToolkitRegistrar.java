@@ -41,26 +41,19 @@ public class DataToolkitRegistrar {
 
     @PostConstruct
     public void registerDataToolkit() {
-        // ① 找到主 Agent
-        HarnessAgent main = bootstrap.agents().get(bootstrap.loadedConfig().getMain());
-        if (main == null) {
-            // ② 配置里没指定主 Agent → 取第一个
-            main =
-                    bootstrap.agents().values().stream()
-                            .findFirst()
-                            .orElseThrow(
-                                    () ->
-                                            new IllegalStateException(
-                                                    "没有可用于注册 data toolkit 的 Agent"));
-        }
-        try {
-            // ③ 注册工具箱
-            main.getDelegate().getToolkit().registerTool(toolkit);
-            log.info("已向主 Agent '{}' 注册 DataAgent toolkit (含工具: {})",
-                    main.getName(),
-                    toolkit.getClass().getSimpleName());
-        } catch (RuntimeException e) {
-            log.warn("向主 Agent 注册 DataAgent toolkit 失败: {}", e.getMessage());
-        }
+        // 把"向主 Agent 挂载 DataAgent toolkit"封装成安装器：启动期立即挂到当前主 Agent，
+        // 并记录下来，供全局 Agent 热重建时重新应用。
+        bootstrap.registerMainAgentToolInstaller(
+                main -> {
+                    try {
+                        main.getDelegate().getToolkit().registerTool(toolkit);
+                        log.info(
+                                "已向主 Agent '{}' 注册 DataAgent toolkit (含工具: {})",
+                                main.getName(),
+                                toolkit.getClass().getSimpleName());
+                    } catch (RuntimeException e) {
+                        log.warn("向主 Agent 注册 DataAgent toolkit 失败: {}", e.getMessage());
+                    }
+                });
     }
 }

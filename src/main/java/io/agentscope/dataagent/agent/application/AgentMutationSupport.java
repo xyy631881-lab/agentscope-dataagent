@@ -1,9 +1,8 @@
 package io.agentscope.dataagent.agent.application;
 
-import io.agentscope.dataagent.agent.api.dto.AgentCreateRequest;
-import io.agentscope.dataagent.agent.api.dto.AgentDraft;
-import io.agentscope.dataagent.agent.api.dto.NamedFile;
-import io.agentscope.dataagent.agent.domain.AgentAclService;
+import io.agentscope.dataagent.agent.application.command.AgentCreateRequest;
+import io.agentscope.dataagent.agent.application.command.AgentDraft;
+import io.agentscope.dataagent.agent.application.command.NamedFile;
 import io.agentscope.dataagent.agent.domain.AgentShareGrant;
 import io.agentscope.dataagent.agent.domain.UserAgentDefinitionStore;
 import io.agentscope.dataagent.agent.application.AgentMutationService.ShareGrantRequest;

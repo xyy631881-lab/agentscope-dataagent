@@ -13,9 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.agent.api.dto;
+package io.agentscope.dataagent.agent.application.command;
 
-import io.agentscope.dataagent.agent.api.dto.AgentDraft;
 import io.agentscope.dataagent.runtime.config.SkillRepositoryConfigEntry;
 import java.util.List;
 

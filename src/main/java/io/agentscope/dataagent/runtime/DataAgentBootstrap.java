@@ -17,19 +17,18 @@ package io.agentscope.dataagent.runtime;
 import io.agentscope.dataagent.config.DataAgentConfig;
 import io.agentscope.dataagent.conversation.application.ConversationService;
 import io.agentscope.dataagent.integration.outbound.domain.OutboundTool;
-import io.agentscope.dataagent.workspace.domain.SandboxPool;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.tool.Toolkit;
 import io.agentscope.dataagent.runtime.config.AgentConfigEntry;
+import io.agentscope.dataagent.agent.domain.GlobalAgentOverrideStore;
 import io.agentscope.dataagent.runtime.config.AgentscopeConfig;
 import io.agentscope.dataagent.runtime.config.ChannelConfigEntry;
 import io.agentscope.dataagent.runtime.config.ChannelTypeRegistry;
 import io.agentscope.dataagent.runtime.config.SkillRepositorySupport;
 import io.agentscope.harness.agent.gateway.HarnessGateway;
-import io.agentscope.dataagent.workspace.domain.SandboxPool;
 import io.agentscope.dataagent.integration.outbound.domain.OutboundTool;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.gateway.ChannelManager;
@@ -48,6 +47,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -78,11 +79,30 @@ public final class DataAgentBootstrap {
 
     private final Path cwd;
     private final Path configPath;
-    private final Map<String, HarnessAgent> agents;    // 装好的所有 agent
+    /**
+     * 已注册的 Agent 实例（以 agentId 为键）。使用可变 ConcurrentHashMap，以便 admin 在线
+     * 编辑全局 Agent 后能原地热替换运行中的实例（见 {@link #rebuildGlobalAgent}）。
+     */
+    private final Map<String, HarnessAgent> agents;
     private final AgentscopeConfig loadedConfig;     // agentscope.json 解析结果
     private final List<Channel> registeredChannels;  // 通道列表
     private final HarnessGateway gateway;    // 网关（消息路由器）
     private final ChannelManager channelManager;    // 通道管理器
+
+    // 以下字段在 build() 时就近捕获，供 rebuildGlobalAgent 复用，避免重新解析配置。
+    private final Model model;
+    private final List<Consumer<HarnessAgent.Builder>> globalConfigurators;
+    private final GlobalAgentOverrideStore overrideStore;
+    private final OutboundTool outboundTool;
+    private final String mainId;
+
+    /**
+     * 主 Agent 实例级工具安装器（DataAgentToolkit、contribute_to_workspace 等）。
+     * 启动期由各个 *Registrar 通过 {@link #registerMainAgentToolInstaller} 注入，
+     * 热重建时逐个应用到新实例上，确保重建后的 Agent 仍持有这些工具。
+     */
+    private final List<Consumer<HarnessAgent>> mainAgentToolInstallers =
+            new CopyOnWriteArrayList<>();
 
     private DataAgentBootstrap(
             Path cwd,
@@ -91,15 +111,25 @@ public final class DataAgentBootstrap {
             AgentscopeConfig loadedConfig,
             List<Channel> registeredChannels,
             HarnessGateway gateway,
-            ChannelManager channelManager) {
+            ChannelManager channelManager,
+            Model model,
+            List<Consumer<HarnessAgent.Builder>> globalConfigurators,
+            GlobalAgentOverrideStore overrideStore,
+            OutboundTool outboundTool,
+            String mainId) {
         this.cwd = Objects.requireNonNull(cwd, "cwd");
         this.configPath = Objects.requireNonNull(configPath, "configPath");
-        this.agents = Objects.requireNonNull(agents, "agents");
+        this.agents = agents;
         this.loadedConfig = loadedConfig != null ? loadedConfig : new AgentscopeConfig();
         this.registeredChannels =
                 registeredChannels != null ? List.copyOf(registeredChannels) : List.of();
         this.gateway = gateway;
         this.channelManager = channelManager;
+        this.model = model;
+        this.globalConfigurators = globalConfigurators != null ? globalConfigurators : List.of();
+        this.overrideStore = overrideStore;
+        this.outboundTool = outboundTool;
+        this.mainId = mainId;
     }
 
     // -----------------------------------------------------------------
@@ -185,6 +215,104 @@ public final class DataAgentBootstrap {
     /** 用于 channel 生命周期管理和出站消息投递的 channel manager。 */
     public ChannelManager channelManager() {
         return channelManager;
+    }
+
+    // -----------------------------------------------------------------
+    //  主 Agent 实例级工具安装器 + 全局 Agent 热重建
+    // -----------------------------------------------------------------
+
+    /**
+     * 注册一个"主 Agent 实例级工具安装器"。启动期由各个 *Registrar 调用：
+     * 一方面立即把工具挂到当前主 Agent 上（保持原有启动行为），
+     * 另一方面把安装器记录下来，以便 {@link #rebuildGlobalAgent} 热重建时重新应用到新实例。
+     */
+    public void registerMainAgentToolInstaller(Consumer<HarnessAgent> installer) {
+        Objects.requireNonNull(installer, "installer");
+        mainAgentToolInstallers.add(installer);
+        HarnessAgent main = currentMainAgent();
+        if (main != null) {
+            try {
+                installer.accept(main);
+            } catch (RuntimeException e) {
+                log.warn("主 Agent 工具安装器执行失败: {}", e.getMessage());
+            }
+        }
+    }
+
+    private HarnessAgent currentMainAgent() {
+        HarnessAgent main = mainId != null ? agents.get(mainId) : null;
+        if (main == null) {
+            main = agents.values().stream().findFirst().orElse(null);
+        }
+        return main;
+    }
+
+    /**
+     * 热重建一个全局（bootstrap 注册）Agent：根据最新覆盖重新构建运行实例，
+     * 重新挂上实例级工具，并原子替换网关与本地注册表中的实例，使 admin 的在线编辑
+     * 立即对运行中的 Agent 生效（无需重启）。
+     *
+     * <p>会话/记忆状态以 agentId + conversationId 为键，与 Agent 实例解耦，重建后不丢失；
+     * 正在进行中的回合由网关 {@code SessionTurnGate} 串行化，旧实例上的回合会干净收尾。
+     *
+     * @param id 要热重建的全局 Agent id（必须存在于 agentscope.json）
+     */
+    public synchronized void rebuildGlobalAgent(String id) {
+        Map<String, AgentConfigEntry> fileAgents =
+                loadedConfig.getAgents() != null ? loadedConfig.getAgents() : Map.of();
+        AgentConfigEntry baseEntry = fileAgents.get(id);
+        if (baseEntry == null) {
+            throw new IllegalArgumentException("不是 bootstrap 全局 Agent，无法热重建: " + id);
+        }
+
+        // 合并管理员在线编辑的覆盖（与 build() 阶段 2 逻辑一致）
+        AgentConfigEntry entry = baseEntry;
+        if (overrideStore != null) {
+            entry = overrideStore.findById(id).map(o -> mergeWithOverride(baseEntry, o)).orElse(baseEntry);
+        }
+
+        // 重新构建（镜像 build() 中单 Agent 的组装逻辑）
+        HarnessAgent.Builder b = HarnessAgent.builder();
+        applyFileEntry(cwd, id, entry, b);
+        if (model != null) {
+            b.model(model);
+        }
+        Toolkit agentKit = new Toolkit();
+        agentKit.registerTool(outboundTool);
+        b.toolkit(agentKit);
+        for (Consumer<HarnessAgent.Builder> gc : globalConfigurators) {
+            gc.accept(b);
+        }
+        HarnessAgent newAgent = b.build();
+
+        // 重新挂上实例级工具（DataAgentToolkit / contribute_to_workspace 等）。
+        // 这些工具启动期只挂到主 Agent 上，因此仅在热重建主 Agent 时重新应用。
+        if (id.equals(mainId)) {
+            for (Consumer<HarnessAgent> installer : mainAgentToolInstallers) {
+                try {
+                    installer.accept(newAgent);
+                } catch (RuntimeException e) {
+                    log.warn("热重建后重挂工具失败 (agent={}): {}", id, e.getMessage());
+                }
+            }
+        }
+
+        // 原子替换：先换本地表，再换网关注册表
+        HarnessAgent old = agents.put(id, newAgent);
+        gateway.registerAgent(id, newAgent);
+        if (id.equals(mainId)) {
+            gateway.bindMainAgent(newAgent);
+        }
+
+        // 释放旧实例占用的资源（sandbox 句柄等）
+        if (old != null && old != newAgent) {
+            try {
+                old.close();
+            } catch (RuntimeException e) {
+                log.warn("关闭旧 Agent 实例失败 (agent={}): {}", id, e.getMessage());
+            }
+        }
+        log.info("已热重建全局 Agent '{}'（无需重启即生效）", id);
     }
 
     // -----------------------------------------------------------------
@@ -316,6 +444,71 @@ public final class DataAgentBootstrap {
         }
     }
 
+    /**
+     * 把管理员的全局 Agent 覆盖（{@link GlobalAgentOverrideStore.GlobalOverride}）合并进
+     * {@link AgentConfigEntry}。覆盖中非 null 的字段覆盖 JSON 配置；null 字段保留原值。
+     * 仅合并运行期生效的字段（名称/描述/提示词/模型/最大迭代/工具开关/身份/群聊/技能）。
+     */
+    static AgentConfigEntry mergeWithOverride(
+            AgentConfigEntry base, GlobalAgentOverrideStore.GlobalOverride o) {
+        AgentConfigEntry merged = new AgentConfigEntry();
+        merged.setName(o.name() != null ? o.name() : base.getName());
+        merged.setDescription(
+                o.description() != null ? o.description() : base.getDescription());
+        merged.setSysPrompt(o.sysPrompt() != null ? o.sysPrompt() : base.getSysPrompt());
+        merged.setModel(o.model() != null ? o.model() : base.getModel());
+        merged.setMaxIters(o.maxIters() != null ? o.maxIters() : base.getMaxIters());
+        merged.setWorkspace(base.getWorkspace());
+
+        if (o.toolsAllow() != null || o.toolsDeny() != null) {
+            AgentConfigEntry.ToolsConfig tc = new AgentConfigEntry.ToolsConfig();
+            tc.setAllow(o.toolsAllow() != null ? o.toolsAllow() : base.getTools() != null ? base.getTools().getAllow() : null);
+            tc.setDeny(o.toolsDeny() != null ? o.toolsDeny() : base.getTools() != null ? base.getTools().getDeny() : null);
+            merged.setTools(tc);
+        } else if (base.getTools() != null) {
+            merged.setTools(base.getTools());
+        }
+
+        if (o.identityName() != null || o.identityEmoji() != null) {
+            AgentConfigEntry.IdentityConfig ic = new AgentConfigEntry.IdentityConfig();
+            ic.setName(o.identityName() != null ? o.identityName() : (base.getIdentity() != null ? base.getIdentity().getName() : null));
+            ic.setEmoji(o.identityEmoji() != null ? o.identityEmoji() : (base.getIdentity() != null ? base.getIdentity().getEmoji() : null));
+            merged.setIdentity(ic);
+        } else if (base.getIdentity() != null) {
+            merged.setIdentity(base.getIdentity());
+        }
+
+        if (o.groupChatMentionPatterns() != null || o.groupChatRequireMention() != null) {
+            AgentConfigEntry.GroupChatConfig gc = new AgentConfigEntry.GroupChatConfig();
+            gc.setMentionPatterns(
+                    o.groupChatMentionPatterns() != null
+                            ? o.groupChatMentionPatterns()
+                            : (base.getGroupChat() != null
+                                    ? base.getGroupChat().getMentionPatterns()
+                                    : null));
+            gc.setRequireMention(
+                    o.groupChatRequireMention() != null
+                            ? o.groupChatRequireMention()
+                            : (base.getGroupChat() != null
+                                    ? base.getGroupChat().getRequireMention()
+                                    : null));
+            merged.setGroupChat(gc);
+        } else if (base.getGroupChat() != null) {
+            merged.setGroupChat(base.getGroupChat());
+        }
+
+        if (o.skillsAllow() != null || o.skillsDeny() != null) {
+            AgentConfigEntry.SkillsConfig sk = new AgentConfigEntry.SkillsConfig();
+            sk.setAllow(o.skillsAllow() != null ? o.skillsAllow() : (base.getSkills() != null ? base.getSkills().getAllow() : null));
+            sk.setDeny(o.skillsDeny() != null ? o.skillsDeny() : (base.getSkills() != null ? base.getSkills().getDeny() : null));
+            merged.setSkills(sk);
+        } else if (base.getSkills() != null) {
+            merged.setSkills(base.getSkills());
+        }
+
+        return merged;
+    }
+
     // -----------------------------------------------------------------
     //  Builder
     // -----------------------------------------------------------------
@@ -326,10 +519,12 @@ public final class DataAgentBootstrap {
         private Model model;
         private final List<Consumer<HarnessAgent.Builder>> globalConfigurators =
                 new java.util.ArrayList<>();  //横切配置器列表——给每个 Agent 都加一遍的配置（中间件、权限、记忆…）
+        private GlobalAgentOverrideStore overrideStore;
         private final Map<String, Channel> channels = new LinkedHashMap<>();
 
         /** 每个用户的 sandbox 池；非空时为每个 Agent 注册 UserSandboxContextMiddleware */
-        private SandboxPool sandboxPool;
+
+        /** 回合级串行锁：串行化同一 (userId, agentId) 的 Agent 回合。 */
 
         private Builder() {}
 
@@ -353,8 +548,12 @@ public final class DataAgentBootstrap {
             return this;
         }
 
-        public Builder sandboxPool(SandboxPool registry) {
-            this.sandboxPool = registry;
+        /**
+         * 注入全局 Agent 覆盖存储。若存在，构建时会把管理员对全局 Agent 的在线编辑
+         * （名称/提示词/模型/工具开关/技能/身份等）合并进运行配置，使编辑在重启后生效。
+         */
+        public Builder overrideStore(GlobalAgentOverrideStore store) {
+            this.overrideStore = store;
             return this;
         }
 
@@ -400,6 +599,15 @@ public final class DataAgentBootstrap {
 
             for (String id : ids) {
                 AgentConfigEntry entry = fileAgents.get(id);
+                // 把管理员对全局 Agent 的在线编辑合并进运行配置（重启即生效）。
+                if (overrideStore != null) {
+                    AgentConfigEntry finalEntry = entry;
+                    entry =
+                            overrideStore
+                                    .findById(id)
+                                    .map(o -> mergeWithOverride(finalEntry, o))
+                                    .orElse(entry);
+                }
                 HarnessAgent.Builder b = HarnessAgent.builder();
                 applyFileEntry(cwd, id, entry, b);  //把 JSON 字段塞进 Builder
 
@@ -407,14 +615,7 @@ public final class DataAgentBootstrap {
                     b.model(model);
                 }
 
-                // 为每个 Agent 注册 sandbox 注入 middleware
-                if (sandboxPool != null) {
-                    b.middleware(
-                            new io.agentscope.dataagent.runtime.middleware
-                                    .UserSandboxContextMiddleware(
-                                    sandboxPool, id));
-                }
-
+                // 为每个 Agent 注册 sandbox 注入 middleware（含回合级串行锁）
                 // 预填充出站发送工具
                 Toolkit agentKit = new Toolkit();
                 agentKit.registerTool(outboundTool);
@@ -452,11 +653,16 @@ public final class DataAgentBootstrap {
             return new DataAgentBootstrap(
                     cwd,
                     DEFAULT_CONFIG_PATH,
-                    Map.copyOf(built),
+                    new ConcurrentHashMap<>(built),
                     fileConfig,
                     resolvedChannels,
                     gateway,
-                    channelMgr);
+                    channelMgr,
+                    model,
+                    java.util.List.copyOf(globalConfigurators),
+                    overrideStore,
+                    outboundTool,
+                    main);
         }
 
         private static Path resolveAgentWorkspace(Path cwd, AgentConfigEntry entry) {

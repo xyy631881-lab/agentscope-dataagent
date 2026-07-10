@@ -23,15 +23,17 @@ import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.runtime.AgentRuntimeConfigurer;
 import io.agentscope.dataagent.runtime.config.ChannelConfigEntry;
-import io.agentscope.dataagent.workspace.domain.SandboxPool;
+import io.agentscope.dataagent.config.ModelConfig;
 import io.agentscope.dataagent.config.properties.AgentProperties;
-import io.agentscope.dataagent.config.properties.OllamaProperties;
+import io.agentscope.dataagent.config.properties.ApiModelProperties;
 import io.agentscope.dataagent.config.properties.WorkspaceProperties;
 import io.agentscope.harness.agent.gateway.channel.ChannelConfig;
 import io.agentscope.harness.agent.gateway.channel.DmScope;
 import io.agentscope.harness.agent.gateway.channel.chatui.ChatUiChannel;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
+import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClientOptions;
+import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -56,27 +58,34 @@ public class BootstrapConfig {
 
     @Bean
     public AgentRuntimeConfigurer agentRuntimeConfigurer(
-            OllamaProperties ollamaProps,
+            ApiModelProperties modelProps,
             SandboxClient<DockerSandboxClientOptions> sandboxClient,
-            Optional<AgentStateStore> sessionOpt) {
+            Optional<AgentStateStore> sessionOpt,
+            SandboxSnapshotSpec snapshotSpec,
+            SandboxExecutionGuard sandboxExecutionGuard) {
         AgentStateStore stateStore = sessionOpt.orElseGet(InMemoryAgentStateStore::new);
         if (sessionOpt.isEmpty()) {
             log.warn(
                     "未配置分布式 AgentStateStore bean; 兜底使用 InMemoryAgentStateStore"
                             + "（进程重启会丢状态）。多副本部署请启用 redis profile。");
         }
+        String activeModelId = ModelConfig.resolveActiveId(modelProps);
+        // snapshotSpec / executionGuard 由 SandboxSnapshotConfig 统一装配
+        // （Redis 或 Noop 兜底），与 UserSandboxPool 共用同一快照后端。
         return new AgentRuntimeConfigurer(
                 stateStore,
                 sandboxClient,
-                ollamaProps.getModel().getChat(),
-                ollamaProps.getFallbackModelName());
+                activeModelId,
+                activeModelId,
+                snapshotSpec,
+                sandboxExecutionGuard);
     }
 
     @Bean
     public DataAgentBootstrap builderBootstrap(
             Optional<Model> modelOpt,
             AgentRuntimeConfigurer agentRuntimeConfigurer,
-            SandboxPool sandboxPool,
+            io.agentscope.dataagent.agent.domain.GlobalAgentOverrideStore overrideStore,
             AgentProperties agentProps,
             WorkspaceProperties workspaceProps)
             throws IOException {
@@ -84,7 +93,9 @@ public class BootstrapConfig {
         ensureAgentscopeConfig(agentProps);
 
         DataAgentBootstrap.Builder builder =
-                DataAgentBootstrap.builder().cwd(cwd).sandboxPool(sandboxPool);
+                DataAgentBootstrap.builder()
+                        .cwd(cwd)
+                        .overrideStore(overrideStore);
 
         if (modelOpt.isPresent()) {
             builder.model(modelOpt.get());

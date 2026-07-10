@@ -17,7 +17,6 @@ package io.agentscope.dataagent.agent.application;
 import io.agentscope.dataagent.agent.api.AgentWorkspaceController;
 
 import io.agentscope.core.agent.RuntimeContext;
-import io.agentscope.dataagent.agent.application.AgentCatalogService;
 import io.agentscope.dataagent.agent.domain.AgentDefinition;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.model.FileInfo;

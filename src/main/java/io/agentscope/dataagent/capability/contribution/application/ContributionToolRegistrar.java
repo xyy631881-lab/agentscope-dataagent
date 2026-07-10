@@ -56,32 +56,28 @@ public class ContributionToolRegistrar {
 
     @PostConstruct
     public void registerContributionTool() {
-        HarnessAgent main = bootstrap.agents().get(bootstrap.loadedConfig().getMain());
-        if (main == null) {
-            // Resolve through agents().values().iterator().next() as a fallback when no explicit
-            // main is configured — DataAgentBootstrap guarantees at least one agent at build time.
-            main =
-                    bootstrap.agents().values().stream()
-                            .findFirst()
-                            .orElseThrow(
-                                    () ->
-                                            new IllegalStateException(
-                                                    "No agents available to register"
-                                                            + " contribute_to_workspace onto"));
-        }
-        try {
-            main.getDelegate()
-                    .getToolkit()
-                    .registerTool(new ContributeWorkspaceTool(service, workspaceFactory));
-            log.info(
-                    "Registered contribute_to_workspace tool onto main agent '{}'", main.getName());
-        } catch (RuntimeException e) {
-            // Fail soft: a missing tool slot must not stop the application from booting; the
-            // user-facing REST endpoints (/api/me/contributions) remain fully functional even if
-            // the agent-side convenience tool fails to register.
-            log.warn(
-                    "Failed to register contribute_to_workspace tool onto main agent: {}",
-                    e.getMessage());
-        }
+        // Encapsulate "mount contribute_to_workspace onto the main agent" as an installer:
+        // applied to the current main agent at startup, and re-applied after a global-agent
+        // hot-reload so the rebuilt instance keeps the tool.
+        bootstrap.registerMainAgentToolInstaller(
+                main -> {
+                    try {
+                        main.getDelegate()
+                                .getToolkit()
+                                .registerTool(new ContributeWorkspaceTool(service, workspaceFactory));
+                        log.info(
+                                "Registered contribute_to_workspace tool onto main agent '{}'",
+                                main.getName());
+                    } catch (RuntimeException e) {
+                        // Fail soft: a missing tool slot must not stop the application from
+                        // booting; the user-facing REST endpoints (/api/me/contributions) remain
+                        // fully functional even if the agent-side convenience tool fails to
+                        // register.
+                        log.warn(
+                                "Failed to register contribute_to_workspace tool onto main agent:"
+                                        + " {}",
+                                e.getMessage());
+                    }
+                });
     }
 }

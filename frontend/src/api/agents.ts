@@ -1,7 +1,7 @@
 import { getToken } from './auth';
 
 export interface AgentShareGrant {
-  granteeType: string;
+  granteeType: 'USER' | 'WORKSPACE';
   granteeId: string;
   tier: string;
   createdAt?: number;

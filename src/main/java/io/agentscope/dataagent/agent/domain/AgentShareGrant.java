@@ -30,9 +30,9 @@ import com.fasterxml.jackson.annotation.JsonInclude;
  * </ul>
  *
  * <p>Grants live on the agent definition (see
- * {@link io.agentscope.dataagent.agent.domain.AgentDefinition#shares()}) and are evaluated by
- * {@link AgentAclService}. The {@code createdAt}/{@code createdBy} fields exist for the activity
- * log; they are never used in permission decisions.
+ * {@link io.agentscope.dataagent.agent.domain.AgentDefinition#shares()}) and are evaluated by the
+ * ACL engine (AgentAclService, in the application layer). The {@code createdAt}/{@code createdBy}
+ * fields exist for the activity log; they are never used in permission decisions.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 @JsonIgnoreProperties(ignoreUnknown = true)

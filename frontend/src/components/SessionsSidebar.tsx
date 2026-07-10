@@ -59,6 +59,32 @@ function relTime(ms: number): string {
   return `${Math.floor(diff / 86_400_000)}天`;
 }
 
+function looksLikeGeneratedId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+    || /^(session|conversation)[-_]/i.test(value)
+    || value.length > 36;
+}
+
+function oneLine(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function displayTitle(entry: InboxEntry): string {
+  const label = oneLine(entry.label ?? '');
+  if (label && !looksLikeGeneratedId(label)) return label;
+  const preview = oneLine(entry.lastMessage ?? '');
+  if (preview) return preview.length > 34 ? `${preview.slice(0, 34)}...` : preview;
+  return '新对话';
+}
+
+function displayPreview(entry: InboxEntry): string | null {
+  const preview = oneLine(entry.lastMessage ?? '');
+  if (!preview) return null;
+  const title = displayTitle(entry);
+  if (preview === title || preview.startsWith(title.slice(0, 20))) return null;
+  return preview;
+}
+
 export interface SessionsSidebarProps {
   refreshKey: number;
 }
@@ -124,7 +150,8 @@ export default function SessionsSidebar({ refreshKey }: SessionsSidebarProps) {
   }
 
   function openSession(entry: InboxEntry) {
-    navigate(`/chat?session=${encodeURIComponent(entryNavKey(entry))}`);
+    const key = entryNavKey(entry);
+    navigate(`/chat?session=${encodeURIComponent(key)}`);
   }
 
   async function handleDelete(entry: InboxEntry, ev: React.MouseEvent) {
@@ -210,11 +237,11 @@ function SessionRow({ entry, active, onOpen, onDelete }: RowProps) {
         ...(active ? S.rowActive : hover ? S.rowHover : {}),
         ...(entry.unread && !active ? S.rowUnread : {}),
       }}
-      title={entry.lastMessage ?? entry.sessionId}
+      title={entry.lastMessage ?? displayTitle(entry)}
     >
       <div style={S.rowMain}>
-        <div style={S.rowTitle}>{entry.label ?? entry.sessionId}</div>
-        {entry.lastMessage && <div style={S.rowSnippet}>{entry.lastMessage}</div>}
+        <div style={S.rowTitle}>{displayTitle(entry)}</div>
+        {displayPreview(entry) && <div style={S.rowSnippet}>{displayPreview(entry)}</div>}
       </div>
       <div style={S.rowMeta}>
         <span>{relTime(entry.lastActivityMs)}</span>

@@ -96,7 +96,9 @@ export default function SessionTranscript({ agentId, sessionKey }: { agentId: st
               <ToolCallBlock
                 toolName={t.toolName ?? 'tool'}
                 toolCallId={t.id}
-                result={t.toolResult ?? t.toolInput ?? ''}
+                input={t.toolInput ?? undefined}
+                result={t.toolResult ?? undefined}
+                status={t.toolResult ? 'completed' : 'running'}
               />
             </div>
           );

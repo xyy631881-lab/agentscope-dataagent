@@ -144,6 +144,17 @@ export interface AgentDetailView {
 export const getAgentDetail = (id: string) =>
   apiFetch<AgentDetailView>(`/api/admin/agents/${encodeURIComponent(id)}/detail`);
 
+/** 可选模型：id 即 Agent 的 model 字段取值，label 用于展示，local 标记是否本地模型。 */
+export interface ModelOption {
+  id: string;
+  label: string;
+  local: boolean;
+}
+
+/** 拉取当前可用模型列表，供 Agent 配置的下拉选择。 */
+export const listModels = () =>
+  apiFetch<ModelOption[]>(`/api/agents/models`);
+
 export interface ChannelSessionRef {
   sessionKey: string;
   agentId: string;

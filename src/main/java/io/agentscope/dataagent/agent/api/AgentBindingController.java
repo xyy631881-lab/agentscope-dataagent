@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.agent.api;
-import io.agentscope.dataagent.agent.domain.AgentAclService;
+import io.agentscope.dataagent.agent.application.AgentAclService;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import io.agentscope.dataagent.runtime.config.BindingConfigEntry;
@@ -23,7 +23,7 @@ import io.agentscope.dataagent.agent.domain.ActivityEvent;
 import io.agentscope.dataagent.agent.application.AgentActivityStore;
 import io.agentscope.dataagent.agent.domain.AgentDefinition;
 import io.agentscope.dataagent.agent.application.AgentAccessGuard;
-import io.agentscope.dataagent.agent.domain.AgentAclService.Tier;
+import io.agentscope.dataagent.agent.application.AgentAclService.Tier;
 import io.agentscope.dataagent.agent.infrastructure.BindingPersistence;
 import java.util.ArrayList;
 import java.util.List;

@@ -13,7 +13,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.agentscope.dataagent.agent.api.dto;
+package io.agentscope.dataagent.agent.application.command;
 
-/** A named file (e.g. a markdown skill or subagent definition). */
-public record NamedFile(String name, String content) {}
+import java.util.List;
+
+/**
+ * Optional AI-generated draft attached to a creation request. Carries the suggested
+ * configuration plus optional skill/subagent files to scaffold into the new agent's workspace.
+ */
+public record AgentDraft(
+        String name,
+        String description,
+        String sysPrompt,
+        List<String> suggestedTools,
+        List<NamedFile> suggestedSkills,
+        List<NamedFile> suggestedSubagents) {}

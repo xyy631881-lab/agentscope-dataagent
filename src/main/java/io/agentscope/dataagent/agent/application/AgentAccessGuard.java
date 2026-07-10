@@ -14,9 +14,7 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.agent.application;
-
-import io.agentscope.dataagent.agent.domain.AgentAclService;
-import io.agentscope.dataagent.agent.domain.AgentAclService.Tier;
+import io.agentscope.dataagent.agent.application.AgentAclService.Tier;
 import io.agentscope.dataagent.agent.domain.AgentDefinition;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;

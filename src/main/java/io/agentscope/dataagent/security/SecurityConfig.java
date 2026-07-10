@@ -20,6 +20,8 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
@@ -42,7 +44,7 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
-import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.filter.GenericFilterBean;
 
 /**
  * agentscope-dataagent web 应用程序的 Spring MVC 安全配置。
@@ -116,7 +118,7 @@ public class SecurityConfig {
      * 认证信息写入 {@link SecurityContextHolder}（线程局部变量），
  * 而非 WebFlux 的 {@code ReactiveSecurityContextHolder}（React 上下文）。
      */
-    static class JwtAuthFilter extends OncePerRequestFilter {
+    static class JwtAuthFilter extends GenericFilterBean {
 
         private static final Logger log = LoggerFactory.getLogger(JwtAuthFilter.class);
 
@@ -126,31 +128,37 @@ public class SecurityConfig {
             this.jwtService = jwtService;
         }
 
+        /**
+         * 继承 {@link GenericFilterBean}（普通 {@code Filter}）而非 Spring Framework 的
+         * {@code OncePerRequestFilter}——后者在异步分发（async dispatch）时默认跳过。聊天 SSE
+         * 端点（{@code SseEmitter}）是异步请求，容器在异步分发时会重跑整个 Security 过滤器链；
+         * 若 JWT 过滤器被跳过，{@code SecurityContext} 为空 → 匿名 → {@code AuthorizationFilter}
+         * 抛 {@code AccessDeniedException}。{@link GenericFilterBean} 在每次分发都会执行，
+         * 异步分发时重新解析 JWT 并恢复认证。JWT 解析幂等，重复执行安全。
+         */
         @Override
-        protected void doFilterInternal(
-                HttpServletRequest request,
-                HttpServletResponse response,
-                FilterChain filterChain)
-                throws ServletException, IOException {
-            String header = request.getHeader("Authorization");
-            if (header == null || !header.startsWith("Bearer ")) {
-                filterChain.doFilter(request, response);
-                return;
-            }
-            String token = header.substring(7);
-            try {
-                Claims claims = jwtService.parse(token);
-                String userId = jwtService.extractUserId(claims);
-                List<String> roles = jwtService.extractRoles(claims);
-                List<SimpleGrantedAuthority> authorities =
-                        roles.stream()
-                                .map(r -> new SimpleGrantedAuthority("ROLE_" + r.toUpperCase()))
-                                .toList();
-                UsernamePasswordAuthenticationToken auth =
-                        new UsernamePasswordAuthenticationToken(userId, null, authorities);
-                SecurityContextHolder.getContext().setAuthentication(auth);
-            } catch (JwtException e) {
-                log.debug("JWT 验证失败: {}", e.getMessage());
+        public void doFilter(
+                ServletRequest request, ServletResponse response, FilterChain filterChain)
+                throws IOException, ServletException {
+            HttpServletRequest httpRequest = (HttpServletRequest) request;
+            String header = httpRequest.getHeader("Authorization");
+            if (header != null && header.startsWith("Bearer ")) {
+                String token = header.substring(7);
+                try {
+                    Claims claims = jwtService.parse(token);
+                    String userId = jwtService.extractUserId(claims);
+                    List<String> roles = jwtService.extractRoles(claims);
+                    List<SimpleGrantedAuthority> authorities =
+                            roles.stream()
+                                    .map(r -> new SimpleGrantedAuthority("ROLE_" + r.toUpperCase()))
+                                    .toList();
+                    SecurityContextHolder.getContext()
+                            .setAuthentication(
+                                    new UsernamePasswordAuthenticationToken(
+                                            userId, null, authorities));
+                } catch (JwtException e) {
+                    log.debug("JWT 验证失败: {}", e.getMessage());
+                }
             }
             filterChain.doFilter(request, response);
         }

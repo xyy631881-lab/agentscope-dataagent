@@ -7,6 +7,7 @@
  */
 
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 
 export interface AdminTab {
   key: string;
@@ -36,6 +37,8 @@ export default function AdminPageLayout({
   onTabChange,
   bannerRight,
 }: Props) {
+  const navigate = useNavigate();
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
       {/* ── Top banner ───────────────────────────────────────────── */}
@@ -74,6 +77,38 @@ export default function AdminPageLayout({
             Admin
           </span>
         </div>
+
+        {/* 返回聊天按钮 */}
+        <button
+          onClick={() => navigate('/chat')}
+          style={{
+            background: 'transparent',
+            border: '1px solid #cbd5e1',
+            borderRadius: 999,
+            padding: '5px 14px',
+            cursor: 'pointer',
+            fontSize: '0.82rem',
+            fontWeight: 500,
+            color: '#475569',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 5,
+            whiteSpace: 'nowrap' as const,
+            transition: 'background 0.12s, color 0.12s',
+            alignSelf: 'center',
+            margin: '10px 0',
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.background = '#f1f5f9';
+            e.currentTarget.style.color = '#334155';
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.background = 'transparent';
+            e.currentTarget.style.color = '#475569';
+          }}
+        >
+          ← 返回聊天
+        </button>
 
         {/* Page-specific tabs (or empty spacer when no tabs) */}
         {tabs && tabs.length > 0 ? (

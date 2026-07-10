@@ -16,7 +16,6 @@
 package io.agentscope.dataagent.workspace.application;
 import io.agentscope.dataagent.capability.contribution.application.MarketContributionService;
 import io.agentscope.dataagent.capability.marketplace.infrastructure.LocalApprovalMarketplace;
-import io.agentscope.dataagent.workspace.infrastructure.UserSandboxPool;
 
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import jakarta.annotation.PostConstruct;

@@ -18,7 +18,6 @@ import io.agentscope.dataagent.agent.api.AgentSkillsController;
 import io.agentscope.dataagent.agent.api.AgentToolsController;
 import io.agentscope.dataagent.agent.api.AgentWorkspaceController;
 
-import io.agentscope.dataagent.agent.application.AgentCatalogService;
 import io.agentscope.dataagent.agent.domain.AgentDefinition;
 import io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;

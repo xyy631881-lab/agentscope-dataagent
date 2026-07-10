@@ -20,7 +20,6 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import io.agentscope.dataagent.runtime.config.AgentConfigEntry;
 import io.agentscope.dataagent.runtime.config.SkillRepositoryConfigEntry;
-import io.agentscope.dataagent.agent.domain.AgentShareGrant;
 import java.util.List;
 import java.util.Optional;
 
