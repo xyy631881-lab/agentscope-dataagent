@@ -18,15 +18,17 @@ package io.agentscope.dataagent.config.properties;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
- * Redis 会话存储配置属性。
+ * Redis backend for AgentScope runtime state.
  *
- * <p>对应 {@code application.yml} 中的 {@code dataagent.session.redis} 前缀。
+ * <p>This switch is intentionally runtime-scoped, not session-scoped. The same Redis connection
+ * enables the framework {@code AgentStateStore}, sandbox snapshots, and sandbox execution guard.
+ * Business session metadata remains in MySQL.
  */
-@ConfigurationProperties(prefix = "dataagent.session.redis")
-public class SessionRedisProperties {
+@ConfigurationProperties(prefix = "dataagent.runtime.redis")
+public class RuntimeRedisProperties {
 
     private boolean enabled = false;
-    private String keyPrefix = "dataagent:session:";
+    private String keyPrefix = "dataagent:runtime:";
 
     public boolean isEnabled() {
         return enabled;

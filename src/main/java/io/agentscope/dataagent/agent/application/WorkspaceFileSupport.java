@@ -5,6 +5,9 @@ import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.model.FileInfo;
 import io.agentscope.harness.agent.filesystem.model.LsResult;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -56,12 +59,15 @@ final class WorkspaceFileSupport {
     }
 
     public static List<AgentWorkspaceController.FileNode> collectChildrenFs(
-            AbstractFilesystem fs, String absPath, int depth) {
+            AbstractFilesystem fs, RuntimeContext rc, String absPath, int depth) {
         List<AgentWorkspaceController.FileNode> out = new ArrayList<>();
         if (depth <= 0) {
             return out;
         }
-        LsResult ls = fs.ls(RuntimeContext.empty(), absPath);
+        // rc carries the user isolation context (userId) so the sandbox slot resolves to the
+        // same namespace the agent execution uses — without it the lookup silently falls back to
+        // a fresh, empty sandbox.
+        LsResult ls = fs.ls(rc, absPath);
         if (!ls.isSuccess() || ls.entries() == null) {
             return out;
         }
@@ -82,7 +88,7 @@ final class WorkspaceFileSupport {
             if (fi.isDirectory()) {
                 String childAbs = "/" + rel;
                 List<AgentWorkspaceController.FileNode> children =
-                        collectChildrenFs(fs, childAbs, depth - 1);
+                        collectChildrenFs(fs, rc, childAbs, depth - 1);
                 bySeg.put(
                         basename,
                         new AgentWorkspaceController.FileNode(
@@ -97,6 +103,82 @@ final class WorkspaceFileSupport {
             }
         }
         out.addAll(bySeg.values());
+        out.sort(
+                Comparator.<AgentWorkspaceController.FileNode, Integer>comparing(
+                                n -> "dir".equals(n.type()) ? 0 : 1)
+                        .thenComparing(AgentWorkspaceController.FileNode::name));
+        return out;
+    }
+
+    public static List<AgentWorkspaceController.FileNode> collectChildrenHost(
+            Path root, int depth) {
+        return collectChildrenHost(root, root, depth);
+    }
+
+    private static List<AgentWorkspaceController.FileNode> collectChildrenHost(
+            Path base, Path root, int depth) {
+        List<AgentWorkspaceController.FileNode> out = new ArrayList<>();
+        if (root == null || depth <= 0 || !Files.isDirectory(root)) {
+            return out;
+        }
+        try (var stream = Files.list(root)) {
+            stream.sorted(Comparator.comparing(path -> path.getFileName().toString()))
+                    .forEach(path -> {
+                        String name = path.getFileName().toString();
+                        if (name.isBlank()) return;
+                        boolean isDir = Files.isDirectory(path);
+                        String rel = base.relativize(path).toString().replace('\\', '/');
+                        List<AgentWorkspaceController.FileNode> children =
+                                isDir ? collectChildrenHost(base, path, depth - 1) : null;
+                        Long size = null;
+                        if (!isDir) {
+                            try {
+                                size = Files.size(path);
+                            } catch (IOException ignored) {
+                                size = null;
+                            }
+                        }
+                        out.add(new AgentWorkspaceController.FileNode(
+                                name, rel, isDir ? "dir" : "file", size, children));
+                    });
+        } catch (IOException ignored) {
+            return List.of();
+        }
+        out.sort(
+                Comparator.<AgentWorkspaceController.FileNode, Integer>comparing(
+                                n -> "dir".equals(n.type()) ? 0 : 1)
+                        .thenComparing(AgentWorkspaceController.FileNode::name));
+        return out;
+    }
+
+    public static List<AgentWorkspaceController.FileNode> mergeTrees(
+            List<AgentWorkspaceController.FileNode> primary,
+            List<AgentWorkspaceController.FileNode> fallback) {
+        java.util.LinkedHashMap<String, AgentWorkspaceController.FileNode> merged =
+                new java.util.LinkedHashMap<>();
+        if (fallback != null) {
+            for (AgentWorkspaceController.FileNode node : fallback) {
+                merged.put(node.path(), node);
+            }
+        }
+        if (primary != null) {
+            for (AgentWorkspaceController.FileNode node : primary) {
+                AgentWorkspaceController.FileNode previous = merged.get(node.path());
+                if ("dir".equals(node.type()) && previous != null && "dir".equals(previous.type())) {
+                    merged.put(
+                            node.path(),
+                            new AgentWorkspaceController.FileNode(
+                                    node.name(),
+                                    node.path(),
+                                    node.type(),
+                                    node.size(),
+                                    mergeTrees(node.children(), previous.children())));
+                } else {
+                    merged.put(node.path(), node);
+                }
+            }
+        }
+        List<AgentWorkspaceController.FileNode> out = new ArrayList<>(merged.values());
         out.sort(
                 Comparator.<AgentWorkspaceController.FileNode, Integer>comparing(
                                 n -> "dir".equals(n.type()) ? 0 : 1)

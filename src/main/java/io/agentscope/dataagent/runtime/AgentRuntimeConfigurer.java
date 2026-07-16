@@ -22,6 +22,7 @@ import io.agentscope.core.permission.PermissionContextState;
 import io.agentscope.core.permission.PermissionMode;
 import io.agentscope.core.permission.PermissionRule;
 import io.agentscope.core.state.AgentStateStore;
+import io.agentscope.core.tracing.OtelTracingMiddleware;
 import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.memory.MemoryConfig;
@@ -35,6 +36,7 @@ import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
 
@@ -58,19 +60,14 @@ public final class AgentRuntimeConfigurer implements Consumer<HarnessAgent.Build
     /** 兜底模型 id，为空则不设置兜底。 */
     private final String fallbackModelId;
     /**
-     * 沙箱工作区快照后端。本平台主 Agent 走 {@code externalSandbox}（由 UserSandboxPool
-     * 注入，其 {@code SandboxContext} 已带快照），故主路径不受此字段影响。
-     * 但<b>兜底路径</b>（borrow 失败、框架回退到 agent 默认 SandboxContext）与
-     * <b>子代理（ISOLATED）</b>创建独立沙箱时，会用到这个挂在本 agent 上的
-     * {@code DockerFilesystemSpec}——若不带上快照，容器回收后子代理产出文件（如
-     * report-writer 的报告）将无快照可恢复。故此处必须与 UserSandboxPool 共用同一
-     * 后端（Redis / Noop），由 {@code SandboxSnapshotConfig} 统一装配。
+     * 沙箱工作区快照后端。主 Agent、子代理和浏览器工作区都走框架托管的
+     * {@code DockerFilesystemSpec}/{@code SandboxManager}，因此这里必须统一注入同一个
+     * snapshot backend（Redis / Noop / future JDBC）。
      */
     private final SandboxSnapshotSpec snapshotSpec;
     /**
-     * 沙箱并发守卫。仅对框架托管的沙箱（Priority 3/4、子代理）生效；主 Agent 走
-     * externalSandbox（Priority 1，守卫被绕过），真实并发由 {@code SandboxLock}
-     * 在回合边界串行化。此处仍注入，使子代理路径也具备分布式串行能力。
+     * 沙箱并发守卫。生产多副本下由 Redis/JDBC guard 串行化同一隔离槽的执行；单机开发
+     * 可使用 noop guard。
      */
     private final SandboxExecutionGuard executionGuard;
 
@@ -93,10 +90,11 @@ public final class AgentRuntimeConfigurer implements Consumer<HarnessAgent.Build
     public void accept(HarnessAgent.Builder b) {
         // ---- State store & Sandbox filesystem ----
         b.stateStore(stateStore);
-        // 主 Agent 经 UserSandboxContextMiddleware 注入 externalSandbox（带快照），
-        // 故此处 spec 主要用于：①borrow 失败时的回退 SandboxContext；②子代理（ISOLATED）
-        // 独立沙箱。两者都必须带上 snapshotSpec + executionGuard，否则子代理产出文件
-        // 在容器回收后无快照可恢复（P0）、且多副本下并发无串行（P1 子代理路径）。
+        // Emits child spans for agent, model and tool execution. The application owns only the
+        // exporter/read model; span lifecycle and Reactor context propagation stay in AgentScope.
+        b.middleware(new OtelTracingMiddleware());
+        // Framework-owned sandbox lifecycle. The application configures policy and storage; the
+        // framework owns acquire/start/persist/release.
         b.filesystem(
                 new DockerFilesystemSpec()
                         .client(sandboxClient)
@@ -127,7 +125,15 @@ public final class AgentRuntimeConfigurer implements Consumer<HarnessAgent.Build
                         .build());
 
         // ---- Subagent declarations ----
-        b.subagent(
+        defaultSubagentDeclarations().forEach(b::subagent);
+
+        // ---- Permissions ----
+        b.permissionContext(buildPermissionContext());
+    }
+
+    /** Returns the built-in subagents exposed by every platform-managed agent. */
+    public List<SubagentDeclaration> defaultSubagentDeclarations() {
+        return List.of(
                 SubagentDeclaration.builder()
                         .name("code-reviewer")
                         .description(
@@ -138,9 +144,7 @@ public final class AgentRuntimeConfigurer implements Consumer<HarnessAgent.Build
                         .maxIters(5)
                         .exposeToUser(false)
                         .workspaceMode(WorkspaceMode.ISOLATED)
-                        .build());
-
-        b.subagent(
+                        .build(),
                 SubagentDeclaration.builder()
                         .name("report-writer")
                         .description(
@@ -152,9 +156,6 @@ public final class AgentRuntimeConfigurer implements Consumer<HarnessAgent.Build
                         .exposeToUser(true)
                         .workspaceMode(WorkspaceMode.ISOLATED)
                         .build());
-
-        // ---- Permissions ----
-        b.permissionContext(buildPermissionContext());
     }
 
     /**

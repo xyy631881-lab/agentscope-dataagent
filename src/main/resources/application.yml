@@ -55,9 +55,20 @@ dataagent:
     header: Authorization
     prefix: Bearer
 
+  credentials:
+    # Tenant model API keys are AES-GCM encrypted before entering MySQL. Set a dedicated stable
+    # value in production; changing it makes existing encrypted keys unreadable.
+    encryption-key: ${DATAAGENT_CREDENTIAL_ENCRYPTION_KEY:${DATAAGENT_JWT_SECRET:dataagent-dev-credential-key-change-in-production}}
+
   workspace:
     root: ${DATAAGENT_WORKSPACE:}
     auto-create: true
+    local-mirror-enabled: ${DATAAGENT_WORKSPACE_LOCAL_MIRROR_ENABLED:true}
+    local-mirror-root: ${DATAAGENT_WORKSPACE_LOCAL_MIRROR_ROOT:local-workspaces}
+
+  conversation:
+    history:
+      default-max-sessions: ${DATAAGENT_CONVERSATION_HISTORY_MAX_SESSIONS:100}
 
   storage:
     type: local
@@ -76,7 +87,7 @@ dataagent:
   model:
     active: ${DATAAGENT_MODEL_ACTIVE:longcat}    # ollama(本地) | longcat(API)
     longcat:
-      api-key: ${LONGCAT_API_KEY:ak_2NX5nj7y16ja2Y91Dt4oe06V89q1u}             # LongCat API Key，建议用环境变量注入
+      api-key: ${LONGCAT_API_KEY:ak_2NX5nj7y16ja2Y91Dt4oe06V89q1u}             # LongCat API Key，必须使用环境变量注入
       model-name: ${LONGCAT_MODEL:LongCat-2.0}
       base-url: ${LONGCAT_BASE_URL:https://api.longcat.chat/openai}
 
@@ -103,14 +114,15 @@ dataagent:
       type: memory  # 会话存在内存里
     memory:
       expire: 30m
+
+  runtime:
     redis:
-      enabled: false  # Redis 默认关闭，redis profile 打开
-      ttl: 30m
-      key-prefix: "dataagent:session:"
+      enabled: false  # Redis 默认关闭，redis profile 打开；用于 AgentStateStore、sandbox snapshot、execution guard
+      key-prefix: "dataagent:runtime:"
 
   sandbox:
     # 沙箱工作区快照后端（与 StateStoreConfig 的状态后端配对，彻底消除"重启丢沙箱"）
-    # - 默认（启用 redis profile 即 dataagent.session.redis.enabled=true）→ RedisSnapshotSpec：开箱即用
+    # - 默认（启用 redis profile 即 dataagent.runtime.redis.enabled=true）→ RedisSnapshotSpec：开箱即用
     # - 未启用 redis → Noop：单副本、保留容器策略（应用关闭 stop() 保留容器于宿主机）
     # - 可选 JDBC 快照：需引入 agentscope-extensions-mysql 并补一个 JdbcSnapshotSpec(dataSource) Bean，
     #   本离线构建环境未含该扩展，故默认关闭

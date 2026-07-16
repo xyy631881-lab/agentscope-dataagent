@@ -25,6 +25,8 @@ import io.agentscope.harness.agent.filesystem.model.LsResult;
 import io.agentscope.harness.agent.filesystem.model.ReadResult;
 import io.agentscope.harness.agent.filesystem.model.WriteResult;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -54,6 +56,16 @@ public class WorkspaceFileService {
         this.activity = activity;
     }
 
+    /**
+     * Builds the user-isolation {@link RuntimeContext} for workspace filesystem operations.
+     * Carrying the userId routes the sandbox slot lookup to the same namespace the agent execution
+     * uses — {@code RuntimeContext.empty()} would drop the isolation key and resolve to a fresh,
+     * empty sandbox slot (the "empty workspace tree" symptom).
+     */
+    private static RuntimeContext userContext(WorkspaceResolutionService.ResolvedWorkspace ctx) {
+        return RuntimeContext.builder().userId(ctx.ownerId()).build();
+    }
+
     // -----------------------------------------------------------------
     //  File CRUD
     // -----------------------------------------------------------------
@@ -68,7 +80,14 @@ public class WorkspaceFileService {
     public List<AgentWorkspaceController.FileNode> tree(
             WorkspaceResolutionService.ResolvedWorkspace ctx, boolean recursive) {
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        return WorkspaceFileSupport.collectChildrenFs(fs, "/", recursive ? 6 : 1);
+        List<AgentWorkspaceController.FileNode> sandboxTree = WorkspaceFileSupport.collectChildrenFs(
+                fs, userContext(ctx), "/", recursive ? 6 : 1);
+        Path mirror = localMirrorRoot(ctx);
+        if (mirror == null) {
+            return sandboxTree;
+        }
+        return WorkspaceFileSupport.mergeTrees(
+                sandboxTree, WorkspaceFileSupport.collectChildrenHost(mirror, recursive ? 6 : 1));
     }
 
     /**
@@ -81,23 +100,31 @@ public class WorkspaceFileService {
     public String readFile(WorkspaceResolutionService.ResolvedWorkspace ctx, String path) {
         String rel = WorkspaceFileSupport.validateRelPath(path);
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        RuntimeContext rc = RuntimeContext.empty();
-        if (!fs.exists(rc, rel)) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found: " + path);
+        RuntimeContext rc = userContext(ctx);
+        try {
+            if (fs.exists(rc, rel)) {
+                ReadResult rr = fs.read(rc, rel, 0, 0);
+                if (rr.isSuccess()) {
+                    String content =
+                            rr.fileData() != null && rr.fileData().content() != null
+                                    ? rr.fileData().content()
+                                    : "";
+                    return truncate(content);
+                }
+            }
+        } catch (Exception ignored) {
+            // The read-only local mirror remains available after Docker has reclaimed a sandbox.
         }
-        ReadResult rr = fs.read(rc, rel, 0, 0);
-        if (!rr.isSuccess()) {
-            throw new ResponseStatusException(
-                    HttpStatus.INTERNAL_SERVER_ERROR, "Read failed: " + rr.error());
+        Path mirrorFile = localMirrorFile(ctx, rel);
+        if (mirrorFile != null && Files.isRegularFile(mirrorFile)) {
+            try {
+                return truncate(Files.readString(mirrorFile, StandardCharsets.UTF_8));
+            } catch (Exception e) {
+                throw new ResponseStatusException(
+                        HttpStatus.INTERNAL_SERVER_ERROR, "Read local mirror failed: " + e.getMessage());
+            }
         }
-        String content =
-                rr.fileData() != null && rr.fileData().content() != null
-                        ? rr.fileData().content()
-                        : "";
-        if (content.length() > MAX_FILE_SIZE) {
-            return "(file too large to display: " + content.length() + " bytes)";
-        }
-        return content;
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found: " + path);
     }
 
     /**
@@ -118,7 +145,7 @@ public class WorkspaceFileService {
             String content) {
         String rel = WorkspaceFileSupport.validateRelPath(path);
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        RuntimeContext rc = RuntimeContext.empty();
+        RuntimeContext rc = userContext(ctx);
         if (WorkspaceFileSupport.isDirectoryEntry(fs, rc, rel)) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT, "Path is a directory: " + path);
@@ -161,7 +188,7 @@ public class WorkspaceFileService {
             String type) {
         String rel = WorkspaceFileSupport.validateRelPath(path);
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        RuntimeContext rc = RuntimeContext.empty();
+        RuntimeContext rc = userContext(ctx);
         boolean isDir = "dir".equalsIgnoreCase(type);
         String materialised = isDir ? rel + "/.keep" : rel;
         if (fs.exists(rc, materialised)) {
@@ -200,7 +227,7 @@ public class WorkspaceFileService {
         String fromRel = WorkspaceFileSupport.validateRelPath(from);
         String toRel = WorkspaceFileSupport.validateRelPath(to);
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        RuntimeContext rc = RuntimeContext.empty();
+        RuntimeContext rc = userContext(ctx);
         if (!fs.exists(rc, fromRel)) {
             throw new ResponseStatusException(
                     HttpStatus.NOT_FOUND, "Source not found: " + from);
@@ -241,7 +268,7 @@ public class WorkspaceFileService {
             String path) {
         String rel = WorkspaceFileSupport.validateRelPath(path);
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        RuntimeContext rc = RuntimeContext.empty();
+        RuntimeContext rc = userContext(ctx);
         if (!fs.exists(rc, rel)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Not found: " + path);
         }
@@ -291,7 +318,7 @@ public class WorkspaceFileService {
         AbstractFilesystem fs = ctx.manager().getFilesystem();
         List<FileUploadResponse> resp =
                 fs.uploadFiles(
-                        RuntimeContext.empty(),
+                        RuntimeContext.builder().userId(ctx.ownerId()).build(),
                         List.of(Map.entry(targetRel, bytes)));
         if (!resp.isEmpty() && resp.get(0).error() != null) {
             throw new ResponseStatusException(
@@ -308,6 +335,31 @@ public class WorkspaceFileService {
                     null);
         }
         return WorkspaceFileSupport.fileNode(targetRel, false, (long) bytes.length);
+    }
+
+    private static String truncate(String content) {
+        if (content.length() > MAX_FILE_SIZE) {
+            return "(file too large to display: " + content.length() + " bytes)";
+        }
+        return content;
+    }
+
+    private static Path localMirrorRoot(WorkspaceResolutionService.ResolvedWorkspace ctx) {
+        if (ctx.localMirrorPath() == null || ctx.localMirrorPath().isBlank()) {
+            return null;
+        }
+        Path mirror = Path.of(ctx.localMirrorPath()).toAbsolutePath().normalize();
+        return Files.isDirectory(mirror) ? mirror : null;
+    }
+
+    private static Path localMirrorFile(
+            WorkspaceResolutionService.ResolvedWorkspace ctx, String relativePath) {
+        Path root = localMirrorRoot(ctx);
+        if (root == null) {
+            return null;
+        }
+        Path candidate = root.resolve(relativePath).normalize();
+        return candidate.startsWith(root) ? candidate : null;
     }
 
     // -----------------------------------------------------------------

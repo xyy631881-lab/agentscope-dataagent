@@ -20,6 +20,9 @@ import io.agentscope.dataagent.agent.domain.UserAgentDefinitionStore;
 import io.agentscope.dataagent.integration.outbound.api.OutboundController;
 import io.agentscope.dataagent.integration.outbound.application.OutboundService;
 import io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory;
+import io.agentscope.dataagent.config.ModelConfig;
+import io.agentscope.dataagent.config.properties.ApiModelProperties;
+import io.agentscope.dataagent.model.application.TenantModelService;
 
 import io.agentscope.core.model.Model;
 import io.agentscope.core.tool.Toolkit;
@@ -71,6 +74,8 @@ public class AgentLifecycleService {
     private final UserAgentDefinitionStore store;
     private final GlobalAgentOverrideStore overrideStore;
     private final Model model;
+    private final ApiModelProperties modelProperties;
+    private final TenantModelService tenantModels;
     private final AgentRuntimeConfigurer runtimeConfigurer;
     private final io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory workspaceManagerFactory;
 
@@ -85,12 +90,16 @@ public class AgentLifecycleService {
             UserAgentDefinitionStore store,
             GlobalAgentOverrideStore overrideStore,
             Optional<Model> modelOpt,
+            ApiModelProperties modelProperties,
+            TenantModelService tenantModels,
             AgentRuntimeConfigurer runtimeConfigurer,
             io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory workspaceManagerFactory) {
         this.builderBootstrap = builderBootstrap;
         this.store = store;
         this.overrideStore = overrideStore;
         this.model = modelOpt.orElse(null);
+        this.modelProperties = modelProperties;
+        this.tenantModels = tenantModels;
         this.runtimeConfigurer = runtimeConfigurer;
         this.workspaceManagerFactory = workspaceManagerFactory;
     }
@@ -173,6 +182,13 @@ public class AgentLifecycleService {
         registeredUcaIds.keySet().removeIf(key -> key.endsWith(suffix));
     }
 
+    /** Drops all user-custom agents for one tenant after its model connection is changed. */
+    public void invalidateAllForUser(String userId) {
+        if (userId == null || userId.isBlank()) return;
+        String prefix = userId + "/";
+        registeredUcaIds.keySet().removeIf(key -> key.startsWith(prefix));
+    }
+
     // -----------------------------------------------------------------
     //  Global definitions
     // -----------------------------------------------------------------
@@ -210,7 +226,7 @@ public class AgentLifecycleService {
                             name,
                             desc,
                             null, // don't expose sysPrompt in global catalog
-                            cfg != null ? cfg.getModel() : null,
+                            cfg != null ? cfg.getModel() : null,   // model 字段
                             cfg != null ? cfg.getMaxIters() : null,
                             toolNames,
                             tc != null ? tc.getAllow() : null,
@@ -311,10 +327,22 @@ public class AgentLifecycleService {
         if (entry.maxIters() != null) {
             b.maxIters(entry.maxIters());
         }
-        // Model: prefer per-agent override, fall back to bootstrap-level model.
-        if (entry.model() != null && !entry.model().isBlank()) {
-            b.model(entry.model());
-        } else if (model != null) {
+        // Resolve once per UCA with a tenant-specific ModelCreationContext. Existing tenants that
+        // have not configured a provider keep the static local/longcat registrations as fallback.
+        String logicalModelId =
+                entry.model() != null && !entry.model().isBlank()
+                        ? entry.model()  // 有配置就用配置的
+                        : ModelConfig.resolveActiveId(modelProperties);  // 否则用全局默认
+        try {
+            b.model(tenantModels.resolve(userId, logicalModelId));
+            b.modelResolver(modelId -> tenantModels.resolve(userId, modelId));
+        } catch (IllegalArgumentException exception) {
+            if (model == null) throw exception;
+            log.warn(
+                    "Tenant model resolution fell back to bootstrap model: userId={}, modelId={}, reason={}",
+                    userId,
+                    logicalModelId,
+                    exception.getMessage());
             b.model(model);
         }
         b.workspace(workspace);

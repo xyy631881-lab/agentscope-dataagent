@@ -114,22 +114,16 @@ export default function SkillsWorkspacePanel({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Skills page now strictly shows marketplace-installed skills. Anything authored manually
-  // via the Workspace file tree (origin='custom') is editable from there, not here.
-  const skills = useMemo(
-    () => allSkills.filter(s => s.origin === 'marketplace'),
-    [allSkills],
-  );
+  const skills = allSkills;
 
   const refreshList = useCallback(async () => {
     try {
       const list = await listWorkspaceSkills(agentId);
       setAllSkills(list);
-      const filtered = list.filter(s => s.origin === 'marketplace');
-      if (selectedDir && !filtered.some(s => s.dirName === selectedDir)) {
-        setSelectedDir(filtered.length > 0 ? filtered[0].dirName : null);
-      } else if (!selectedDir && filtered.length > 0) {
-        setSelectedDir(filtered[0].dirName);
+      if (selectedDir && !list.some(s => s.dirName === selectedDir)) {
+        setSelectedDir(list.length > 0 ? list[0].dirName : null);
+      } else if (!selectedDir && list.length > 0) {
+        setSelectedDir(list[0].dirName);
       }
     } catch (e) {
       setError((e as Error).message);

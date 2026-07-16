@@ -20,6 +20,9 @@ import io.agentscope.dataagent.conversation.application.ConversationService;
 import io.agentscope.dataagent.conversation.application.ConversationService.InboxEntry;
 import io.agentscope.dataagent.conversation.application.ConversationService.ReadStateResult;
 import io.agentscope.dataagent.conversation.application.ConversationService.ResetResult;
+import io.agentscope.dataagent.conversation.application.ConversationHistorySettingsService;
+import io.agentscope.dataagent.agent.application.AgentAccessGuard;
+import io.agentscope.dataagent.agent.application.AgentAclService.Tier;
 import io.agentscope.dataagent.conversation.application.SessionTurnParser.TurnEntry;
 import java.util.List;
 import org.springframework.http.HttpStatus;
@@ -29,6 +32,8 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -52,9 +57,16 @@ import org.springframework.web.bind.annotation.RestController;
 public class SessionController {
 
     private final ConversationService conversationService;
+    private final ConversationHistorySettingsService historySettingsService;
+    private final AgentAccessGuard guard;
 
-    public SessionController(ConversationService conversationService) {
+    public SessionController(
+            ConversationService conversationService,
+            ConversationHistorySettingsService historySettingsService,
+            AgentAccessGuard guard) {
         this.conversationService = conversationService;
+        this.historySettingsService = historySettingsService;
+        this.guard = guard;
     }
 
     @GetMapping("/inbox")
@@ -65,6 +77,25 @@ public class SessionController {
             Authentication auth) {
         String userId = (String) auth.getPrincipal();
         return conversationService.inbox(userId, agentId, limit, unreadOnly);
+    }
+
+    @GetMapping("/settings")
+    public HistorySettings historySettings(@PathVariable String agentId, Authentication auth) {
+        String userId = (String) auth.getPrincipal();
+        guard.require(userId, agentId, Tier.RUN);
+        return new HistorySettings(historySettingsService.maxSessions(userId, agentId));
+    }
+
+    @PutMapping("/settings")
+    public HistorySettings updateHistorySettings(
+            @PathVariable String agentId,
+            @RequestBody HistorySettingsRequest request,
+            Authentication auth) {
+        String userId = (String) auth.getPrincipal();
+        guard.require(userId, agentId, Tier.RUN);
+        int maxSessions = historySettingsService.updateMaxSessions(
+                userId, agentId, request != null ? request.maxSessions() : 0);
+        return new HistorySettings(maxSessions);
     }
 
     @GetMapping("/{key}")
@@ -95,4 +126,8 @@ public class SessionController {
         String userId = (String) auth.getPrincipal();
         conversationService.deleteSession(agentId, key, userId);
     }
+
+    public record HistorySettings(int maxSessions) {}
+
+    public record HistorySettingsRequest(int maxSessions) {}
 }

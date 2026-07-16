@@ -7,6 +7,10 @@ interface Props {
   onSelect: (path: string) => void;
   refreshKey?: number;
   onRefresh?: () => void;
+  sessionKey?: string;
+  /** When true, the backend could not reach the agent's sandbox — show a "not synced" hint
+   *  instead of silently rendering an empty directory. */
+  emptyNotSynced?: boolean;
 }
 
 const S: Record<string, React.CSSProperties> = {
@@ -50,11 +54,8 @@ const S: Record<string, React.CSSProperties> = {
   err: { padding: 14, fontSize: '0.88rem', color: '#dc2626' },
 };
 
-// Hide entries that are internal bookkeeping rather than user-authored content.
-// Dotfiles/dotdirs (`.index`, `.git`, …) and the install-meta sidecar are noise in the
-// workspace view; users rarely want to interact with them. Toggleable so power users
-// can still inspect.
 const INTERNAL_BASENAMES = new Set(['_install.meta.json']);
+
 function isHiddenName(name: string): boolean {
   return name.startsWith('.') || INTERNAL_BASENAMES.has(name);
 }
@@ -63,35 +64,41 @@ function filterTree(nodes: FileNode[]): FileNode[] {
   const out: FileNode[] = [];
   for (const n of nodes) {
     if (isHiddenName(n.name)) continue;
-    if (n.type === 'dir' && n.children) {
-      out.push({ ...n, children: filterTree(n.children) });
-    } else {
-      out.push(n);
-    }
+    out.push(n.type === 'dir' && n.children ? { ...n, children: filterTree(n.children) } : n);
   }
   return out;
 }
 
-function countHidden(nodes: FileNode[]): number {
-  let c = 0;
+function countAll(nodes: FileNode[]): number {
+  let count = 0;
   for (const n of nodes) {
-    if (isHiddenName(n.name)) {
-      c += 1;
-      if (n.type === 'dir' && n.children) c += countAll(n.children);
-    } else if (n.type === 'dir' && n.children) {
-      c += countHidden(n.children);
-    }
+    count += 1;
+    if (n.type === 'dir' && n.children) count += countAll(n.children);
   }
-  return c;
+  return count;
 }
 
-function countAll(nodes: FileNode[]): number {
-  let c = 0;
+function countHidden(nodes: FileNode[]): number {
+  let count = 0;
   for (const n of nodes) {
-    c += 1;
-    if (n.type === 'dir' && n.children) c += countAll(n.children);
+    if (isHiddenName(n.name)) {
+      count += 1;
+      if (n.type === 'dir' && n.children) count += countAll(n.children);
+    } else if (n.type === 'dir' && n.children) {
+      count += countHidden(n.children);
+    }
   }
-  return c;
+  return count;
+}
+
+function parentPaths(path: string | null): string[] {
+  if (!path || !path.includes('/')) return [];
+  const parts = path.split('/');
+  const out: string[] = [];
+  for (let i = 1; i < parts.length; i += 1) {
+    out.push(parts.slice(0, i).join('/'));
+  }
+  return out;
 }
 
 interface NodeViewProps {
@@ -109,10 +116,12 @@ function NodeView({ node, depth, selectedPath, onSelect, expanded, toggle }: Nod
   const isOpen = expanded.has(node.path);
   const active = selectedPath === node.path;
   const dimmed = isHiddenName(node.name);
+
   const handleClick = () => {
     if (isDir) toggle(node.path);
     else onSelect(node.path);
   };
+
   return (
     <div>
       <div
@@ -127,7 +136,7 @@ function NodeView({ node, depth, selectedPath, onSelect, expanded, toggle }: Nod
         onMouseLeave={() => setHover(false)}
         title={node.path}
       >
-        <span style={S.caret}>{isDir ? (isOpen ? '▾' : '▸') : ''}</span>
+        <span style={S.caret}>{isDir ? (isOpen ? '▼' : '▶') : ''}</span>
         <span>{isDir ? '📁' : '📄'}</span>
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{node.name}</span>
       </div>
@@ -146,7 +155,7 @@ function NodeView({ node, depth, selectedPath, onSelect, expanded, toggle }: Nod
   );
 }
 
-export default function WorkspaceFileTree({ agentId, selectedPath, onSelect, refreshKey, onRefresh }: Props) {
+export default function WorkspaceFileTree({ agentId, selectedPath, onSelect, refreshKey, onRefresh, sessionKey, emptyNotSynced }: Props) {
   const [nodes, setNodes] = useState<FileNode[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -157,16 +166,18 @@ export default function WorkspaceFileTree({ agentId, selectedPath, onSelect, ref
     setErr(null);
     setLoading(true);
     try {
-      const list = await fetchTree(agentId, true);
+      const list = await fetchTree(agentId, true, sessionKey);
       setNodes(list);
       setExpanded(prev => {
-        if (prev.size > 0) return prev;
-        const next = new Set<string>();
-        for (const n of list) if (n.type === 'dir') next.add(n.path);
+        const next = new Set(prev);
+        if (next.size === 0) {
+          for (const n of list) if (n.type === 'dir') next.add(n.path);
+        }
+        for (const p of parentPaths(selectedPath)) next.add(p);
         return next;
       });
     } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : 'Failed to load files');
+      setErr(e instanceof Error ? e.message : '加载文件树失败');
     } finally {
       setLoading(false);
     }
@@ -175,7 +186,16 @@ export default function WorkspaceFileTree({ agentId, selectedPath, onSelect, ref
   useEffect(() => {
     reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId, refreshKey]);
+  }, [agentId, refreshKey, sessionKey]);
+
+  useEffect(() => {
+    if (!selectedPath) return;
+    setExpanded(prev => {
+      const next = new Set(prev);
+      for (const p of parentPaths(selectedPath)) next.add(p);
+      return next;
+    });
+  }, [selectedPath]);
 
   const toggle = (path: string) => {
     setExpanded(prev => {
@@ -191,7 +211,6 @@ export default function WorkspaceFileTree({ agentId, selectedPath, onSelect, ref
     [nodes, showHidden],
   );
   const hiddenCount = useMemo(() => countHidden(nodes), [nodes]);
-  const list = visibleNodes;
 
   return (
     <div style={S.root}>
@@ -202,30 +221,36 @@ export default function WorkspaceFileTree({ agentId, selectedPath, onSelect, ref
           style={S.refreshBtn}
           onClick={() => onRefresh?.()}
           disabled={loading}
-          title="Refresh file tree"
+          title="刷新文件树"
         >
-          {loading ? '…' : '↻'} <span style={{ fontSize: '0.7rem' }}>刷新</span>
+          {loading ? '...' : '↻'} <span style={{ fontSize: '0.7rem' }}>刷新</span>
         </button>
       </div>
       {hiddenCount > 0 && (
         <div style={S.subbar}>
-          <span>{showHidden ? `${hiddenCount} hidden item${hiddenCount === 1 ? '' : 's'} shown` : `${hiddenCount} item${hiddenCount === 1 ? '' : 's'} hidden`}</span>
+          <span>{showHidden ? `已显示 ${hiddenCount} 个隐藏项` : `已隐藏 ${hiddenCount} 个内部项`}</span>
           <button
             type="button"
             style={S.miniToggle}
             onClick={() => setShowHidden(s => !s)}
-            title={showHidden ? '隐藏内部文件' : '显示内部/点文件条目'}
+            title={showHidden ? '隐藏内部文件' : '显示全部/点文件'}
           >
-            {showHidden ? '👁 hide' : '👁 show all'}
+            {showHidden ? '隐藏' : '显示全部'}
           </button>
         </div>
       )}
       <div style={S.scroll}>
         {err && <div style={S.err}>{err}</div>}
-        {!err && list.length === 0 && (
-          <div style={{ padding: 14, fontSize: '0.88rem', color: '#94a3b8' }}>Empty workspace.</div>
+        {!err && !loading && visibleNodes.length === 0 && (
+          emptyNotSynced ? (
+            <div style={{ padding: 14, fontSize: '0.88rem', color: '#92400e' }}>
+              ⚠️ 工作区尚未同步 — 请先与 agent 发起一次对话，或刷新页面以获取最新文件。
+            </div>
+          ) : (
+            <div style={{ padding: 14, fontSize: '0.88rem', color: '#94a3b8' }}>工作区暂时无文件。</div>
+          )
         )}
-        {list.map(n => (
+        {visibleNodes.map(n => (
           <NodeView
             key={n.path}
             node={n}

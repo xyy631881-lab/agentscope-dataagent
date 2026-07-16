@@ -5,6 +5,11 @@ import { getToken } from '../../api/auth';
 interface UsageSummary {
   totalTurns: number;
   todayTurns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedPromptTokens: number;
+  totalTokens: number;
+  totalCostMicrousd: number;
   avgDurationMs: number;
   uniqueUsers: number;
 }
@@ -18,6 +23,17 @@ interface BucketCount {
 interface GroupCount {
   key: string;
   count: number;
+}
+
+interface ModelUsage {
+  modelId: string;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedPromptTokens: number;
+  totalTokens: number;
+  costMicrousd: number;
+  avgDurationMs: number;
 }
 
 function authHeaders() {
@@ -35,6 +51,10 @@ const getHourly     = (hours: number) => apiFetch<BucketCount[]>(`/api/admin/usa
 const getDaily      = (days: number)  => apiFetch<BucketCount[]>(`/api/admin/usage/daily?days=${days}`);
 const getTopUsers   = (days: number)  => apiFetch<GroupCount[]>(`/api/admin/usage/top-users?days=${days}&n=10`);
 const getTopAgents  = (days: number)  => apiFetch<GroupCount[]>(`/api/admin/usage/top-agents?days=${days}&n=10`);
+const getModels     = (days: number)  => apiFetch<ModelUsage[]>(`/api/admin/usage/models?days=${days}`);
+
+const fmtTokens = (value: number) => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(2)}M` : value >= 1_000 ? `${(value / 1_000).toFixed(1)}K` : value.toLocaleString();
+const fmtCost = (microusd: number) => `$${(microusd / 1_000_000).toFixed(microusd > 0 && microusd < 10_000 ? 4 : 2)}`;
 
 function TopList({ title, items, color }: { title: string; items: GroupCount[]; color: string }) {
   if (!items.length) return <div style={{ color: '#94a3b8', fontSize: '0.88rem' }}>(no data yet)</div>;
@@ -53,6 +73,22 @@ function TopList({ title, items, color }: { title: string; items: GroupCount[]; 
           <div style={{ width: 40, fontSize: '0.88rem', color: '#4f46e5', textAlign: 'right', flexShrink: 0, fontWeight: 600 }}>{item.count}</div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function ModelTable({ items }: { items: ModelUsage[] }) {
+  if (!items.length) return <div style={{ color: '#94a3b8', fontSize: '0.88rem' }}>暂无模型调用。</div>;
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem', minWidth: 680 }}>
+        <thead><tr>{['模型', '请求', '输入', '缓存', '输出', '总 Token', '均耗时', '成本'].map(header => <th key={header} style={{ textAlign: 'left', padding: '8px 10px', color: '#64748b', borderBottom: '1px solid #e2e8f0', fontSize: '0.72rem' }}>{header}</th>)}</tr></thead>
+        <tbody>{items.map(item => <tr key={item.modelId}>
+          <td style={{ padding: '10px', borderBottom: '1px solid #f1f5f9' }}><code style={{ color: '#3730a3' }}>{item.modelId}</code></td>
+          <td style={{ padding: '10px', borderBottom: '1px solid #f1f5f9' }}>{item.turns}</td><td style={{ padding: '10px', borderBottom: '1px solid #f1f5f9' }}>{fmtTokens(item.inputTokens)}</td><td style={{ padding: '10px', borderBottom: '1px solid #f1f5f9' }}>{fmtTokens(item.cachedPromptTokens)}</td>
+          <td style={{ padding: '10px', borderBottom: '1px solid #f1f5f9' }}>{fmtTokens(item.outputTokens)}</td><td style={{ padding: '10px', borderBottom: '1px solid #f1f5f9' }}>{fmtTokens(item.totalTokens)}</td><td style={{ padding: '10px', borderBottom: '1px solid #f1f5f9' }}>{item.avgDurationMs < 1000 ? `${item.avgDurationMs}ms` : `${(item.avgDurationMs / 1000).toFixed(1)}s`}</td><td style={{ padding: '10px', borderBottom: '1px solid #f1f5f9' }}>{fmtCost(item.costMicrousd)}</td>
+        </tr>)}</tbody>
+      </table>
     </div>
   );
 }
@@ -233,6 +269,7 @@ export default function UsagePage() {
   const [daily, setDaily] = useState<BucketCount[]>([]);
   const [topUsers,  setTopUsers]  = useState<GroupCount[]>([]);
   const [topAgents, setTopAgents] = useState<GroupCount[]>([]);
+  const [models, setModels] = useState<ModelUsage[]>([]);
   const [hourRange, setHourRange] = useState(24);
   const [dayRange, setDayRange] = useState(14);
   const [topRange,  setTopRange]  = useState(7);
@@ -243,18 +280,20 @@ export default function UsagePage() {
     setLoading(true);
     setError(null);
     try {
-      const [s, h, d, tu, ta] = await Promise.all([
+      const [s, h, d, tu, ta, tm] = await Promise.all([
         getSummary(),
         getHourly(hourRange),
         getDaily(dayRange),
         getTopUsers(topRange),
         getTopAgents(topRange),
+        getModels(30),
       ]);
       setSummary(s);
       setHourly(h);
       setDaily(d);
       setTopUsers(tu);
       setTopAgents(ta);
+      setModels(tm);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -283,12 +322,16 @@ export default function UsagePage() {
         {summary && (
           <div style={S.cards}>
             <div style={S.card}>
-              <div style={S.cardLabel}>Total Turns</div>
-              <div style={S.cardValue}>{summary.totalTurns.toLocaleString()}</div>
+              <div style={S.cardLabel}>Total Tokens</div>
+              <div style={S.cardValue}>{fmtTokens(summary.totalTokens)}</div>
             </div>
             <div style={S.card}>
-              <div style={S.cardLabel}>Today's Turns</div>
-              <div style={S.cardValue}>{summary.todayTurns}</div>
+              <div style={S.cardLabel}>Cached Prompt</div>
+              <div style={S.cardValue}>{fmtTokens(summary.cachedPromptTokens)}</div>
+            </div>
+            <div style={S.card}>
+              <div style={S.cardLabel}>Accounted Cost</div>
+              <div style={S.cardValue}>{fmtCost(summary.totalCostMicrousd)}</div>
             </div>
             <div style={S.card}>
               <div style={S.cardLabel}>Avg Duration</div>
@@ -297,6 +340,10 @@ export default function UsagePage() {
             <div style={S.card}>
               <div style={S.cardLabel}>Unique Users</div>
               <div style={S.cardValue}>{summary.uniqueUsers}</div>
+            </div>
+            <div style={S.card}>
+              <div style={S.cardLabel}>Requests Today</div>
+              <div style={S.cardValue}>{summary.todayTurns}</div>
             </div>
           </div>
         )}
@@ -325,6 +372,13 @@ export default function UsagePage() {
             </div>
           </div>
           <BarChart data={daily} width={840} height={150} color="#6366f1" labelStep={2} />
+        </div>
+
+        <div style={S.chartCard}>
+          <div style={{ marginBottom: 16 }}>
+            <span style={S.chartTitle}>Model Usage (30d)</span>
+          </div>
+          <ModelTable items={models} />
         </div>
 
         {/* Top users / agents */}

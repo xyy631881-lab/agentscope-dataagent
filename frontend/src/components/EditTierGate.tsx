@@ -1,6 +1,7 @@
 import React from 'react';
 import { Navigate, useOutletContext } from 'react-router-dom';
 import { AgentDefinition } from '../api/agents';
+import { chatHrefPreservingSession } from '../utils/session';
 
 export interface ShellOutletContext {
   agent: AgentDefinition | null;
@@ -22,7 +23,7 @@ export default function EditTierGate({ children }: { children: React.ReactElemen
     return <div style={{ padding: 32, color: '#dc2626' }}>{ctx.agentError}</div>;
   }
   if (ctx.agent?.tierForCurrentUser !== 'EDIT') {
-    return <Navigate to="/chat" replace />;
+    return <Navigate to={chatHrefPreservingSession()} replace />;
   }
   return children;
 }

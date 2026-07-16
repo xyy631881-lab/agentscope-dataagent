@@ -1,0 +1,62 @@
+可以，按下面这组提示词测就行。建议新建一个对话，逐条发，不要一次全塞进去，这样每一步现象最清楚。
+
+**第 0 步：重置/新建会话**
+```text
+/reset
+```
+或直接点左侧“新建对话”。
+
+**第 1 步：确认数据源**
+```text
+请列出当前可用的数据源。必须调用 list_data_sources 工具，不要凭空回答。
+```
+
+预期：执行轨迹里出现 `list_data_sources`，回复里有 `analytics_db`。
+
+**第 2 步：看表结构**
+```text
+请查看 analytics_db 里 daily_sales 表的字段结构和前 5 行样例。必须调用 describe_table。
+```
+
+预期：执行轨迹里出现 `describe_table`，返回字段和样例数据。
+
+**第 3 步：触发计划文件**
+```text
+请先为“分析最近 7 天每日销售额趋势并生成折线图”制定执行计划，并把计划保存到 plans/PLAN.md。计划完成后先不要执行 SQL，等我确认。
+```
+
+预期：工具结果或回复里出现 `plans/PLAN.md`，前端应该能点这个链接跳到 `/workspace?path=plans/PLAN.md`。
+
+**第 4 步：确认执行并触发 SQL 人工确认**
+```text
+确认执行。请查询 analytics_db 中最近 7 天每日销售额，SQL 只允许 SELECT 或 WITH，必须调用 run_sql_preview。
+```
+
+预期：`run_sql_preview` 进入“等待批准”，聊天气泡里出现人工确认卡。点“批准并继续”。
+
+**第 5 步：生成图表**
+```text
+请基于刚才 SQL 返回的数据生成一张每日销售额折线图。必须调用 render_chart，Vega-Lite spec 必须使用内联 data.values，不能使用 data.url。
+```
+
+预期：执行轨迹里出现 `render_chart`，聊天气泡内直接显示折线图。
+
+**第 6 步：测试 artifacts 写入和本地镜像**
+```text
+请把刚才的图表 Vega-Lite JSON 保存为 artifacts/charts/daily_sales_7d.vega.json，并把本次分析摘要保存为 artifacts/reports/daily_sales_7d.md。保存后告诉我这两个文件路径。
+```
+
+预期：回复里出现：
+
+```text
+artifacts/charts/daily_sales_7d.vega.json
+artifacts/reports/daily_sales_7d.md
+```
+
+这两个路径应该能点击打开工作区文件。然后去 `/workspace` 页面看顶部：
+
+- 运行时工作区：`/workspace`
+- 本地镜像：`local-workspaces/...`
+- 图表数量、报告数量、产物数量是否增加
+
+如果第 6 步 Agent 说不能保存文件，说明当前暴露给 agent 的文件写入工具还没通；这时图表内嵌显示仍然算通过，但 artifacts 统计不会增加。

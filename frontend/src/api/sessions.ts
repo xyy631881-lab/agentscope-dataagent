@@ -28,6 +28,15 @@ export interface InboxOptions {
   unreadOnly?: boolean;
 }
 
+export interface HistorySettings {
+  maxSessions: number;
+}
+
+export interface CreatedSession {
+  sessionKey: string;
+  exists: boolean;
+}
+
 export interface TurnEntry {
   id: string;
   parentId: string | null;
@@ -58,6 +67,34 @@ export async function inbox(agentId: string, opts: InboxOptions = {}): Promise<I
   const url = `/api/agents/${encodeURIComponent(agentId)}/sessions/inbox${qs ? `?${qs}` : ''}`;
   const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) throw new Error('加载收件箱失败');
+  return res.json();
+}
+
+export async function createSession(agentId: string): Promise<CreatedSession> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/chat/session`, {
+    method: 'POST', headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Unable to create a new conversation');
+  return res.json();
+}
+
+export async function getHistorySettings(agentId: string): Promise<HistorySettings> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/sessions/settings`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error('Unable to load conversation history settings');
+  return res.json();
+}
+
+export async function updateHistorySettings(
+  agentId: string, maxSessions: number,
+): Promise<HistorySettings> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/sessions/settings`, {
+    method: 'PUT',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ maxSessions }),
+  });
+  if (!res.ok) throw new Error('Unable to save conversation history settings');
   return res.json();
 }
 

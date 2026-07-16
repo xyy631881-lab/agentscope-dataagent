@@ -17,8 +17,8 @@ package io.agentscope.dataagent.config;
 
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ModelRegistry;
-import io.agentscope.core.model.OllamaChatModel;
-import io.agentscope.core.model.OpenAIChatModel;
+import io.agentscope.extensions.model.ollama.OllamaChatModel;
+import io.agentscope.extensions.model.openai.OpenAIChatModel;
 import io.agentscope.dataagent.config.properties.ApiModelProperties;
 import io.agentscope.dataagent.config.properties.OllamaProperties;
 import org.slf4j.Logger;
@@ -63,13 +63,23 @@ public class ModelConfig {
 
         // 2) LongCat（OpenAI 兼容）
         ApiModelProperties.LongCat lc = apiProps.getLongcat();
-        Model longcat =
-                OpenAIChatModel.builder()
-                        .modelName(lc.getModelName())
-                        .apiKey(lc.getApiKey())
-                        .baseUrl(lc.getBaseUrl())
-                        .stream(true)
-                        .build();
+        boolean longCatConfigured = lc.getApiKey() != null && !lc.getApiKey().isBlank();
+        Model longcat;
+        if (longCatConfigured) {
+            longcat =
+                    OpenAIChatModel.builder()
+                            .modelName(lc.getModelName())
+                            .apiKey(lc.getApiKey())
+                            .baseUrl(lc.getBaseUrl())
+                            .stream(true)
+                            .build();
+        } else {
+            // Keep legacy persisted `longcat` overrides from turning a missing environment
+            // variable into a 401 + permanently pending chat. The selector hides LongCat until
+            // a key is configured, while old ids safely execute through the local fallback.
+            longcat = local;
+            log.warn("LONGCAT_API_KEY is empty; legacy longcat model ids resolve to local Ollama");
+        }
         ModelRegistry.register(LONGCAT_MODEL_ID, longcat);
         log.info(
                 "注册 LongCat API 模型: id={}, model={}, baseUrl={}",
@@ -79,6 +89,12 @@ public class ModelConfig {
 
         // 3) 默认（active）模型
         String activeId = resolveActiveId(apiProps);
+        if ("longcat".equalsIgnoreCase(apiProps.getActive())
+                && !LONGCAT_MODEL_ID.equals(activeId)) {
+            log.warn(
+                    "LongCat was selected as the default model but LONGCAT_API_KEY is empty; "
+                            + "falling back to local Ollama");
+        }
         Model active = LOCAL_MODEL_ID.equals(activeId) ? local : longcat;
         log.info(
                 "当前默认模型: dataagent.model.active={} -> 使用 {}（可在 application.yml 切换）",
@@ -87,8 +103,47 @@ public class ModelConfig {
         return active;
     }
 
+    /**
+     * Registers context-only factories used by tenant model connections. The stable {@code local}
+     * and {@code longcat} registrations above deliberately remain named models so existing global
+     * agents keep their current behaviour. Tenant resolution uses ModelCreationContext and these
+     * factory ids instead.
+     */
+    @Bean
+    public Object tenantModelFactories(OllamaProperties ollamaProps, ApiModelProperties apiProps) {
+        ModelRegistry.registerFactory(
+                "tenant-openai",
+                (ignored, context) ->
+                        OpenAIChatModel.builder()
+                                .modelName(context.option("modelName", String.class))
+                                .apiKey(context.getApiKey())
+                                .baseUrl(context.getBaseUrl())
+                                .endpointPath(context.getEndpointPath())
+                                .stream(!Boolean.FALSE.equals(context.getStream()))
+                                // LongCat remains on the formatter-based structured-output fallback.
+                                // Do not force native JSON Schema until the endpoint's tool support is proven.
+                                .nativeStructuredOutput(false)
+                                .nativeStructuredOutputWithTools(false)
+                                .build());
+        ModelRegistry.registerFactory(
+                "tenant-ollama",
+                (ignored, context) ->
+                        OllamaChatModel.builder()
+                                .modelName(context.option("modelName", String.class))
+                                .baseUrl(
+                                        context.getBaseUrl() != null
+                                                ? context.getBaseUrl()
+                                                : ollamaProps.getBaseUrl())
+                                .build());
+        return new Object();
+    }
+
     /** 根据配置解析当前默认模型在 ModelRegistry 中的 id。 */
     public static String resolveActiveId(ApiModelProperties props) {
-        return "longcat".equalsIgnoreCase(props.getActive()) ? LONGCAT_MODEL_ID : LOCAL_MODEL_ID;
+        if (!"longcat".equalsIgnoreCase(props.getActive())) {
+            return LOCAL_MODEL_ID;
+        }
+        String apiKey = props.getLongcat() != null ? props.getLongcat().getApiKey() : null;
+        return apiKey != null && !apiKey.isBlank() ? LONGCAT_MODEL_ID : LOCAL_MODEL_ID;
     }
 }

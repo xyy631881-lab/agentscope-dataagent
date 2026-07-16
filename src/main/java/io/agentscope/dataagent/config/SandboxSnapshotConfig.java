@@ -15,7 +15,7 @@
  */
 package io.agentscope.dataagent.config;
 
-import io.agentscope.dataagent.config.properties.SessionRedisProperties;
+import io.agentscope.dataagent.config.properties.RuntimeRedisProperties;
 import io.agentscope.extensions.redis.sandbox.RedisSandboxExecutionGuard;
 import io.agentscope.extensions.redis.snapshot.RedisSnapshotSpec;
 import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
@@ -46,9 +46,9 @@ public class SandboxSnapshotConfig {
 
     @Bean
     @ConditionalOnMissingBean(SandboxSnapshotSpec.class)
-    @ConditionalOnProperty(prefix = "dataagent.session.redis", name = "enabled", havingValue = "true")
+    @ConditionalOnProperty(prefix = "dataagent.runtime.redis", name = "enabled", havingValue = "true")
     public SandboxSnapshotSpec redisSandboxSnapshotSpec(
-            SessionRedisProperties props, RedisProperties redisProps) {
+            RuntimeRedisProperties props, RedisProperties redisProps) {
         String prefix =
                 props.getKeyPrefix() != null && !props.getKeyPrefix().isBlank()
                         ? props.getKeyPrefix() + "snapshot:"
@@ -70,9 +70,9 @@ public class SandboxSnapshotConfig {
 
     @Bean
     @ConditionalOnMissingBean(SandboxExecutionGuard.class)
-    @ConditionalOnProperty(prefix = "dataagent.session.redis", name = "enabled", havingValue = "true")
+    @ConditionalOnProperty(prefix = "dataagent.runtime.redis", name = "enabled", havingValue = "true")
     public SandboxExecutionGuard redisSandboxExecutionGuard(
-            SessionRedisProperties props, RedisProperties redisProps) {
+            RuntimeRedisProperties props, RedisProperties redisProps) {
         String prefix =
                 props.getKeyPrefix() != null && !props.getKeyPrefix().isBlank()
                         ? props.getKeyPrefix() + "guard:"

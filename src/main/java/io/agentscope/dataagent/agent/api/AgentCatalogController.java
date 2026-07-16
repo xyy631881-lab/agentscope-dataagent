@@ -96,17 +96,29 @@ public class AgentCatalogController {
     public List<ModelOption> listModels() {
         String ollamaName = ollamaProps.getModel().getChat();
         List<ModelOption> options = new ArrayList<>();
-        options.add(new ModelOption(ModelConfig.LOCAL_MODEL_ID, "本地 Ollama · " + ollamaName, true));
+        options.add(
+                new ModelOption(
+                        ModelConfig.LOCAL_MODEL_ID,
+                        "本地 Ollama · " + ollamaName,
+                        true,
+                        true,
+                        null));
+        boolean longCatAvailable = longCatConfigured();
         options.add(
                 new ModelOption(
                         ModelConfig.LONGCAT_MODEL_ID,
-                        modelProps.getLongcat().getModelName() + " (LongCat API)",
-                        false));
+                        modelProps.getLongcat().getModelName()
+                                + " (LongCat API)"
+                                + (longCatAvailable ? "" : " · 未配置 API Key"),
+                        false,
+                        longCatAvailable,
+                        longCatAvailable ? null : "请设置 LONGCAT_API_KEY 后重启服务"));
         return options;
     }
 
     /** 模型选项：id 用于 Agent 的 model 字段，label 用于前端展示，local 标记是否本地模型。 */
-    public record ModelOption(String id, String label, boolean local) {}
+    public record ModelOption(
+            String id, String label, boolean local, boolean available, String unavailableReason) {}
 
     /**
      * Lists all agent definitions visible to the authenticated user: global agents first, then
@@ -170,13 +182,14 @@ public class AgentCatalogController {
     public AgentDefinition updateAgent(
             @PathVariable String id, @RequestBody AgentCreateRequest req, Authentication auth) {
         String userId = (String) auth.getPrincipal();
+        validateModelSelection(req.model());
 
                     AgentDefinition def = guard.require(userId, id, Tier.EDIT);
                     // Global (bootstrap) agents have no owner; only an administrator (who holds
-                    // EDIT tier on globals) may edit them. The change is persisted as an override
-                    // and applies to the running agent after the next restart.
+                    // EDIT tier on globals) may edit them. AgentMutationService persists the
+                    // override and performs the single live rebuild for this update.
                     if (def.ownerId() == null) {
-                AgentDefinition updated = mutationService.updateGlobalAgent(userId, id, req);
+                        AgentDefinition updated = mutationService.updateGlobalAgent(userId, id, req);
                         activity.record(
                         userId,
                         id,
@@ -192,6 +205,19 @@ public class AgentCatalogController {
                     activity.actor(userId),
                     ActivityEvent.Action.EDIT_SETTINGS);
                     return withTier(userId, updated);
+    }
+
+    private void validateModelSelection(String modelId) {
+        if (ModelConfig.LONGCAT_MODEL_ID.equalsIgnoreCase(modelId) && !longCatConfigured()) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "LongCat is unavailable because LONGCAT_API_KEY is not configured");
+        }
+    }
+
+    private boolean longCatConfigured() {
+        String apiKey = modelProps.getLongcat() != null ? modelProps.getLongcat().getApiKey() : null;
+        return apiKey != null && !apiKey.isBlank();
     }
 
     /**

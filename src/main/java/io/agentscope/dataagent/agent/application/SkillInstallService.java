@@ -153,13 +153,14 @@ public class SkillInstallService {
         SkillFileService.validateSkillName(targetName);
 
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        if (fs.exists(null, "/skills/" + targetName)
+        RuntimeContext runtimeContext = RuntimeContext.builder().userId(ctx.ownerId()).build();
+        if (fs.exists(runtimeContext, "/skills/" + targetName)
                 && !Boolean.TRUE.equals(req.overwrite())) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT, "Workspace skill already exists: " + targetName);
         }
-        if (fs.exists(null, "/skills/" + targetName)) {
-            fs.delete(null, "/skills/" + targetName);
+        if (fs.exists(runtimeContext, "/skills/" + targetName)) {
+            fs.delete(runtimeContext, "/skills/" + targetName);
         }
         String markdown = skill.getSkillContent();
         if (markdown == null || markdown.isBlank()) {
@@ -169,8 +170,8 @@ public class SkillInstallService {
         }
         WorkspaceManager wsm = ctx.manager();
         wsm.writeUtf8WorkspaceRelative(
-                RuntimeContext.empty(), "skills/" + targetName + "/SKILL.md", markdown);
-        SkillFileService.writeResources(wsm, targetName, skill.getResources());
+                runtimeContext, "skills/" + targetName + "/SKILL.md", markdown);
+        SkillFileService.writeResources(wsm, runtimeContext, targetName, skill.getResources());
         AgentSkillRepositoryInfo repoInfo = repo.getRepositoryInfo();
         AgentSkillsController.SkillMarketplaceMeta meta =
                 new AgentSkillsController.SkillMarketplaceMeta(
@@ -178,7 +179,7 @@ public class SkillInstallService {
                         repoInfo != null ? repoInfo.getLocation() : "",
                         skill.getName(),
                         Instant.now().toString());
-        SkillFileService.writeInstallMeta(wsm, targetName, meta);
+        SkillFileService.writeInstallMeta(wsm, runtimeContext, targetName, meta);
         activity.record(
                 ctx.ownerId(),
                 agentId,
@@ -190,7 +191,7 @@ public class SkillInstallService {
                         "repoType", meta.repoType(),
                         "originalName", meta.originalName()));
         lifecycleService.invalidateUca(ctx.ownerId(), agentId);
-        return SkillFileService.readWorkspaceSkill(fs, targetName);
+        return SkillFileService.readWorkspaceSkill(fs, runtimeContext, targetName);
     }
 
     /**
@@ -237,13 +238,14 @@ public class SkillInstallService {
         SkillFileService.validateSkillName(targetName);
 
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        if (fs.exists(null, "/skills/" + targetName)
+        RuntimeContext runtimeContext = RuntimeContext.builder().userId(ctx.ownerId()).build();
+        if (fs.exists(runtimeContext, "/skills/" + targetName)
                 && !Boolean.TRUE.equals(req.overwrite())) {
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT, "Workspace skill already exists: " + targetName);
         }
-        if (fs.exists(null, "/skills/" + targetName)) {
-            fs.delete(null, "/skills/" + targetName);
+        if (fs.exists(runtimeContext, "/skills/" + targetName)) {
+            fs.delete(runtimeContext, "/skills/" + targetName);
         }
         if (content.markdown() == null || content.markdown().isBlank()) {
             throw new ResponseStatusException(
@@ -252,17 +254,17 @@ public class SkillInstallService {
         }
         WorkspaceManager wsm = ctx.manager();
         wsm.writeUtf8WorkspaceRelative(
-                RuntimeContext.empty(),
+                runtimeContext,
                 "skills/" + targetName + "/SKILL.md",
                 content.markdown());
-        SkillFileService.writeResources(wsm, targetName, content.resources());
+        SkillFileService.writeResources(wsm, runtimeContext, targetName, content.resources());
         AgentSkillsController.SkillMarketplaceMeta meta =
                 new AgentSkillsController.SkillMarketplaceMeta(
                         mp.type(),
                         mp.displayLocation(),
                         content.name(),
                         Instant.now().toString());
-        SkillFileService.writeInstallMeta(wsm, targetName, meta);
+        SkillFileService.writeInstallMeta(wsm, runtimeContext, targetName, meta);
         activity.record(
                 ctx.ownerId(),
                 agentId,
@@ -275,6 +277,6 @@ public class SkillInstallService {
                         "marketplaceType", meta.repoType(),
                         "originalName", meta.originalName()));
         lifecycleService.invalidateUca(ctx.ownerId(), agentId);
-        return SkillFileService.readWorkspaceSkill(fs, targetName);
+        return SkillFileService.readWorkspaceSkill(fs, runtimeContext, targetName);
     }
 }

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { clearToken, getToken } from '../../api/auth';
+import { chatHrefPreservingSession } from '../../utils/session';
 
 function decodeJwt(token: string): Record<string, unknown> {
   try { return JSON.parse(atob(token.split('.')[1])); } catch { return {}; }
@@ -216,7 +217,7 @@ export default function AdminAppShell({ children }: AppShellProps) {
           <UserMenu
             username={username}
             onLogout={logout}
-            onSwitchToChat={() => navigate('/chat')}
+            onSwitchToChat={() => navigate(chatHrefPreservingSession())}
           />
         </div>
       </div>

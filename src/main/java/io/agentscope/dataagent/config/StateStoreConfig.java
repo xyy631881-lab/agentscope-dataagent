@@ -18,7 +18,7 @@ package io.agentscope.dataagent.config;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.extensions.redis.state.RedisAgentStateStore;
-import io.agentscope.dataagent.config.properties.SessionRedisProperties;
+import io.agentscope.dataagent.config.properties.RuntimeRedisProperties;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.RedisURI;
 import org.slf4j.Logger;
@@ -29,10 +29,10 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * AgentStateStore 后端装配的唯一来源。两种实现二选一：
+ * AgentScope runtime state 后端装配的唯一来源。两种实现二选一：
  *
  * <ul>
- *   <li><b>Redis 后端</b>（分布式）：当 {@code dataagent.session.redis.enabled=true} 且容器中没有
+ *   <li><b>Redis 后端</b>（分布式）：当 {@code dataagent.runtime.redis.enabled=true} 且容器中没有
  *       其它 {@link AgentStateStore} Bean 时注册 {@code RedisAgentStateStore}。适用于多副本部署，
  *       让各 pod 共享沙箱隔离状态。
  *   <li><b>内存后端</b>（默认/单副本）：当上述 Redis Bean 未注册时，作为兜底注册
@@ -44,8 +44,8 @@ import org.springframework.context.annotation.Configuration;
  * 求值 {@code @ConditionalOnMissingBean}，Redis 先注册成功则内存兜底自动跳过。这样避免了分散在
  * 多个配置类时因处理顺序导致的"内存先注册、Redis 被跳过"的隐患。
  *
- * <p>典型用法：启动时加 {@code --spring.profiles.active=dev,mysql,redis}，
- * application-redis.yml 会自动把 {@code dataagent.session.redis.enabled} 置为 true。
+ * <p>典型用法：启动时加 {@code --spring.profiles.active=mysql,redis}，
+ * application-redis.yml 会自动把 {@code dataagent.runtime.redis.enabled} 置为 true。
  */
 @Configuration
 public class StateStoreConfig {
@@ -54,12 +54,12 @@ public class StateStoreConfig {
 
     @Bean
     @ConditionalOnMissingBean(AgentStateStore.class)
-    @ConditionalOnProperty(prefix = "dataagent.session.redis", name = "enabled", havingValue = "true")
+    @ConditionalOnProperty(prefix = "dataagent.runtime.redis", name = "enabled", havingValue = "true")
     public AgentStateStore redisAgentStateStore(
-            SessionRedisProperties props,
+            RuntimeRedisProperties props,
             org.springframework.boot.autoconfigure.data.redis.RedisProperties redisProps) {
         log.info(
-                "构建 RedisAgentStateStore: redis={}:{}, db={}, keyPrefix={}",
+                "构建 RedisAgentStateStore: redis={}:{}, db={}, runtimeKeyPrefix={}",
                 redisProps.getHost(),
                 redisProps.getPort(),
                 redisProps.getDatabase(),

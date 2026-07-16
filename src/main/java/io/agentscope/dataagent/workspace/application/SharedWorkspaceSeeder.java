@@ -47,12 +47,11 @@ import org.springframework.stereotype.Component;
  * never clobbered by a restart, and the on-disk copy can be hand-edited by operators between
  * deployments. To force a refresh of a shipped file, delete it on disk and bounce the process.
  *
- * <p>Wiring: the seed target ({@code ${cwd}/shared/}) is the same path {@link UserSandboxPool}
- * mounts into every fresh container as a read-only workspace projection, and the same path
- * {@code LocalApprovalMarketplace} reads when listing/fetching contributed skills. Seeding here
- * therefore makes every tenant see the bundled {@code sql-analysis} / {@code chart-rendering}
- * skills and {@code data-explorer} / {@code report-writer} sub-agents out of the box without any
- * per-tenant copy step.
+ * <p>Wiring: the seed target ({@code ${cwd}/shared/}) is the source read by
+ * {@code LocalApprovalMarketplace} when listing/fetching approved capabilities. Runtime sandbox
+ * lifecycle stays framework-owned; shared capabilities are installed into an agent workspace by
+ * the marketplace/skill services instead of being projected by an application-owned container
+ * pool.
  */
 @Component
 public class SharedWorkspaceSeeder {

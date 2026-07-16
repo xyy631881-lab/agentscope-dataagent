@@ -149,6 +149,8 @@ export interface ModelOption {
   id: string;
   label: string;
   local: boolean;
+  available: boolean;
+  unavailableReason: string | null;
 }
 
 /** 拉取当前可用模型列表，供 Agent 配置的下拉选择。 */
@@ -312,8 +314,8 @@ export interface AgentUpdateRequest {
 }
 
 export const updateAgentConfig = (id: string, req: AgentUpdateRequest) =>
-  apiFetch<{ id: string; restartRequired: boolean; message: string }>(
-    `/api/admin/agents/${encodeURIComponent(id)}`,
+  apiFetch<{ id: string; model?: string | null }>(
+    `/api/agents/${encodeURIComponent(id)}`,
     { method: 'PUT', body: JSON.stringify(req) },
   );
 
@@ -322,12 +324,19 @@ export const updateAgentConfig = (id: string, req: AgentUpdateRequest) =>
 export interface WorkspaceSummary {
   agentId: string;
   workspacePath: string;
+  runtimeWorkspacePath?: string;
+  definitionWorkspacePath?: string;
   exists: boolean;
   agentsMdExists: boolean;
   memoryMdExists: boolean;
   skillCount: number;
   subagentCount: number;
   dailyMemoryCount: number;
+  artifactCount?: number;
+  chartArtifactCount?: number;
+  reportArtifactCount?: number;
+  datasetArtifactCount?: number;
+  localMirrorPath?: string | null;
 }
 
 export interface WorkspaceFileContent {

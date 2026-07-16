@@ -29,6 +29,8 @@ public class WorkspaceProperties {
 
     private String root = "";
     private boolean autoCreate = true;
+    private boolean localMirrorEnabled = true;
+    private String localMirrorRoot = "local-workspaces";
 
     public String getRoot() {
         return root;
@@ -44,5 +46,21 @@ public class WorkspaceProperties {
 
     public void setAutoCreate(boolean autoCreate) {
         this.autoCreate = autoCreate;
+    }
+
+    public boolean isLocalMirrorEnabled() {
+        return localMirrorEnabled;
+    }
+
+    public void setLocalMirrorEnabled(boolean localMirrorEnabled) {
+        this.localMirrorEnabled = localMirrorEnabled;
+    }
+
+    public String getLocalMirrorRoot() {
+        return localMirrorRoot;
+    }
+
+    public void setLocalMirrorRoot(String localMirrorRoot) {
+        this.localMirrorRoot = localMirrorRoot;
     }
 }

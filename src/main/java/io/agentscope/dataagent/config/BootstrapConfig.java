@@ -18,6 +18,7 @@ import io.agentscope.dataagent.security.infrastructure.IdentityLinkStore;
 import io.agentscope.dataagent.workspace.application.WorkspaceScaffolder;
 
 import io.agentscope.core.model.Model;
+import io.opentelemetry.api.OpenTelemetry;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
@@ -62,7 +63,8 @@ public class BootstrapConfig {
             SandboxClient<DockerSandboxClientOptions> sandboxClient,
             Optional<AgentStateStore> sessionOpt,
             SandboxSnapshotSpec snapshotSpec,
-            SandboxExecutionGuard sandboxExecutionGuard) {
+            SandboxExecutionGuard sandboxExecutionGuard,
+            OpenTelemetry openTelemetry) {
         AgentStateStore stateStore = sessionOpt.orElseGet(InMemoryAgentStateStore::new);
         if (sessionOpt.isEmpty()) {
             log.warn(
@@ -70,13 +72,16 @@ public class BootstrapConfig {
                             + "（进程重启会丢状态）。多副本部署请启用 redis profile。");
         }
         String activeModelId = ModelConfig.resolveActiveId(modelProps);
-        // snapshotSpec / executionGuard 由 SandboxSnapshotConfig 统一装配
-        // （Redis 或 Noop 兜底），与 UserSandboxPool 共用同一快照后端。
+        String fallbackModelId = ModelConfig.LONGCAT_MODEL_ID.equals(activeModelId)
+                ? ModelConfig.LOCAL_MODEL_ID
+                : null;
+        // snapshotSpec / executionGuard 由 SandboxSnapshotConfig 统一装配。
+        // 主 Agent 与子 Agent 都走框架托管的 DockerFilesystemSpec，避免应用侧维护第二套容器生命周期。
         return new AgentRuntimeConfigurer(
                 stateStore,
                 sandboxClient,
                 activeModelId,
-                activeModelId,
+                fallbackModelId,
                 snapshotSpec,
                 sandboxExecutionGuard);
     }

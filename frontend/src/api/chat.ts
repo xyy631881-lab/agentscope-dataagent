@@ -15,6 +15,7 @@ export interface ChatRequest {
   message: string;
   sessionKey?: string;
   confirmResults?: ConfirmDecision[];
+  requestId?: string;
 }
 
 export interface ChatEvent {
@@ -52,11 +53,16 @@ export async function currentSession(
   return res.json();
 }
 
-export async function* stream(agentId: string, req: ChatRequest): AsyncGenerator<ChatEvent> {
+export async function* stream(
+  agentId: string,
+  req: ChatRequest,
+  signal?: AbortSignal,
+): AsyncGenerator<ChatEvent> {
   const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/chat/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(req),
+    signal,
   });
   if (!res.ok || !res.body) throw new Error(`聊天流连接失败: ${res.status}`);
 
@@ -81,5 +87,16 @@ export async function* stream(agentId: string, req: ChatRequest): AsyncGenerator
         yield { type: 'token', data } as ChatEvent;
       }
     }
+  }
+}
+
+export async function cancelStream(agentId: string, requestId: string): Promise<void> {
+  const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/chat/cancel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ requestId }),
+  });
+  if (!res.ok && res.status !== 204) {
+    throw new Error(`Unable to cancel the current request: ${res.status}`);
   }
 }

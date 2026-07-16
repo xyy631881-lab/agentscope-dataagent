@@ -1,264 +1,278 @@
-/*
- * Copyright 2024-2026 the original author or authors.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package io.agentscope.dataagent.conversation.application;
 
+import io.agentscope.dataagent.conversation.infrastructure.UsageEventEntity;
+import io.agentscope.dataagent.conversation.infrastructure.UsageEventRepository;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
-import java.util.ArrayList;
-import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.concurrent.CopyOnWriteArrayList;
-import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 内存中的用量事件存储。记录单次轮次事件（每个用户消息一次）并提供
- * 小时/天聚合，用于趋势图表。
- *
- * <p>数据在重启后<em>不</em>保留。在当前阶段这是有意为之；
- * 该存储设计为以后可以替换为持久化实现。
+ * Persistent usage ledger. A row represents one completed chat request and contains the sum of all
+ * model calls made during that request, including prompt-cache usage reported by AgentScope 2.0.
  */
-@Component
+@Service
 public class UsageStore {
 
-    /** 要保留在内存中的原始事件最大数量（滚动窗口）。 */
-    private static final int MAX_EVENTS = 50_000;
+    private final UsageEventRepository repository;
 
-    private final CopyOnWriteArrayList<UsageEvent> events = new CopyOnWriteArrayList<>();
-
-    /** 记录单次轮次完成事件。 */
-    public void record(String userId, String agentId, long durationMs) {
-        events.add(new UsageEvent(System.currentTimeMillis(), userId, agentId, durationMs));
-        if (events.size() > MAX_EVENTS) {
-            events.remove(0);
-        }
+    public UsageStore(UsageEventRepository repository) {
+        this.repository = repository;
     }
 
-    /** Returns all raw events (newest-first) up to {@code limit}. */
-    public List<UsageEvent> recentEvents(int limit) {
-        List<UsageEvent> copy = new ArrayList<>(events);
-        Collections.reverse(copy);
-        return copy.stream().limit(limit).toList();
+    @Transactional
+    public void record(UsageEvent event) {
+        repository.save(
+                new UsageEventEntity(
+                        event.tenantId(),
+                        event.userId(),
+                        event.agentId(),
+                        event.sessionKey(),
+                        event.modelId(),
+                        nonNegative(event.inputTokens()),
+                        nonNegative(event.outputTokens()),
+                        nonNegative(event.cachedPromptTokens()),
+                        nonNegative(event.durationMs()),
+                        nonNegative(event.costMicrousd()),
+                        event.outcome(),
+                        event.recordedAtMs()));
     }
 
-    /**
-     * Returns hourly turn counts for the past {@code hours} hours.
-     *
-     * @param hours number of hours of history to include (max 168 = 7 days)
-     */
-    public List<BucketCount> hourlyTurns(int hours) {
-        int h = Math.max(1, Math.min(hours, 168));
-        long nowMs = System.currentTimeMillis();
-        long startMs = nowMs - (long) h * 3_600_000L;
-
-        Map<Long, Integer> buckets = new TreeMap<>();
-        // Pre-fill all hours with 0
-        for (int i = 0; i < h; i++) {
-            long bucketMs = startMs + (long) i * 3_600_000L;
-            buckets.put(truncateHour(bucketMs), 0);
-        }
-        for (UsageEvent e : events) {
-            if (e.timestampMs() < startMs) continue;
-            long bucket = truncateHour(e.timestampMs());
-            buckets.merge(bucket, 1, Integer::sum);
-        }
-
-        return buckets.entrySet().stream()
-                .map(en -> new BucketCount(en.getKey(), labelHour(en.getKey()), en.getValue()))
-                .toList();
-    }
-
-    /**
-     * Returns daily turn counts for the past {@code days} days.
-     *
-     * @param days number of days of history to include (max 90)
-     */
-    public List<BucketCount> dailyTurns(int days) {
-        int d = Math.max(1, Math.min(days, 90));
-        long nowMs = System.currentTimeMillis();
-        long startMs = nowMs - (long) d * 86_400_000L;
-
-        Map<Long, Integer> buckets = new TreeMap<>();
-        for (int i = 0; i < d; i++) {
-            long bucketMs = startMs + (long) i * 86_400_000L;
-            buckets.put(truncateDay(bucketMs), 0);
-        }
-        for (UsageEvent e : events) {
-            if (e.timestampMs() < startMs) continue;
-            long bucket = truncateDay(e.timestampMs());
-            buckets.merge(bucket, 1, Integer::sum);
-        }
-
-        return buckets.entrySet().stream()
-                .map(en -> new BucketCount(en.getKey(), labelDay(en.getKey()), en.getValue()))
-                .toList();
-    }
-
-    /** Returns aggregate totals for a specific user only. */
     public UsageSummary summaryForUser(String userId) {
-        List<UsageEvent> mine = events.stream().filter(e -> userId.equals(e.userId())).toList();
-        long totalTurns = mine.size();
-        long today = truncateDay(System.currentTimeMillis());
-        long todayTurns = mine.stream().filter(e -> truncateDay(e.timestampMs()) == today).count();
-        long avgDurationMs =
-                mine.isEmpty()
-                        ? 0L
-                        : (long)
-                                mine.stream().mapToLong(UsageEvent::durationMs).average().orElse(0);
-        return new UsageSummary(totalTurns, todayTurns, avgDurationMs, 1L);
+        return summary(repository.aggregateForUser(userId), repository.countForUserSince(userId, startOfToday()));
     }
 
-    /** Returns hourly turn counts for the past {@code hours} hours, scoped to one user. */
-    public List<BucketCount> hourlyTurnsForUser(String userId, int hours) {
-        int h = Math.max(1, Math.min(hours, 168));
-        long nowMs = System.currentTimeMillis();
-        long startMs = nowMs - (long) h * 3_600_000L;
-        Map<Long, Integer> buckets = new TreeMap<>();
-        for (int i = 0; i < h; i++) {
-            buckets.put(truncateHour(startMs + (long) i * 3_600_000L), 0);
-        }
-        for (UsageEvent e : events) {
-            if (!userId.equals(e.userId()) || e.timestampMs() < startMs) continue;
-            buckets.merge(truncateHour(e.timestampMs()), 1, Integer::sum);
-        }
-        return buckets.entrySet().stream()
-                .map(en -> new BucketCount(en.getKey(), labelHour(en.getKey()), en.getValue()))
-                .toList();
-    }
-
-    /** Returns daily turn counts for the past {@code days} days, scoped to one user. */
-    public List<BucketCount> dailyTurnsForUser(String userId, int days) {
-        int d = Math.max(1, Math.min(days, 90));
-        long nowMs = System.currentTimeMillis();
-        long startMs = nowMs - (long) d * 86_400_000L;
-        Map<Long, Integer> buckets = new TreeMap<>();
-        for (int i = 0; i < d; i++) {
-            buckets.put(truncateDay(startMs + (long) i * 86_400_000L), 0);
-        }
-        for (UsageEvent e : events) {
-            if (!userId.equals(e.userId()) || e.timestampMs() < startMs) continue;
-            buckets.merge(truncateDay(e.timestampMs()), 1, Integer::sum);
-        }
-        return buckets.entrySet().stream()
-                .map(en -> new BucketCount(en.getKey(), labelDay(en.getKey()), en.getValue()))
-                .toList();
-    }
-
-    /**
-     * Returns top-N users by turn count over the past {@code days} days.
-     * Used by admin usage dashboard.
-     */
-    public List<GroupCount> topUsersByTurns(int days, int topN) {
-        long startMs = System.currentTimeMillis() - (long) days * 86_400_000L;
-        java.util.Map<String, Integer> counts = new java.util.LinkedHashMap<>();
-        for (UsageEvent e : events) {
-            if (e.timestampMs() < startMs || e.userId() == null) continue;
-            counts.merge(e.userId(), 1, Integer::sum);
-        }
-        return counts.entrySet().stream()
-                .sorted(java.util.Map.Entry.<String, Integer>comparingByValue().reversed())
-                .limit(topN)
-                .map(en -> new GroupCount(en.getKey(), en.getValue()))
-                .toList();
-    }
-
-    /**
-     * Returns top-N agents by turn count over the past {@code days} days.
-     * Used by admin usage dashboard.
-     */
-    public List<GroupCount> topAgentsByTurns(int days, int topN) {
-        long startMs = System.currentTimeMillis() - (long) days * 86_400_000L;
-        java.util.Map<String, Integer> counts = new java.util.LinkedHashMap<>();
-        for (UsageEvent e : events) {
-            if (e.timestampMs() < startMs || e.agentId() == null) continue;
-            counts.merge(e.agentId(), 1, Integer::sum);
-        }
-        return counts.entrySet().stream()
-                .sorted(java.util.Map.Entry.<String, Integer>comparingByValue().reversed())
-                .limit(topN)
-                .map(en -> new GroupCount(en.getKey(), en.getValue()))
-                .toList();
-    }
-
-    /** Returns aggregate totals. */
     public UsageSummary summary() {
-        long totalTurns = events.size();
-        long today = truncateDay(System.currentTimeMillis());
-        long todayTurns =
-                events.stream().filter(e -> truncateDay(e.timestampMs()) == today).count();
-        long avgDurationMs =
-                events.isEmpty()
-                        ? 0L
-                        : (long)
-                                events.stream()
-                                        .mapToLong(UsageEvent::durationMs)
-                                        .average()
-                                        .orElse(0);
-        long uniqueUsers =
-                events.stream()
-                        .map(UsageEvent::userId)
-                        .filter(u -> u != null && !u.isBlank())
-                        .distinct()
-                        .count();
-        return new UsageSummary(totalTurns, todayTurns, avgDurationMs, uniqueUsers);
+        return summary(repository.aggregateAll(), repository.countSince(startOfToday()));
     }
 
-    // -----------------------------------------------------------------
-    //  Internal helpers
-    // -----------------------------------------------------------------
+    public List<BucketCount> hourlyTurnsForUser(String userId, int hours) {
+        return hourly(repository.findByUserIdAndRecordedAtMsGreaterThanEqual(userId, windowStartHours(hours)), hours);
+    }
+
+    public List<BucketCount> hourlyTurns(int hours) {
+        return hourly(repository.findByRecordedAtMsGreaterThanEqual(windowStartHours(hours)), hours);
+    }
+
+    public List<BucketCount> dailyTurnsForUser(String userId, int days) {
+        return daily(repository.findByUserIdAndRecordedAtMsGreaterThanEqual(userId, windowStartDays(days)), days);
+    }
+
+    public List<BucketCount> dailyTurns(int days) {
+        return daily(repository.findByRecordedAtMsGreaterThanEqual(windowStartDays(days)), days);
+    }
+
+    public List<GroupCount> topUsersByTurns(int days, int topN) {
+        return topBy(
+                repository.findByRecordedAtMsGreaterThanEqual(windowStartDays(days)),
+                UsageEventEntity::getUserId,
+                topN);
+    }
+
+    public List<GroupCount> topAgentsByTurns(int days, int topN) {
+        return topBy(
+                repository.findByRecordedAtMsGreaterThanEqual(windowStartDays(days)),
+                UsageEventEntity::getAgentId,
+                topN);
+    }
+
+    public List<ModelUsage> modelUsageForUser(String userId, int days) {
+        return modelUsage(repository.findByUserIdAndRecordedAtMsGreaterThanEqual(userId, windowStartDays(days)));
+    }
+
+    public List<ModelUsage> modelUsage(int days) {
+        return modelUsage(repository.findByRecordedAtMsGreaterThanEqual(windowStartDays(days)));
+    }
+
+    private static UsageSummary summary(Object[] totals, long todayTurns) {
+        long totalTurns = number(totals, 0);
+        long inputTokens = number(totals, 1);
+        long outputTokens = number(totals, 2);
+        long cachedPromptTokens = number(totals, 3);
+        long costMicrousd = number(totals, 4);
+        long avgDurationMs = number(totals, 5);
+        long uniqueUsers = number(totals, 6);
+        return new UsageSummary(
+                totalTurns,
+                todayTurns,
+                inputTokens,
+                outputTokens,
+                cachedPromptTokens,
+                inputTokens + outputTokens,
+                costMicrousd,
+                avgDurationMs,
+                uniqueUsers);
+    }
+
+    private static List<BucketCount> hourly(List<UsageEventEntity> events, int requestedHours) {
+        int hours = clamp(requestedHours, 1, 168);
+        long start = windowStartHours(hours);
+        Map<Long, Long> buckets = new TreeMap<>();
+        for (int i = 0; i < hours; i++) {
+            long bucket = truncateHour(start + i * 3_600_000L);
+            buckets.put(bucket, 0L);
+        }
+        for (UsageEventEntity event : events) {
+            buckets.merge(truncateHour(event.getRecordedAtMs()), 1L, Long::sum);
+        }
+        return buckets.entrySet().stream()
+                .map(entry -> new BucketCount(entry.getKey(), labelHour(entry.getKey()), entry.getValue()))
+                .toList();
+    }
+
+    private static List<BucketCount> daily(List<UsageEventEntity> events, int requestedDays) {
+        int days = clamp(requestedDays, 1, 90);
+        long start = windowStartDays(days);
+        Map<Long, Long> buckets = new TreeMap<>();
+        for (int i = 0; i < days; i++) {
+            long bucket = truncateDay(start + i * 86_400_000L);
+            buckets.put(bucket, 0L);
+        }
+        for (UsageEventEntity event : events) {
+            buckets.merge(truncateDay(event.getRecordedAtMs()), 1L, Long::sum);
+        }
+        return buckets.entrySet().stream()
+                .map(entry -> new BucketCount(entry.getKey(), labelDay(entry.getKey()), entry.getValue()))
+                .toList();
+    }
+
+    private static List<GroupCount> topBy(
+            List<UsageEventEntity> events,
+            java.util.function.Function<UsageEventEntity, String> key,
+            int topN) {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (UsageEventEntity event : events) {
+            String value = key.apply(event);
+            if (value != null && !value.isBlank()) counts.merge(value, 1L, Long::sum);
+        }
+        return counts.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .limit(clamp(topN, 1, 100))
+                .map(entry -> new GroupCount(entry.getKey(), entry.getValue()))
+                .toList();
+    }
+
+    private static List<ModelUsage> modelUsage(List<UsageEventEntity> events) {
+        Map<String, ModelAccumulator> byModel = new LinkedHashMap<>();
+        for (UsageEventEntity event : events) {
+            byModel.computeIfAbsent(event.getModelId(), ignored -> new ModelAccumulator()).add(event);
+        }
+        return byModel.entrySet().stream()
+                .map(entry -> entry.getValue().toDto(entry.getKey()))
+                .sorted(Comparator.comparingLong(ModelUsage::totalTokens).reversed())
+                .toList();
+    }
+
+    private static long windowStartHours(int requestedHours) {
+        return System.currentTimeMillis() - (long) clamp(requestedHours, 1, 168) * 3_600_000L;
+    }
+
+    private static long windowStartDays(int requestedDays) {
+        return System.currentTimeMillis() - (long) clamp(requestedDays, 1, 90) * 86_400_000L;
+    }
+
+    private static long startOfToday() {
+        return Instant.now().atZone(ZoneId.systemDefault()).truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli();
+    }
 
     private static long truncateHour(long epochMs) {
-        return Instant.ofEpochMilli(epochMs)
-                .atZone(ZoneId.systemDefault())
-                .truncatedTo(ChronoUnit.HOURS)
-                .toInstant()
-                .toEpochMilli();
+        return Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).truncatedTo(ChronoUnit.HOURS).toInstant().toEpochMilli();
     }
 
     private static long truncateDay(long epochMs) {
-        return Instant.ofEpochMilli(epochMs)
-                .atZone(ZoneId.systemDefault())
-                .truncatedTo(ChronoUnit.DAYS)
-                .toInstant()
-                .toEpochMilli();
+        return Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).truncatedTo(ChronoUnit.DAYS).toInstant().toEpochMilli();
     }
 
     private static String labelHour(long epochMs) {
-        ZonedDateTime zdt = Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault());
-        return String.format("%02d:%02d", zdt.getHour(), 0);
+        ZonedDateTime time = Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault());
+        return String.format("%02d:00", time.getHour());
     }
 
     private static String labelDay(long epochMs) {
-        ZonedDateTime zdt = Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault());
-        return String.format("%02d-%02d", zdt.getMonthValue(), zdt.getDayOfMonth());
+        ZonedDateTime time = Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault());
+        return String.format("%02d-%02d", time.getMonthValue(), time.getDayOfMonth());
     }
 
-    // -----------------------------------------------------------------
-    //  DTO types
-    // -----------------------------------------------------------------
+    private static long number(Object[] values, int index) {
+        return values == null || index >= values.length || values[index] == null
+                ? 0L
+                : ((Number) values[index]).longValue();
+    }
 
-    public record UsageEvent(long timestampMs, String userId, String agentId, long durationMs) {}
+    private static int clamp(int value, int min, int max) { return Math.max(min, Math.min(value, max)); }
+    private static long nonNegative(long value) { return Math.max(0L, value); }
 
-    public record BucketCount(long epochMs, String label, int count) {}
+    public record UsageEvent(
+            String tenantId,
+            String userId,
+            String agentId,
+            String sessionKey,
+            String modelId,
+            long inputTokens,
+            long outputTokens,
+            long cachedPromptTokens,
+            long durationMs,
+            long costMicrousd,
+            String outcome,
+            long recordedAtMs) {}
 
-    public record GroupCount(String key, int count) {}
+    public record BucketCount(long epochMs, String label, long count) {}
+    public record GroupCount(String key, long count) {}
+    public record ModelUsage(
+            String modelId,
+            long turns,
+            long inputTokens,
+            long outputTokens,
+            long cachedPromptTokens,
+            long totalTokens,
+            long costMicrousd,
+            long avgDurationMs) {}
 
     public record UsageSummary(
-            long totalTurns, long todayTurns, long avgDurationMs, long uniqueUsers) {}
+            long totalTurns,
+            long todayTurns,
+            long inputTokens,
+            long outputTokens,
+            long cachedPromptTokens,
+            long totalTokens,
+            long totalCostMicrousd,
+            long avgDurationMs,
+            long uniqueUsers) {}
+
+    private static final class ModelAccumulator {
+        private long turns;
+        private long inputTokens;
+        private long outputTokens;
+        private long cachedPromptTokens;
+        private long costMicrousd;
+        private long totalDurationMs;
+
+        private void add(UsageEventEntity event) {
+            turns++;
+            inputTokens += event.getInputTokens();
+            outputTokens += event.getOutputTokens();
+            cachedPromptTokens += event.getCachedPromptTokens();
+            costMicrousd += event.getCostMicrousd();
+            totalDurationMs += event.getDurationMs();
+        }
+
+        private ModelUsage toDto(String modelId) {
+            return new ModelUsage(
+                    modelId,
+                    turns,
+                    inputTokens,
+                    outputTokens,
+                    cachedPromptTokens,
+                    inputTokens + outputTokens,
+                    costMicrousd,
+                    turns == 0 ? 0 : totalDurationMs / turns);
+        }
+    }
 }

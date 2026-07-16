@@ -20,6 +20,7 @@ import io.agentscope.dataagent.agent.api.AgentWorkspaceController;
 
 import io.agentscope.dataagent.agent.domain.AgentDefinition;
 import io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory;
+import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import java.nio.file.Path;
@@ -49,11 +50,15 @@ public class WorkspaceResolutionService {
 
     private final AgentCatalogService catalogService;
     private final WorkspaceManagerFactory workspaceFactory;
+    private final AgentLifecycleService lifecycleService;
 
     public WorkspaceResolutionService(
-            AgentCatalogService catalogService, WorkspaceManagerFactory workspaceFactory) {
+            AgentCatalogService catalogService,
+            WorkspaceManagerFactory workspaceFactory,
+            AgentLifecycleService lifecycleService) {
         this.catalogService = catalogService;
         this.workspaceFactory = workspaceFactory;
+        this.lifecycleService = lifecycleService;
     }
 
     /**
@@ -77,15 +82,28 @@ public class WorkspaceResolutionService {
                                                 HttpStatus.NOT_FOUND,
                                                 "Agent not found or not accessible: "
                                                         + agentId));
+        // The browser-backed filesystem is keyed by the running agent's *real* harness name
+        // (see sandboxStateNamespace) so it shares the exact sandbox state namespace the agent
+        // execution uses — not a second, key-mismatched slot that would surface as an empty
+        // workspace tree. User isolation is carried by the per-call RuntimeContext built from
+        // ctx.ownerId() in the file/summary services.
         if (AgentDefinition.SCOPE_USER.equals(def.scope())) {
             String ownerId = def.ownerId() != null ? def.ownerId() : userId;
             WorkspaceManager wm =
-                    workspaceFactory.forAgent(ownerId, agentId, def.workspacePath());
-            return new ResolvedWorkspace(wm, ownerId);
+                    workspaceFactory.forAgent(
+                            ownerId,
+                            agentId,
+                            def.workspacePath(),
+                            sandboxStateNamespace(userId, agentId, def));
+            return new ResolvedWorkspace(wm, ownerId, workspaceFactory.localMirrorPath(ownerId, agentId));
         }
         WorkspaceManager wm =
-                workspaceFactory.forGlobalAgent(userId, agentId, def.workspacePath());
-        return new ResolvedWorkspace(wm, userId);
+                workspaceFactory.forGlobalAgent(
+                        userId,
+                        agentId,
+                        def.workspacePath(),
+                        sandboxStateNamespace(userId, agentId, def));
+        return new ResolvedWorkspace(wm, userId, workspaceFactory.localMirrorPath(userId, agentId));
     }
 
     /** 只获取 WorkspaceManager（不抛 404，内部使用）。 */
@@ -99,12 +117,24 @@ public class WorkspaceResolutionService {
     }
 
     /**
+     * AgentScope stores sandbox state under HarnessAgent.name. Using this application's logical
+     * identifier created a second, empty sandbox for the browser workspace.
+     */
+    private String sandboxStateNamespace(String userId, String agentId, AgentDefinition def) {
+        HarnessAgent agent = lifecycleService.getRunningAgent(userId, agentId);
+        if (agent == null || agent.getName() == null || agent.getName().isBlank()) {
+            return def.name() != null && !def.name().isBlank() ? def.name() : agentId;
+        }
+        return agent.getName();
+    }
+
+    /**
      * 解析后的工作空间上下文。
      *
      * @param manager  WorkspaceManager 实例
      * @param ownerId  工作空间所有者 ID（SCOPE_USER 时是 Agent 的 ownerId，全局时是当前 userId）
      */
-    public record ResolvedWorkspace(WorkspaceManager manager, String ownerId) {
+    public record ResolvedWorkspace(WorkspaceManager manager, String ownerId, String localMirrorPath) {
         /** 工作空间在容器内的归一化路径。 */
         public Path workspace() {
             return manager.getWorkspace().normalize();

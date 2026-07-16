@@ -5,12 +5,12 @@ import { listModels, updateAgentConfig } from '../api/admin';
 import type { ModelOption } from '../api/admin';
 
 const CONFIG_BUTTONS: { key: string; label: string; icon: string }[] = [
-  { key: 'skills',    label: '技能',    icon: '🛠' },
-  { key: 'subagents', label: '子 Agent', icon: '🧩' },
-  { key: 'channels',  label: '通道',  icon: '📡' },
-  { key: 'tools',     label: '工具',     icon: '🧰' },
-  { key: 'shares',    label: '分享',     icon: '👥' },
-  { key: 'settings',  label: '设置',  icon: '⚙' },
+  { key: 'skills', label: '技能', icon: '🧩' },
+  { key: 'subagents', label: '子 Agent', icon: '🧠' },
+  { key: 'channels', label: '通道', icon: '📡' },
+  { key: 'tools', label: '工具', icon: '🛠' },
+  { key: 'shares', label: '分享', icon: '👥' },
+  { key: 'settings', label: '设置', icon: '⚙' },
 ];
 
 export interface ChatHeaderProps {
@@ -22,10 +22,10 @@ export default function ChatHeader({ agent }: ChatHeaderProps) {
   const [searchParams] = useSearchParams();
   const sessionKey = searchParams.get('session');
 
-  // ── 模型选择 ──
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [changing, setChanging] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!agent) return;
@@ -34,21 +34,29 @@ export default function ChatHeader({ agent }: ChatHeaderProps) {
         setModelOptions(opts);
         if (agent.model) setSelectedModel(agent.model);
       })
-      .catch(() => { /* 静默 */ });
+      .catch(() => undefined);
   }, [agent]);
 
   async function onModelChange(id: string) {
     if (!agent) return;
+    const previous = selectedModel;
     setSelectedModel(id);
+    setModelError(null);
     setChanging(true);
-    try { await updateAgentConfig(agent.id, { name: agent.id, model: id || undefined }); }
-    catch { /* ignore */ }
-    finally { setChanging(false); }
+    try {
+      await updateAgentConfig(agent.id, { name: agent.name, model: id || undefined });
+    } catch (error: unknown) {
+      setSelectedModel(previous);
+      setModelError(error instanceof Error ? error.message : 'Model change failed');
+    } finally {
+      setChanging(false);
+    }
   }
 
   const canEdit = agent?.tierForCurrentUser === 'EDIT';
   const name = agent?.name ?? 'data-agent';
   const emoji = agent?.identityEmoji ?? '📊';
+  const workspaceHref = sessionKey ? `/workspace?session=${encodeURIComponent(sessionKey)}` : '/workspace';
 
   return (
     <div style={S.root}>
@@ -66,7 +74,6 @@ export default function ChatHeader({ agent }: ChatHeaderProps) {
       </div>
 
       <div style={S.right}>
-        {/* 模型选择器（紧凑内嵌） */}
         {modelOptions.length > 0 && (
           <div style={S.modelWrap}>
             <span style={S.modelLabel}>模型</span>
@@ -74,30 +81,35 @@ export default function ChatHeader({ agent }: ChatHeaderProps) {
               value={selectedModel}
               onChange={e => onModelChange(e.target.value)}
               disabled={changing}
-              title="切换当前会话使用的 AI 模型"
+              title="切换当前 Agent 使用的模型"
               style={S.modelSelect}
             >
               <option value="">默认</option>
               {modelOptions.map(opt => (
-                <option key={opt.id} value={opt.id}>{opt.label}</option>
+                <option key={opt.id} value={opt.id} disabled={!opt.available}>
+                  {opt.label}
+                </option>
               ))}
             </select>
+            {modelError && <span style={S.modelError} title={modelError}>!</span>}
           </div>
         )}
         {canEdit && CONFIG_BUTTONS.map(b => (
           <button
+            type="button"
             key={b.key}
             onClick={() => navigate(`/configure/${b.key}`)}
             style={S.btn}
             onMouseEnter={e => { e.currentTarget.style.background = '#eef2ff'; e.currentTarget.style.color = '#3730a3'; }}
             onMouseLeave={e => { e.currentTarget.style.background = '#ffffff'; e.currentTarget.style.color = '#475569'; }}
-            title={`配置 ${b.label}`}
+            title={`配置${b.label}`}
           >
             <span>{b.icon}</span> {b.label}
           </button>
         ))}
         <button
-          onClick={() => navigate('/workspace')}
+          type="button"
+          onClick={() => navigate(workspaceHref)}
           style={S.btn}
           onMouseEnter={e => { e.currentTarget.style.background = '#eef2ff'; e.currentTarget.style.color = '#3730a3'; }}
           onMouseLeave={e => { e.currentTarget.style.background = '#ffffff'; e.currentTarget.style.color = '#475569'; }}
@@ -143,7 +155,6 @@ const S: Record<string, React.CSSProperties> = {
     fontSize: '0.84rem', fontWeight: 500,
     transition: 'background 0.12s ease, color 0.12s ease',
   },
-  // 模型选择器（顶栏紧凑内嵌）
   modelWrap: {
     display: 'flex', alignItems: 'center', gap: 6,
     marginRight: 6,
@@ -156,5 +167,8 @@ const S: Record<string, React.CSSProperties> = {
     color: '#3730a3', fontSize: '0.82rem', fontWeight: 600,
     cursor: 'pointer', outline: 'none',
     maxWidth: 200,
+  },
+  modelError: {
+    color: '#b91c1c', fontWeight: 700, fontSize: '0.78rem', cursor: 'help',
   },
 };

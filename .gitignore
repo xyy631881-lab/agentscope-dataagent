@@ -29,6 +29,13 @@ Thumbs.db
 # 工作区记忆 (个人开发笔记，不提交)
 .workbuddy/
 
+# AgentScope/DataAgent 本地运行副本
+local-workspaces/
+
+# Python cache
+__pycache__/
+*.pyc
+
 # 临时文件
 *.tmp
 /tmp/

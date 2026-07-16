@@ -19,8 +19,9 @@ import io.agentscope.dataagent.capability.marketplace.application.MarketplaceCon
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.dataagent.config.properties.AgentProperties;
 import io.agentscope.dataagent.config.properties.ApiModelProperties;
+import io.agentscope.dataagent.config.properties.ConversationHistoryProperties;
 import io.agentscope.dataagent.config.properties.OllamaProperties;
-import io.agentscope.dataagent.config.properties.SessionRedisProperties;
+import io.agentscope.dataagent.config.properties.RuntimeRedisProperties;
 import io.agentscope.dataagent.config.properties.WorkspaceProperties;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -46,15 +47,16 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>读取的配置都来自 application.yml 里的 {@code dataagent.*} 前缀。
  * 属性绑定通过 {@link OllamaProperties}、{@link AgentProperties}、
- * {@link WorkspaceProperties}、{@link SessionRedisProperties} 完成。
+ * {@link WorkspaceProperties}、{@link RuntimeRedisProperties} 完成。
  */
 @Configuration
 @EnableConfigurationProperties({
     OllamaProperties.class,
     ApiModelProperties.class,
     AgentProperties.class,
+    ConversationHistoryProperties.class,
     WorkspaceProperties.class,
-    SessionRedisProperties.class
+    RuntimeRedisProperties.class
 })
 public class DataAgentConfig {
 

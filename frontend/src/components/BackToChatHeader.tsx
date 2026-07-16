@@ -1,5 +1,5 @@
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 export interface BackToChatHeaderProps {
   title: string;
@@ -8,10 +8,15 @@ export interface BackToChatHeaderProps {
 
 export default function BackToChatHeader({ title, subtitle }: BackToChatHeaderProps) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const sessionKey = searchParams.get('session');
+  const chatHref = sessionKey ? `/chat?session=${encodeURIComponent(sessionKey)}` : '/chat';
+
   return (
     <div style={S.root}>
       <button
-        onClick={() => navigate('/chat')}
+        type="button"
+        onClick={() => navigate(chatHref)}
         style={S.backBtn}
         onMouseEnter={e => { e.currentTarget.style.background = '#eef2ff'; e.currentTarget.style.color = '#3730a3'; }}
         onMouseLeave={e => { e.currentTarget.style.background = '#ffffff'; e.currentTarget.style.color = '#475569'; }}

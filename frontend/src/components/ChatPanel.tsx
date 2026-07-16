@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { currentSession, stream } from '../api/chat';
+import { cancelStream, currentSession, stream } from '../api/chat';
 import type { ConfirmDecision, PendingToolCall } from '../api/chat';
 import { TurnEntry, turns as fetchTurns } from '../api/sessions';
 import { ExecutionTrace } from './ToolCallBlock';
 import type { ToolCallStatus, ToolCallView } from './ToolCallBlock';
+import ChatContent from './ChatContent';
+import VegaChart, { extractVegaLiteSpec } from './VegaChart';
 
 type Role = 'user' | 'assistant' | 'system';
 
@@ -23,6 +25,12 @@ interface PendingConfirmation {
   replyId: string;
   messageId: string;
   toolCalls: PendingToolCall[];
+}
+
+interface ActiveRequest {
+  requestId: string;
+  controller: AbortController;
+  replyId: string;
 }
 
 const S: Record<string, React.CSSProperties> = {
@@ -49,6 +57,7 @@ const S: Record<string, React.CSSProperties> = {
     color: '#0f172a', fontSize: '0.94rem', resize: 'none', minHeight: 46, maxHeight: 180, lineHeight: 1.55,
   },
   send: { minWidth: 76, background: '#1d4ed8', color: '#ffffff', border: 'none', borderRadius: 7, cursor: 'pointer', fontSize: '0.9rem', fontWeight: 650 },
+  stop: { minWidth: 76, background: '#b91c1c', color: '#ffffff', border: 'none', borderRadius: 7, cursor: 'pointer', fontSize: '0.9rem', fontWeight: 650 },
   sendDisabled: { background: '#e2e8f0', color: '#94a3b8', cursor: 'not-allowed' },
   approval: { marginTop: 10, border: '1px solid #fbbf24', borderRadius: 7, background: '#fffbeb', overflow: 'hidden' },
   approvalHeader: { padding: '9px 11px', display: 'flex', alignItems: 'center', gap: 8, borderBottom: '1px solid #fde68a' },
@@ -72,7 +81,19 @@ const S: Record<string, React.CSSProperties> = {
 let counter = 0;
 const nextId = () => `m${Date.now().toString(36)}-${counter++}`;
 const STORAGE_PREFIX = 'claw_chat_session:';
+const HISTORY_STORAGE_PREFIX = 'claw_chat_history:';
 const storageKey = (agentId: string) => `${STORAGE_PREFIX}${agentId}`;
+const historyStorageKey = (agentId: string, sessionKey: string) => `${HISTORY_STORAGE_PREFIX}${agentId}:${sessionKey}`;
+
+function loadCachedMessages(agentId: string, sessionKey: string): Message[] {
+  try {
+    const raw = localStorage.getItem(historyStorageKey(agentId, sessionKey));
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed) ? parsed as Message[] : [];
+  } catch {
+    return [];
+  }
+}
 
 const ORPHANED_CONFIRM_PATTERNS = [
   /To resume.*ConfirmResult/i,
@@ -145,6 +166,7 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirmation | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const activeRequestRef = useRef<ActiveRequest | null>(null);
   const urlSession = searchParams.get('session');
 
   const persistSession = useCallback((key: string | null) => {
@@ -175,11 +197,18 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
       if (cancelled) return;
       setSessionKey(key);
       if (key) {
+        let restoredMessages: Message[] = [];
         try {
           const entries = await fetchTurns(agentId, key);
-          if (!cancelled) setMessages(turnsToMessages(entries));
+          restoredMessages = turnsToMessages(entries);
         } catch {
-          // New or expired session keys legitimately have no stored turns.
+          // The server-side transcript can be temporarily unavailable while a sandbox is restored.
+        }
+        if (restoredMessages.length === 0) {
+          restoredMessages = loadCachedMessages(agentId, key);
+        }
+        if (!cancelled && restoredMessages.length > 0) {
+          setMessages(restoredMessages);
         }
       }
       if (cancelled) return;
@@ -194,6 +223,15 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId, urlSession]);
+
+  useEffect(() => {
+    if (restoring || !sessionKey || messages.length === 0) return;
+    try {
+      localStorage.setItem(historyStorageKey(agentId, sessionKey), JSON.stringify(messages));
+    } catch {
+      // Browser storage is an availability fallback; the server remains the source of record.
+    }
+  }, [agentId, messages, restoring, sessionKey]);
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight, behavior: 'smooth' });
@@ -227,7 +265,7 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
   }, []);
 
   async function runStream(
-    req: { message: string; sessionKey?: string; confirmResults?: ConfirmDecision[] },
+    req: { message: string; sessionKey?: string; confirmResults?: ConfirmDecision[]; requestId?: string },
     options?: { systemNote?: string; skipUserMessage?: boolean },
   ) {
     setBusy(true);
@@ -239,9 +277,12 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
     additions.push(reply);
     setMessages(previous => [...previous, ...additions]);
     let streamDone = false;
+    const requestId = nextId();
+    const controller = new AbortController();
+    activeRequestRef.current = { requestId, controller, replyId: reply.id };
 
     try {
-      for await (const event of stream(agentId, req)) {
+      for await (const event of stream(agentId, { ...req, requestId }, controller.signal)) {
         if (event.type === 'token') {
           const chunk = event.data ?? '';
           setMessages(previous => previous.map(message => message.id === reply.id ? { ...message, text: message.text + chunk } : message));
@@ -309,6 +350,18 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
       }
       onSessionUpdate?.();
     } catch (error: unknown) {
+      if (controller.signal.aborted) {
+        setMessages(previous => previous.map(message => message.id === reply.id
+          ? {
+            ...message,
+            pending: false,
+            text: message.text || 'Request stopped by user.',
+            tools: message.tools.map(tool =>
+              tool.status === 'running' ? { ...tool, status: 'failed' } : tool),
+          }
+          : message));
+        return;
+      }
       const raw = error instanceof Error ? error.message : '流连接失败';
       const text = raw.includes('No active sandbox') ? '当前会话的沙箱不可用。请新建会话后重试。' : raw;
       setMessages(previous => previous.map(message => message.id === reply.id
@@ -320,12 +373,18 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
         }
         : message));
     } finally {
+      if (activeRequestRef.current?.requestId === requestId) {
+        activeRequestRef.current = null;
+      }
       setBusy(false);
       inputRef.current?.focus();
     }
   }
 
   function resetConversation() {
+    if (sessionKey) {
+      try { localStorage.removeItem(historyStorageKey(agentId, sessionKey)); } catch { /* ignore */ }
+    }
     setSessionKey(null);
     persistSession(null);
     setMessages([]);
@@ -358,6 +417,14 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
     );
   }
 
+  function handleStop() {
+    const active = activeRequestRef.current;
+    if (!active) return;
+    active.controller.abort();
+    setBusy(false);
+    void cancelStream(agentId, active.requestId).catch(() => undefined);
+  }
+
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
@@ -375,6 +442,9 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
         {messages.map(message => {
           const orphaned = message.role === 'assistant' && !message.pending && isOrphanedConfirmText(message.text);
           const confirmation = pendingConfirm?.messageId === message.id ? pendingConfirm : null;
+          const charts = message.tools
+            .map(tool => ({ id: tool.id, artifact: extractVegaLiteSpec(tool.input) }))
+            .filter((item): item is { id: string; artifact: NonNullable<typeof item.artifact> } => item.artifact !== null);
           if (message.role === 'system') return <div key={message.id} style={S.system}>{message.text}</div>;
           const isUser = message.role === 'user';
           return (
@@ -384,9 +454,10 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
                 <time>{timeLabel(message.timestampMs)}</time>
               </div>
               <div style={{ ...S.bubble, ...(isUser ? S.user : S.assistant) }}>
-                {!isUser && message.tools.length > 0 && <ExecutionTrace tools={message.tools} pending={message.pending} />}
-                {message.text && <div style={S.responseText}>{message.text}</div>}
+                {!isUser && message.tools.length > 0 && <ExecutionTrace tools={message.tools} pending={message.pending} sessionKey={sessionKey} />}
+                {message.text && <div style={S.responseText}>{isUser ? message.text : <ChatContent text={message.text} sessionKey={sessionKey} />}</div>}
                 {!message.text && message.pending && message.tools.length === 0 && <span style={S.waiting}>正在思考...</span>}
+                {charts.map(chart => <VegaChart key={chart.id} artifact={chart.artifact} />)}
                 {confirmation && (
                   <section style={S.approval} aria-label="人工确认">
                     <div style={S.approvalHeader}>
@@ -442,9 +513,13 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
           autoFocus
           disabled={restoring || Boolean(pendingConfirm)}
         />
-        <button type="button" style={{ ...S.send, ...(canSend ? {} : S.sendDisabled) }} onClick={handleSend} disabled={!canSend}>
-          {busy ? '处理中' : '发送'}
-        </button>
+        {busy ? (
+          <button type="button" style={S.stop} onClick={handleStop}>Stop</button>
+        ) : (
+          <button type="button" style={{ ...S.send, ...(canSend ? {} : S.sendDisabled) }} onClick={handleSend} disabled={!canSend}>
+            {'\u53d1\u9001'}
+          </button>
+        )}
       </div>
     </div>
   );

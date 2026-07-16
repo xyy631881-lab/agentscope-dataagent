@@ -19,6 +19,7 @@ import io.agentscope.dataagent.agent.application.AgentAclService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.event.AgentEndEvent;
+import io.agentscope.core.event.ModelCallEndEvent;
 import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.event.RequireUserConfirmEvent;
 import io.agentscope.core.event.AgentEvent;
@@ -32,6 +33,7 @@ import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.UserMessage;
 import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.model.ChatUsage;
 import io.agentscope.dataagent.conversation.application.ConversationService;
 import io.agentscope.dataagent.conversation.domain.SessionEntry;
 import io.agentscope.dataagent.agent.domain.ActivityEvent;
@@ -39,15 +41,23 @@ import io.agentscope.dataagent.agent.application.AgentActivityStore;
 import io.agentscope.dataagent.agent.application.AgentCatalogService;
 import io.agentscope.dataagent.agent.domain.AgentDefinition;
 import io.agentscope.dataagent.agent.application.AgentLifecycleService;
+import io.agentscope.dataagent.workspace.application.LocalWorkspaceMirrorService;
+import io.agentscope.dataagent.workspace.application.WorkspaceArtifactService;
+import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.security.infrastructure.IdentityLinkStore;
 import io.agentscope.dataagent.agent.application.AgentAccessGuard;
 import io.agentscope.dataagent.agent.application.AgentAclService.Tier;
 import io.agentscope.dataagent.conversation.application.UsageStore;
+import io.agentscope.dataagent.config.ModelConfig;
+import io.agentscope.dataagent.config.properties.ApiModelProperties;
+import io.agentscope.dataagent.model.application.TenantModelService;
+import io.agentscope.dataagent.observability.application.TraceRunService;
 import io.agentscope.harness.agent.gateway.channel.InboundMessage;
 import io.agentscope.harness.agent.gateway.channel.Peer;
 import io.agentscope.harness.agent.gateway.channel.chatui.ChatUiChannel;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -57,6 +67,13 @@ import java.util.UUID;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.instrumentation.reactor.v3_1.ContextPropagationOperator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,6 +87,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.Disposable;
+import reactor.core.publisher.SignalType;
 import reactor.core.publisher.Flux;
 
 /**
@@ -97,11 +116,18 @@ public class ChatController {
     private final AgentLifecycleService lifecycleService;
     private final IdentityLinkStore identityLinks;
     private final UsageStore usageStore;
+    private final TenantModelService tenantModels;
+    private final ApiModelProperties apiModelProperties;
+    private final TraceRunService traceRuns;
     private final AgentAccessGuard guard;
     private final AgentActivityStore activity;
+    private final LocalWorkspaceMirrorService workspaceMirrorService;
+    private final WorkspaceArtifactService workspaceArtifactService;
+    private final DataAgentBootstrap bootstrap;
 
     private final Set<String> startedSessions = ConcurrentHashMap.newKeySet();
     private final Map<String, PendingConfirm> pendingConfirms = new ConcurrentHashMap<>();
+    private final Map<String, ActiveStream> activeStreams = new ConcurrentHashMap<>();
 
     public ChatController(
             ChatUiChannel chatUiChannel,
@@ -109,20 +135,36 @@ public class ChatController {
             AgentCatalogService catalogService,
             IdentityLinkStore identityLinks,
             UsageStore usageStore,
+            TenantModelService tenantModels,
+            ApiModelProperties apiModelProperties,
+            TraceRunService traceRuns,
             AgentAccessGuard guard,
             AgentActivityStore activity,
-            AgentLifecycleService lifecycleService) {
+            AgentLifecycleService lifecycleService,
+            LocalWorkspaceMirrorService workspaceMirrorService,
+            WorkspaceArtifactService workspaceArtifactService,
+            DataAgentBootstrap bootstrap) {
         this.chatUiChannel = chatUiChannel;
         this.conversationService = conversationService;
         this.catalogService = catalogService;
         this.lifecycleService = lifecycleService;
         this.identityLinks = identityLinks;
         this.usageStore = usageStore;
+        this.tenantModels = tenantModels;
+        this.apiModelProperties = apiModelProperties;
+        this.traceRuns = traceRuns;
         this.guard = guard;
         this.activity = activity;
+        this.workspaceMirrorService = workspaceMirrorService;
+        this.workspaceArtifactService = workspaceArtifactService;
+        this.bootstrap = bootstrap;
     }
 
-    public record ChatRequest(String message, String sessionKey, List<ConfirmDecision> confirmResults) {}
+    public record ChatRequest(
+            String message,
+            String sessionKey,
+            List<ConfirmDecision> confirmResults,
+            String requestId) {}
 
     /** A single approve/reject decision returned by the UI for a paused tool call. */
     public record ConfirmDecision(String toolCallId, boolean approved) {}
@@ -130,9 +172,22 @@ public class ChatController {
     /** Pending human-in-the-loop confirmation, keyed by conversation id. */
     private record PendingConfirm(String replyId, List<ToolUseBlock> toolCalls) {}
 
+    private record ActiveStream(String userId, String agentId, Disposable subscription, SseEmitter emitter) {}
+
     public record ChatResponse(String reply, String sessionKey) {}
 
     public record CurrentSessionResponse(String sessionKey, boolean exists) {}
+
+    @PostMapping("/session")
+    public CurrentSessionResponse createSession(
+            @PathVariable String agentId, Authentication auth) {
+        String userId = (String) auth.getPrincipal();
+        guard.require(userId, agentId, Tier.RUN);
+        String conversationId = UUID.randomUUID().toString();
+        conversationService.createSessionRecord(
+                agentId, conversationId, userId, resolveGateKey(userId, agentId, conversationId), null);
+        return new CurrentSessionResponse(conversationId, true);
+    }
 
     /**
      * SSE 流式端点。
@@ -146,6 +201,8 @@ public class ChatController {
             @PathVariable String agentId, @RequestBody ChatRequest req, Authentication auth) {
 
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT);
+        long requestStartedAt = System.currentTimeMillis();
+        String requestId = requestId(req);
 
         String userId = (String) auth.getPrincipal();
         AgentDefinition def = guard.require(userId, agentId, Tier.RUN);
@@ -154,7 +211,28 @@ public class ChatController {
             conversationId = UUID.randomUUID().toString();
         }
         final String resolvedConversationId = conversationId;
-        recordRunSession(def, agentId, userId, resolvedConversationId);
+        String gateKey = resolveGateKey(userId, agentId, resolvedConversationId);
+        boolean running = gateKey != null && bootstrap.gateway().isSessionRunning(gateKey);
+        log.info(
+                "[stream-debug] accepted requestId={}, userId={}, agentId={}, conversationId={}, gateKey={}, running={}, messageChars={}",
+                requestId,
+                userId,
+                agentId,
+                resolvedConversationId,
+                gateKey,
+                running,
+                req.message() != null ? req.message().length() : 0);
+        if (running) {
+            return immediateStreamError(
+                    emitter,
+                    "当前会话仍有执行中的请求。请先点击 Stop，或等待当前请求结束后再发送。");
+        }
+        recordRunSession(def, agentId, userId, resolvedConversationId, conversationLabel(req.message()));
+        log.info(
+                "[stream-debug] session-recorded requestId={}, conversationId={}, gateKey={}",
+                requestId,
+                resolvedConversationId,
+                gateKey);
 
         // 斜杠命令短路
         CommandResult cmd =
@@ -178,11 +256,34 @@ public class ChatController {
 
         // 订阅 Agent 事件流，推送到 SseEmitter
         final Map<String, ToolBuffer> buffers = new ConcurrentHashMap<>();
+        final List<WorkspaceArtifactService.ChartArtifactRequest> chartArtifacts =
+                java.util.Collections.synchronizedList(new ArrayList<>());
+        String logicalModelId = logicalModelId(def);
+        String effectiveModelId = tenantModels.effectiveModelLabel(userId, logicalModelId);
+        TraceRunService.TraceScope traceScope = startTrace(
+                userId, agentId, resolvedConversationId, effectiveModelId);
+        log.info(
+                "[stream-debug] trace-started requestId={}, conversationId={}, model={}",
+                requestId,
+                resolvedConversationId,
+                effectiveModelId);
+        AtomicBoolean firstSseFrame = new AtomicBoolean(true);
 
-        executeChatStream(userId, agentId, req, resolvedConversationId)
+        Disposable subscription = executeChatStream(
+                        userId,
+                        agentId,
+                        req,
+                        resolvedConversationId,
+                        logicalModelId,
+                        effectiveModelId,
+                        traceScope)
+                .doOnSubscribe(ignored -> log.info(
+                        "[stream-debug] subscribed requestId={}, conversationId={}; waiting for gateway events",
+                        requestId,
+                        resolvedConversationId))
                 .mapNotNull(event -> {
                     try {
-                        return convertToSseFrame(event, buffers, resolvedConversationId);
+                        return convertToSseFrame(event, buffers, chartArtifacts, resolvedConversationId);
                     } catch (Exception ex) {
                         // 单个事件转换失败不杀死整个流（如沙箱过期等清理阶段异常）
                         log.debug(
@@ -192,6 +293,15 @@ public class ChatController {
                     }
                 })
                 .filter(Objects::nonNull)
+                .doOnNext(frame -> {
+                    if (firstSseFrame.compareAndSet(true, false)) {
+                        log.info(
+                                "[stream-debug] first-sse-frame requestId={}, conversationId={}, event={}",
+                                requestId,
+                                resolvedConversationId,
+                                frame.event());
+                    }
+                })
                 .onErrorResume(ex -> {
                     // 框架清理阶段（沙箱已回收后访问文件系统）的异常属于"事后噪音"，
                     // Agent 已正常完成、done 事件也已发出，不应作为错误推给前端。
@@ -222,17 +332,93 @@ public class ChatController {
                                         .name(frame.event())
                                         .data(frame.data()));
                             } catch (IOException e) {
+                                log.info(
+                                        "[stream-debug] client-disconnected requestId={}, conversationId={}, error={}",
+                                        requestId,
+                                        resolvedConversationId,
+                                        e.getMessage());
                                 emitter.completeWithError(e);
                             }
                         },
                         error -> {
-                            log.warn("SSE subscription error: {}", error.getMessage());
+                            log.warn(
+                                    "[stream-debug] sse-subscription-error requestId={}, conversationId={}, error={}",
+                                    requestId,
+                                    resolvedConversationId,
+                                    error.getMessage());
                             emitter.completeWithError(error);
                         },
-                        () -> emitter.complete());
+                        () -> {
+                            workspaceArtifactService.persistCharts(userId, agentId, chartArtifacts);
+                            workspaceMirrorService.synchronize(userId, agentId);
+                            log.info(
+                                    "[stream-debug] completed requestId={}, conversationId={}, durationMs={}",
+                                    requestId,
+                                    resolvedConversationId,
+                                    System.currentTimeMillis() - requestStartedAt);
+                            emitter.complete();
+                        });
+
+        activeStreams.put(requestId, new ActiveStream(userId, agentId, subscription, emitter));
+        emitter.onCompletion(() -> {
+            activeStreams.remove(requestId);
+            subscription.dispose();
+            log.info(
+                    "[stream-debug] emitter-complete requestId={}, conversationId={}, durationMs={}",
+                    requestId,
+                    resolvedConversationId,
+                    System.currentTimeMillis() - requestStartedAt);
+        });
+        emitter.onTimeout(() -> {
+            activeStreams.remove(requestId);
+            subscription.dispose();
+            log.warn(
+                    "[stream-debug] emitter-timeout requestId={}, conversationId={}, durationMs={}",
+                    requestId,
+                    resolvedConversationId,
+                    System.currentTimeMillis() - requestStartedAt);
+            emitter.complete();
+        });
+        emitter.onError(error -> {
+            activeStreams.remove(requestId);
+            subscription.dispose();
+            log.info(
+                    "[stream-debug] emitter-error requestId={}, conversationId={}, error={}",
+                    requestId,
+                    resolvedConversationId,
+                    error.getMessage());
+        });
 
         return emitter;
     }
+
+    @PostMapping("/cancel")
+    @org.springframework.web.bind.annotation.ResponseStatus(org.springframework.http.HttpStatus.NO_CONTENT)
+    public void cancel(
+            @PathVariable String agentId, @RequestBody CancelRequest request, Authentication auth) {
+        String userId = (String) auth.getPrincipal();
+        guard.require(userId, agentId, Tier.RUN);
+        if (request == null || request.requestId() == null || request.requestId().isBlank()) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, "requestId is required");
+        }
+        ActiveStream active = activeStreams.remove(request.requestId());
+        if (active == null) {
+            log.info("[stream-debug] cancel ignored: requestId={} is not active", request.requestId());
+            return;
+        }
+        if (!userId.equals(active.userId()) || !agentId.equals(active.agentId())) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.FORBIDDEN, "Cannot cancel another user's request");
+        }
+        log.info(
+                "[stream-debug] cancel requestId={}, userId={}, agentId={}",
+                request.requestId(), userId, agentId);
+        active.subscription().dispose();
+        active.emitter().complete();
+    }
+
+    public record CancelRequest(String requestId) {}
 
     @GetMapping("/session")
     public CurrentSessionResponse currentSession(
@@ -260,7 +446,7 @@ public class ChatController {
             conversationId = UUID.randomUUID().toString();
         }
         final String resolvedConversationId = conversationId;
-        recordRunSession(def, agentId, userId, resolvedConversationId);
+        recordRunSession(def, agentId, userId, resolvedConversationId, conversationLabel(req.message()));
         CommandResult cmd =
                 handleSlashCommand(userId, agentId, req.message(), resolvedConversationId);
         if (cmd != null) {
@@ -268,9 +454,27 @@ public class ChatController {
                     cmd.message,
                     cmd.newSessionKey != null ? cmd.newSessionKey : resolvedConversationId);
         }
-        Msg reply = executeChat(userId, agentId, req.message(), resolvedConversationId);
-        String text = reply.getTextContent() != null ? reply.getTextContent() : "";
-        return new ChatResponse(text, resolvedConversationId);
+        String logicalModelId = logicalModelId(def);
+        String effectiveModelId = tenantModels.effectiveModelLabel(userId, logicalModelId);
+        TraceRunService.TraceScope traceScope = startTrace(
+                userId, agentId, resolvedConversationId, effectiveModelId);
+        try {
+            Msg reply = executeChat(
+                    userId,
+                    agentId,
+                    req.message(),
+                    resolvedConversationId,
+                    logicalModelId,
+                    effectiveModelId,
+                    traceScope);
+            traceRuns.complete(traceScope, "SUCCESS", null);
+            workspaceMirrorService.synchronize(userId, agentId);
+            String text = reply.getTextContent() != null ? reply.getTextContent() : "";
+            return new ChatResponse(text, resolvedConversationId);
+        } catch (RuntimeException exception) {
+            traceRuns.complete(traceScope, "ERROR", exception);
+            throw exception;
+        }
     }
 
     // -----------------------------------------------------------------
@@ -278,12 +482,16 @@ public class ChatController {
     // -----------------------------------------------------------------
 
     private void recordRunSession(
-            AgentDefinition def, String agentId, String userId, String conversationId) {
+            AgentDefinition def,
+            String agentId,
+            String userId,
+            String conversationId,
+            String initialLabel) {
         String gateKey = resolveGateKey(userId, agentId, conversationId);
         if (gateKey == null) return;
 
         // 确保会话记录在数据库中存在（全局 Agent 的 def.ownerId 为 null，但会话记录仍应创建）
-        conversationService.createSessionRecord(agentId, conversationId, userId, gateKey);
+        conversationService.createSessionRecord(agentId, conversationId, userId, gateKey, initialLabel);
 
         if (def == null || def.ownerId() == null) {
             return;
@@ -296,6 +504,13 @@ public class ChatController {
                 ActivityEvent.Action.RUN_SESSION,
                 gateKey,
                 null);
+    }
+
+    private static String conversationLabel(String message) {
+        if (message == null) return null;
+        String normalized = message.replaceAll("\\s+", " ").trim();
+        if (normalized.isBlank() || normalized.startsWith("/")) return null;
+        return normalized.length() <= 60 ? normalized : normalized.substring(0, 60) + "...";
     }
 
 
@@ -420,7 +635,13 @@ public class ChatController {
      * {@code chatUiChannel.dispatch()} 返回 {@code Mono<Msg>}（框架接口），用 {@code .block()} 同步获取。
      */
     private Msg executeChat(
-            String userId, String agentId, String message, String conversationId) {
+            String userId,
+            String agentId,
+            String message,
+            String conversationId,
+            String logicalModelId,
+            String effectiveModelId,
+            TraceRunService.TraceScope traceScope) {
         Msg userMsg = new UserMessage("user", message);
         long startMs = System.currentTimeMillis();
 
@@ -438,8 +659,24 @@ public class ChatController {
         }
 
         final String recordedAgentId = agentId != null ? agentId : "(default)";
-        Msg reply = chatUiChannel.dispatch(inbound).block();
-        usageStore.record(userId, recordedAgentId, System.currentTimeMillis() - startMs);
+        Msg reply = ContextPropagationOperator.runWithContext(
+                        chatUiChannel.dispatch(inbound), traceScope.otelContext())
+                .block();
+        long durationMs = System.currentTimeMillis() - startMs;
+        usageStore.record(
+                new UsageStore.UsageEvent(
+                        TenantModelService.tenantForUser(userId),
+                        userId,
+                        recordedAgentId,
+                        conversationId,
+                        effectiveModelId,
+                        0,
+                        0,
+                        0,
+                        durationMs,
+                        tenantModels.calculateCostMicrousd(userId, logicalModelId, 0, 0, 0),
+                        "SUCCESS",
+                        System.currentTimeMillis()));
         return reply;
     }
 
@@ -449,7 +686,13 @@ public class ChatController {
      * 由调用方订阅。
      */
     private Flux<AgentEvent> executeChatStream(
-            String userId, String agentId, ChatRequest req, String conversationId) {
+            String userId,
+            String agentId,
+            ChatRequest req,
+            String conversationId,
+            String logicalModelId,
+            String effectiveModelId,
+            TraceRunService.TraceScope traceScope) {
         Msg userMsg;
         if (req.confirmResults() != null && !req.confirmResults().isEmpty()) {
             // Resume a paused (human-in-the-loop) agent: replay the user's decision as a
@@ -479,8 +722,155 @@ public class ChatController {
 
         Flux<AgentEvent> events = chatUiChannel.dispatchStream(inbound);
         final String recordedAgentId = agentId != null ? agentId : "(default)";
-        return events.doFinally(signalType ->
-                usageStore.record(userId, recordedAgentId, System.currentTimeMillis() - startMs));
+        UsageTotals usageTotals = new UsageTotals();
+        AtomicReference<Throwable> terminalError = new AtomicReference<>();
+        AtomicBoolean firstAgentEvent = new AtomicBoolean(true);
+        log.info(
+                "[stream-debug] gateway-dispatch-created userId={}, agentId={}, gatewayAgentId={}, conversationId={}",
+                userId,
+                agentId,
+                agentId == null || agentId.isBlank()
+                        ? "(default)"
+                        : lifecycleService.resolveGatewayAgentId(userId, agentId),
+                conversationId);
+        return ContextPropagationOperator.runWithContext(events, traceScope.otelContext())
+                // An idle event stream means the model/gateway stopped making progress. Terminate
+                // it instead of leaving the browser permanently on "正在思考".
+                .timeout(Duration.ofSeconds(180))
+                .doOnSubscribe(ignored -> log.info(
+                        "[stream-debug] agent-stream-subscribed userId={}, agentId={}, conversationId={}",
+                        userId,
+                        agentId,
+                        conversationId))
+                .doOnNext(event -> {
+                    if (firstAgentEvent.compareAndSet(true, false)) {
+                        log.info(
+                                "[stream-debug] first-agent-event userId={}, agentId={}, conversationId={}, eventType={}",
+                                userId,
+                                agentId,
+                                conversationId,
+                                event.getClass().getSimpleName());
+                    }
+                    if (event instanceof ModelCallEndEvent modelCallEnd) {
+                        usageTotals.add(modelCallEnd.getUsage());
+                    }
+                })
+                .doOnError(error -> {
+                    terminalError.set(error);
+                    log.warn(
+                            "[stream-debug] agent-stream-error userId={}, agentId={}, conversationId={}, error={}",
+                            userId,
+                            agentId,
+                            conversationId,
+                            error.getMessage());
+                })
+                .doOnCancel(() -> log.info(
+                        "[stream-debug] agent-stream-cancelled userId={}, agentId={}, conversationId={}",
+                        userId,
+                        agentId,
+                        conversationId))
+                .doFinally(signalType -> {
+                    long durationMs = System.currentTimeMillis() - startMs;
+                    String outcome = outcomeFor(signalType);
+                    usageStore.record(
+                            new UsageStore.UsageEvent(
+                                    TenantModelService.tenantForUser(userId),
+                                    userId,
+                                    recordedAgentId,
+                                    conversationId,
+                                    effectiveModelId,
+                                    usageTotals.inputTokens(),
+                                    usageTotals.outputTokens(),
+                                    usageTotals.cachedPromptTokens(),
+                                    durationMs,
+                                    tenantModels.calculateCostMicrousd(
+                                            userId,
+                                            logicalModelId,
+                                            usageTotals.inputTokens(),
+                                            usageTotals.outputTokens(),
+                                            usageTotals.cachedPromptTokens()),
+                                    outcome,
+                                    System.currentTimeMillis()));
+                    traceRuns.complete(traceScope, outcome, terminalError.get());
+                    log.info(
+                            "[stream-debug] agent-stream-finalized userId={}, agentId={}, conversationId={}, signal={}, outcome={}, durationMs={}, inputTokens={}, outputTokens={}, cachedPromptTokens={}",
+                            userId,
+                            agentId,
+                            conversationId,
+                            signalType,
+                            outcome,
+                            durationMs,
+                            usageTotals.inputTokens(),
+                            usageTotals.outputTokens(),
+                            usageTotals.cachedPromptTokens());
+                });
+    }
+
+    private TraceRunService.TraceScope startTrace(
+            String userId, String agentId, String conversationId, String effectiveModelId) {
+        var rootSpan = GlobalOpenTelemetry.getTracer("io.agentscope.dataagent.chat")
+                .spanBuilder("dataagent.chat.run")
+                .setSpanKind(SpanKind.SERVER)
+                .setAttribute("dataagent.agent.id", agentId)
+                .setAttribute("dataagent.session.key", conversationId)
+                .setAttribute("gen_ai.request.model", effectiveModelId)
+                .startSpan();
+        return traceRuns.start(rootSpan, userId, agentId, conversationId, effectiveModelId);
+    }
+
+    private static String requestId(ChatRequest request) {
+        if (request != null && request.requestId() != null && !request.requestId().isBlank()) {
+            return request.requestId();
+        }
+        return UUID.randomUUID().toString();
+    }
+
+    private SseEmitter immediateStreamError(SseEmitter emitter, String message) {
+        try {
+            emitter.send(
+                    SseEmitter.event()
+                            .name("error")
+                            .data(
+                                    sseFrame(
+                                                    "error",
+                                                    Map.of("type", "error", "error", message))
+                                            .data()));
+        } catch (IOException exception) {
+            emitter.completeWithError(exception);
+            return emitter;
+        }
+        emitter.complete();
+        return emitter;
+    }
+
+    private String logicalModelId(AgentDefinition definition) {
+        if (definition != null && definition.model() != null && !definition.model().isBlank()) {
+            return definition.model();
+        }
+        return ModelConfig.resolveActiveId(apiModelProperties);
+    }
+
+    private static String outcomeFor(SignalType signalType) {
+        if (signalType == SignalType.ON_COMPLETE) return "SUCCESS";
+        if (signalType == SignalType.CANCEL) return "CANCELLED";
+        return "ERROR";
+    }
+
+    private static final class UsageTotals {
+        private final AtomicLong inputTokens = new AtomicLong();
+        private final AtomicLong outputTokens = new AtomicLong();
+        private final AtomicLong cachedPromptTokens = new AtomicLong();
+
+        private void add(ChatUsage usage) {
+            if (usage == null) return;
+            inputTokens.addAndGet(Math.max(0, usage.getInputTokens()));
+            outputTokens.addAndGet(Math.max(0, usage.getOutputTokens()));
+            cachedPromptTokens.addAndGet(Math.max(0, usage.getCachedTokens()));
+        }
+
+        private long inputTokens() { return inputTokens.get(); }
+        private long outputTokens() { return outputTokens.get(); }
+        private long cachedPromptTokens() { return cachedPromptTokens.get(); }
     }
 
     /**
@@ -514,7 +904,10 @@ public class ChatController {
      * 将 AgentEvent 转换为 SSE 帧。
      */
     private SseFrame convertToSseFrame(
-            AgentEvent event, Map<String, ToolBuffer> buffers, String conversationId) {
+            AgentEvent event,
+            Map<String, ToolBuffer> buffers,
+            List<WorkspaceArtifactService.ChartArtifactRequest> chartArtifacts,
+            String conversationId) {
         if (event instanceof TextBlockDeltaEvent delta) {
             return sseFrame("token", Map.of("type", "token", "data", delta.getDelta()));
         }
@@ -528,7 +921,7 @@ public class ChatController {
             return null;
         }
         if (event instanceof ToolCallEndEvent end) {
-            ToolBuffer buf = buffers.remove(end.getToolCallId());
+            ToolBuffer buf = buffers.get(end.getToolCallId());
             String toolName = (buf != null) ? buf.toolName : end.getToolCallName();
             String toolInput = (buf != null) ? buf.input.toString() : "";
             return sseFrame("tool_call", Map.of(
@@ -549,6 +942,13 @@ public class ChatController {
         if (event instanceof ToolResultEndEvent end) {
             ToolBuffer buf = buffers.remove(end.getToolCallId());
             String toolResult = (buf != null) ? buf.result.toString() : end.getState().name();
+            if (buf != null
+                    && "render_chart".equals(buf.toolName)
+                    && !toolResult.trim().toLowerCase().startsWith("error")) {
+                chartArtifacts.add(
+                        new WorkspaceArtifactService.ChartArtifactRequest(
+                                end.getToolCallId(), buf.input.toString()));
+            }
             return sseFrame("tool_result", Map.of(
                     "type", "tool_result",
                     "toolCallId", end.getToolCallId(),

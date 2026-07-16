@@ -2,6 +2,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 
+import { chatHrefPreservingSession } from './utils/session';
+
 import LoginPage from './pages/LoginPage';
 import AppShell from './components/AppShell';
 import EditTierGate from './components/EditTierGate';
@@ -20,6 +22,8 @@ import AppearancePage from './pages/AppearancePage';
 import ContributionsPage from './pages/ContributionsPage';
 import UserBindingsPage from './pages/UserBindingsPage';
 import UsagePage from './pages/UsagePage';
+import TraceRunsPage from './pages/TraceRunsPage';
+import TenantModelsPage from './pages/TenantModelsPage';
 
 import OverviewPage from './pages/admin/OverviewPage';
 import ApprovalsPage from './pages/admin/ApprovalsPage';
@@ -56,7 +60,7 @@ function PrivateRoute({ children }: { children: React.ReactElement }) {
 
 function AdminRoute({ children }: { children: React.ReactElement }) {
   if (!getToken()) return <Navigate to="/login" replace />;
-  if (!isAdmin()) return <Navigate to="/chat" replace />;
+  if (!isAdmin()) return <Navigate to={chatHrefPreservingSession()} replace />;
   return children;
 }
 
@@ -67,7 +71,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         <Route path="/login" element={<LoginPage />} />
 
         <Route element={<PrivateRoute><AppShell /></PrivateRoute>}>
-          <Route index element={<Navigate to="/chat" replace />} />
+          <Route index element={<Navigate to={chatHrefPreservingSession()} replace />} />
 
           {/* 主聊天界面 */}
           <Route path="/chat" element={<ChatPage />} />
@@ -89,6 +93,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <Route path="/contributions" element={<ContributionsPage />} />
           <Route path="/bindings" element={<UserBindingsPage />} />
           <Route path="/usage" element={<UsagePage />} />
+          <Route path="/traces" element={<TraceRunsPage />} />
+          <Route path="/models" element={<TenantModelsPage />} />
 
           {/* 管理后台页面 */}
           <Route path="/admin/overview"        element={<AdminRoute><OverviewPage /></AdminRoute>} />
@@ -105,7 +111,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <Route path="/admin/debug"           element={<AdminRoute><DebugPage /></AdminRoute>} />
         </Route>
 
-        <Route path="*" element={<Navigate to="/chat" replace />} />
+        <Route path="*" element={<Navigate to={chatHrefPreservingSession()} replace />} />
       </Routes>
     </BrowserRouter>
   </React.StrictMode>,

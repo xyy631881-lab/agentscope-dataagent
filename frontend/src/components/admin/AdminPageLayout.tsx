@@ -8,6 +8,7 @@
 
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
+import { chatHrefPreservingSession } from '../../utils/session';
 
 export interface AdminTab {
   key: string;
@@ -80,7 +81,7 @@ export default function AdminPageLayout({
 
         {/* 返回聊天按钮 */}
         <button
-          onClick={() => navigate('/chat')}
+          onClick={() => navigate(chatHrefPreservingSession())}
           style={{
             background: 'transparent',
             border: '1px solid #cbd5e1',

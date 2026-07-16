@@ -127,6 +127,8 @@ public class AgentToolsController {
                             "shell"));
 
     private static final Set<String> BUILTIN_NAMES;
+    private static final Set<String> DATA_AGENT_TOOL_NAMES =
+            Set.of("list_data_sources", "describe_table", "run_sql_preview", "render_chart");
 
     static {
         BUILTIN_NAMES = new HashSet<>();
@@ -176,17 +178,21 @@ public class AgentToolsController {
         List<String> warnings = new ArrayList<>();
         WorkspaceManager wsm = resolutionService.resolveManager(userId, agentId);
         try {
-            HarnessAgent agent =
-                    HarnessAgent.builder()
-                            .name("__tools_introspect__")
-                            .model(new NoopModel())
-                            .workspace(wsm.getWorkspace())
-                            .abstractFilesystem(wsm.getFilesystem())
-                            .build();
+            HarnessAgent agent = lifecycleService.getRunningAgent(userId, agentId);
+            if (agent == null) {
+                agent =
+                        HarnessAgent.builder()
+                                .name("__tools_introspect__")
+                                .model(new NoopModel())
+                                .workspace(wsm.getWorkspace())
+                                .abstractFilesystem(wsm.getFilesystem())
+                                .build();
+                warnings.add("Agent has not run yet; showing the base harness tool set.");
+            }
             List<ToolSchema> schemas = agent.getDelegate().getToolkit().getToolSchemas();
             List<ActiveTool> tools = new ArrayList<>();
             for (ToolSchema s : schemas) {
-                String source = BUILTIN_NAMES.contains(s.getName()) ? "built-in" : "mcp";
+                String source = toolSource(s.getName());
                 tools.add(new ActiveTool(s.getName(), s.getDescription(), source));
             }
             return new ActiveToolsResponse(tools, warnings);
@@ -198,6 +204,12 @@ public class AgentToolsController {
                             + "). Showing config-only view.");
             return configOnlyView(wsm, warnings);
         }
+    }
+
+    private static String toolSource(String name) {
+        if (BUILTIN_NAMES.contains(name)) return "built-in";
+        if (DATA_AGENT_TOOL_NAMES.contains(name)) return "data-agent";
+        return "mcp";
     }
 
     private ActiveToolsResponse configOnlyView(WorkspaceManager wsm, List<String> warnings) {

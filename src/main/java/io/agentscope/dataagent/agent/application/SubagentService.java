@@ -15,6 +15,7 @@
  */
 package io.agentscope.dataagent.agent.application;
 import io.agentscope.dataagent.agent.api.AgentWorkspaceController;
+import io.agentscope.dataagent.runtime.AgentRuntimeConfigurer;
 
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.dataagent.agent.domain.AgentDefinition;
@@ -28,7 +29,9 @@ import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -45,9 +48,12 @@ import org.springframework.web.server.ResponseStatusException;
 public class SubagentService {
 
     private final AgentCatalogService catalogService;
+    private final AgentRuntimeConfigurer runtimeConfigurer;
 
-    public SubagentService(AgentCatalogService catalogService) {
+    public SubagentService(
+            AgentCatalogService catalogService, AgentRuntimeConfigurer runtimeConfigurer) {
         this.catalogService = catalogService;
+        this.runtimeConfigurer = runtimeConfigurer;
     }
 
     // -----------------------------------------------------------------
@@ -55,8 +61,8 @@ public class SubagentService {
     // -----------------------------------------------------------------
 
     /**
-     * Lists all subagents by scanning {@code /subagents/*.md}, parsing each file with
-     * {@link AgentSpecLoader}, and sorting the results by name.
+     * Lists built-in runtime subagents plus workspace declarations under {@code /subagents/*.md}.
+     * A workspace declaration with the same name overrides the built-in declaration.
      *
      * @param ctx the resolved workspace to operate on
      * @return a sorted list of subagent info DTOs (empty if the directory is missing)
@@ -64,12 +70,17 @@ public class SubagentService {
     public List<AgentWorkspaceController.SubagentInfo> listSubagents(
             WorkspaceResolutionService.ResolvedWorkspace ctx) {
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        RuntimeContext rc = RuntimeContext.empty();
+        RuntimeContext rc = RuntimeContext.builder().userId(ctx.ownerId()).build();
+        Map<String, AgentWorkspaceController.SubagentInfo> result = new LinkedHashMap<>();
+        for (SubagentDeclaration declaration : runtimeConfigurer.defaultSubagentDeclarations()) {
+            result.put(declaration.getName(), toSubagentInfo(declaration));
+        }
         LsResult ls = fs.ls(rc, "/subagents");
         if (!ls.isSuccess() || ls.entries() == null) {
-            return List.<AgentWorkspaceController.SubagentInfo>of();
+            return result.values().stream()
+                    .sorted(Comparator.comparing(AgentWorkspaceController.SubagentInfo::name))
+                    .toList();
         }
-        List<AgentWorkspaceController.SubagentInfo> result = new ArrayList<>();
         for (FileInfo fi : ls.entries()) {
             String entryPath = fi.path();
             if (fi.isDirectory() || !entryPath.endsWith(".md")) {
@@ -84,11 +95,12 @@ public class SubagentService {
             SubagentDeclaration decl =
                     AgentSpecLoader.parse(markdown, name, ctx.workspace());
             if (decl != null) {
-                result.add(toSubagentInfo(decl));
+                result.put(decl.getName(), toSubagentInfo(decl));
             }
         }
-        result.sort(Comparator.comparing(AgentWorkspaceController.SubagentInfo::name));
-        return result;
+        return result.values().stream()
+                .sorted(Comparator.comparing(AgentWorkspaceController.SubagentInfo::name))
+                .toList();
     }
 
     /**
@@ -113,7 +125,9 @@ public class SubagentService {
         String markdown = renderSubagentMarkdown(req);
         ctx.manager()
                 .writeUtf8WorkspaceRelative(
-                        RuntimeContext.empty(), "subagents/" + name + ".md", markdown);
+                        RuntimeContext.builder().userId(ctx.ownerId()).build(),
+                        "subagents/" + name + ".md",
+                        markdown);
         SubagentDeclaration decl =
                 AgentSpecLoader.parse(markdown, name, ctx.workspace());
         if (decl == null) {
@@ -178,7 +192,7 @@ public class SubagentService {
         String markdown = renderSubagentMarkdown(upsert);
         ctx.manager()
                 .writeUtf8WorkspaceRelative(
-                        RuntimeContext.empty(),
+                        RuntimeContext.builder().userId(ctx.ownerId()).build(),
                         "subagents/" + subName + ".md",
                         markdown);
         SubagentDeclaration decl =
@@ -204,11 +218,11 @@ public class SubagentService {
         validateSubagentName(name);
         AbstractFilesystem fs = ctx.manager().getFilesystem();
         String path = "subagents/" + name + ".md";
-        if (!fs.exists(RuntimeContext.empty(), path)) {
+        if (!fs.exists(RuntimeContext.builder().userId(ctx.ownerId()).build(), path)) {
             throw new ResponseStatusException(
                     HttpStatus.NOT_FOUND, "Subagent not found: " + name);
         }
-        WriteResult wr = fs.delete(RuntimeContext.empty(), path);
+        WriteResult wr = fs.delete(RuntimeContext.builder().userId(ctx.ownerId()).build(), path);
         if (!wr.isSuccess()) {
             throw new ResponseStatusException(
                     HttpStatus.INTERNAL_SERVER_ERROR, "Delete failed: " + wr.error());

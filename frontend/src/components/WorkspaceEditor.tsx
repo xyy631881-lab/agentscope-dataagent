@@ -1,10 +1,12 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { readFile } from '../api/workspace';
+import VegaChart, { parseStoredVegaLiteArtifact } from './VegaChart';
 
 interface Props {
   agentId: string;
   path: string | null;
   refreshKey?: number;
+  sessionKey?: string;
 }
 
 const S: Record<string, React.CSSProperties> = {
@@ -40,38 +42,38 @@ const S: Record<string, React.CSSProperties> = {
   err: { color: '#dc2626' },
 };
 
-// Files matching this regex are treated as binary and not rendered in the textarea.
-// Everything else (including unknown extensions, jsonl, log, diff, dotfiles, files with no
-// extension like LICENSE / Dockerfile / Makefile) is displayed as text.
 const BINARY_EXT = /\.(png|jpe?g|gif|bmp|ico|webp|tiff?|heic|avif|pdf|docx?|xlsx?|pptx?|odt|ods|odp|zip|tar|t?gz|tbz2?|bz2|xz|7z|rar|jar|war|ear|class|exe|dll|so|dylib|a|o|bin|dat|sqlite3?|db|mdb|pyc|pyo|wasm|mp3|mp4|m4a|wav|flac|ogg|opus|aac|avi|mov|mkv|webm|wmv|ttf|otf|woff2?|eot)$/i;
 
-export default function WorkspaceEditor({ agentId, path, refreshKey }: Props) {
+export default function WorkspaceEditor({ agentId, path, refreshKey, sessionKey }: Props) {
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // Display only — never affects the textarea's value. Default off so what the user
-  // sees matches what is on disk; soft-wrap is opt-in.
   const [softWrap, setSoftWrap] = useState(false);
 
   const viewable = !!path && !BINARY_EXT.test(path);
+  const chartArtifact = useMemo(
+    () => (path?.endsWith('.vl.json') ? parseStoredVegaLiteArtifact(content) : null),
+    [content, path],
+  );
 
   useEffect(() => {
     if (!path) {
-      setContent(''); setErr(null);
+      setContent('');
+      setErr(null);
       return;
     }
     if (!viewable) {
       setContent('');
-      setErr('二进制文件 — 浏览器不支持预览。请通过 API 下载查看。');
+      setErr('二进制文件暂不支持浏览器预览，请通过本地镜像查看。');
       return;
     }
     setLoading(true);
     setErr(null);
-    readFile(agentId, path)
+    readFile(agentId, path, sessionKey)
       .then(text => setContent(text))
-      .catch(e => setErr(e instanceof Error ? e.message : 'Failed to read'))
+      .catch(e => setErr(e instanceof Error ? e.message : '读取失败'))
       .finally(() => setLoading(false));
-  }, [agentId, path, viewable, refreshKey]);
+  }, [agentId, path, viewable, refreshKey, sessionKey]);
 
   if (!path) {
     return <div style={S.root}><div style={S.empty}>从文件树中选择一个文件查看。</div></div>;
@@ -87,7 +89,7 @@ export default function WorkspaceEditor({ agentId, path, refreshKey }: Props) {
           type="button"
           style={{ ...S.wrapToggle, ...(softWrap ? S.wrapToggleActive : {}) }}
           onClick={() => setSoftWrap(w => !w)}
-          title={softWrap ? '自动换行已开启（仅显示）' : '不换行 — 长行水平滚动'}
+          title={softWrap ? '自动换行已开启' : '不换行，长行水平滚动'}
         >
           {softWrap ? '换行: 开' : '换行: 关'}
         </button>
@@ -95,7 +97,11 @@ export default function WorkspaceEditor({ agentId, path, refreshKey }: Props) {
       {loading ? (
         <div style={S.empty}>加载中…</div>
       ) : !viewable ? (
-        <div style={S.empty}>{err ?? 'Cannot view this file in the browser.'}</div>
+        <div style={S.empty}>{err ?? '当前文件不能在浏览器中预览。'}</div>
+      ) : chartArtifact ? (
+        <div style={{ padding: 20, overflow: 'auto', background: '#fcfcfd' }}>
+          <VegaChart artifact={chartArtifact} />
+        </div>
       ) : (
         <textarea
           wrap={softWrap ? 'soft' : 'off'}

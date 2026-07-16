@@ -273,10 +273,10 @@ public final class DataAgentBootstrap {
 
         // 重新构建（镜像 build() 中单 Agent 的组装逻辑）
         HarnessAgent.Builder b = HarnessAgent.builder();
-        applyFileEntry(cwd, id, entry, b);
         if (model != null) {
             b.model(model);
         }
+        applyFileEntry(cwd, id, entry, b);
         Toolkit agentKit = new Toolkit();
         agentKit.registerTool(outboundTool);
         b.toolkit(agentKit);
@@ -304,13 +304,13 @@ public final class DataAgentBootstrap {
             gateway.bindMainAgent(newAgent);
         }
 
-        // 释放旧实例占用的资源（sandbox 句柄等）
+        // Do not close the old instance in the hot-rebuild request. If it still owns a gateway
+        // SessionTurnGate permit, closing it can bypass the stream's doFinally callback and
+        // leave every later request for that conversation blocked in Semaphore.acquire().
+        // Process shutdown performs final cleanup; this retired instance is allowed to finish its
+        // already-running turn.
         if (old != null && old != newAgent) {
-            try {
-                old.close();
-            } catch (RuntimeException e) {
-                log.warn("关闭旧 Agent 实例失败 (agent={}): {}", id, e.getMessage());
-            }
+            log.info("Retained previous global Agent instance until its in-flight turn completes: {}", id);
         }
         log.info("已热重建全局 Agent '{}'（无需重启即生效）", id);
     }
@@ -522,10 +522,6 @@ public final class DataAgentBootstrap {
         private GlobalAgentOverrideStore overrideStore;
         private final Map<String, Channel> channels = new LinkedHashMap<>();
 
-        /** 每个用户的 sandbox 池；非空时为每个 Agent 注册 UserSandboxContextMiddleware */
-
-        /** 回合级串行锁：串行化同一 (userId, agentId) 的 Agent 回合。 */
-
         private Builder() {}
 
         public Builder cwd(Path cwd) {
@@ -609,13 +605,11 @@ public final class DataAgentBootstrap {
                                     .orElse(entry);
                 }
                 HarnessAgent.Builder b = HarnessAgent.builder();
-                applyFileEntry(cwd, id, entry, b);  //把 JSON 字段塞进 Builder
-
                 if (model != null) {
                     b.model(model);
                 }
+                applyFileEntry(cwd, id, entry, b);  //把 JSON字段塞进 Builder；显式模型覆盖默认模型
 
-                // 为每个 Agent 注册 sandbox 注入 middleware（含回合级串行锁）
                 // 预填充出站发送工具
                 Toolkit agentKit = new Toolkit();
                 agentKit.registerTool(outboundTool);

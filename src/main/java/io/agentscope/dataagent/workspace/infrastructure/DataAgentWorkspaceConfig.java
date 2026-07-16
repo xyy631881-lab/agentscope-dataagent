@@ -19,7 +19,6 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.dataagent.config.properties.WorkspaceProperties;
-import io.agentscope.dataagent.workspace.domain.SharedWorkspaceProjection;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClient;
@@ -57,21 +56,16 @@ public class DataAgentWorkspaceConfig {
     }
 
     @Bean
-    public SharedWorkspaceProjection sharedWorkspaceProjection(WorkspaceProperties workspaceProps) {
-        Path sharedRoot = resolveCwd(workspaceProps).resolve("shared");
-        log.info("SharedWorkspaceProjection: hostWorkspaceRoot={}", sharedRoot);
-        return new SharedWorkspaceProjection(sharedRoot);
-    }
-
-    @Bean
     public WorkspaceManagerFactory workspaceManagerFactory(
             SandboxClient<DockerSandboxClientOptions> sandboxClient,
-            SharedWorkspaceProjection projection,
             AgentStateStore stateStore,
             SandboxSnapshotSpec snapshotSpec,
-            SandboxExecutionGuard executionGuard) {
+            SandboxExecutionGuard executionGuard,
+            WorkspaceProperties workspaceProps) {
+        Path mirrorRoot = resolveLocalMirrorRoot(workspaceProps);
+        log.info("Local workspace mirror: {}", mirrorRoot == null ? "disabled" : mirrorRoot);
         return new WorkspaceManagerFactory(
-                sandboxClient, projection, stateStore, snapshotSpec, executionGuard);
+                sandboxClient, stateStore, snapshotSpec, executionGuard, mirrorRoot);
     }
 
     private Path resolveCwd(WorkspaceProperties props) {
@@ -80,5 +74,13 @@ public class DataAgentWorkspaceConfig {
             return Paths.get(root).toAbsolutePath().normalize();
         }
         return Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
+    }
+
+    private Path resolveLocalMirrorRoot(WorkspaceProperties props) {
+        if (!props.isLocalMirrorEnabled()) return null;
+        String configured = props.getLocalMirrorRoot();
+        if (configured == null || configured.isBlank()) return null;
+        Path root = Paths.get(configured.trim());
+        return (root.isAbsolute() ? root : resolveCwd(props).resolve(root)).normalize();
     }
 }

@@ -14,13 +14,16 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.agent.application;
-import io.agentscope.dataagent.agent.api.AgentWorkspaceController;
 
+import io.agentscope.dataagent.agent.api.AgentWorkspaceController;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.filesystem.model.FileInfo;
 import io.agentscope.harness.agent.filesystem.model.LsResult;
 import io.agentscope.harness.agent.filesystem.model.ReadResult;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -67,9 +70,7 @@ public class WorkspaceSummaryService {
             String agentName,
             WorkspaceResolutionService.ResolvedWorkspace ctx) {
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        RuntimeContext rc = RuntimeContext.empty();
-        // skills/, subagents/, memory/ are virtual via composite routes — no mkdir
-        // needed. Only AGENTS.md needs materialisation, and only if missing.
+        RuntimeContext rc = RuntimeContext.builder().userId(ctx.ownerId()).build();
         if (!fs.exists(rc, "AGENTS.md")) {
             String displayName = agentName.isBlank() ? agentId : agentName;
             ctx.manager()
@@ -82,7 +83,7 @@ public class WorkspaceSummaryService {
     }
 
     /**
-     * Returns the {@code MEMORY.md} content (up to 50&nbsp;KB) and the list of per-day
+     * Returns the {@code MEMORY.md} content (up to 50 KB) and the list of per-day
      * memory files found under {@code /memory}, sorted newest-first.
      *
      * @param ctx the resolved workspace context
@@ -90,7 +91,7 @@ public class WorkspaceSummaryService {
      */
     public AgentWorkspaceController.MemoryView memory(WorkspaceResolutionService.ResolvedWorkspace ctx) {
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        RuntimeContext rc = RuntimeContext.empty();
+        RuntimeContext rc = RuntimeContext.builder().userId(ctx.ownerId()).build();
         String memoryContent = null;
         if (fs.exists(rc, "MEMORY.md")) {
             ReadResult rr = fs.read(rc, "MEMORY.md", 0, 50000);
@@ -126,21 +127,51 @@ public class WorkspaceSummaryService {
     private static AgentWorkspaceController.WorkspaceSummary summarize(
             String agentId, WorkspaceResolutionService.ResolvedWorkspace ctx) {
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        RuntimeContext rc = RuntimeContext.empty();
+        RuntimeContext rc = RuntimeContext.builder().userId(ctx.ownerId()).build();
         boolean agentsMdExists = fs.exists(rc, "AGENTS.md");
         boolean memoryMdExists = fs.exists(rc, "MEMORY.md");
         int skillCount = countDirChildren(fs, rc, "/skills", true);
         int subagentCount = countMdLeafFiles(fs, rc, "/subagents");
         int dailyMemoryCount = countMdLeafFiles(fs, rc, "/memory");
+        int chartArtifactCount = countDirChildren(fs, rc, "/artifacts/charts", false);
+        int reportArtifactCount = countDirChildren(fs, rc, "/artifacts/reports", false);
+        int datasetArtifactCount = countDirChildren(fs, rc, "/artifacts/datasets", false);
+        Path mirror = mirrorRoot(ctx);
+        // Probe real sandbox reachability: when the sandbox slot cannot be loaded (e.g. the
+        // browsing context resolved to a different isolation key than the agent execution), the
+        // workspace is genuinely "not synced" rather than merely empty.
+        boolean sandboxAccessible = fs.ls(rc, "/").isSuccess();
+        if (mirror != null) {
+            agentsMdExists = agentsMdExists || Files.isRegularFile(mirror.resolve("AGENTS.md"));
+            memoryMdExists = memoryMdExists || Files.isRegularFile(mirror.resolve("MEMORY.md"));
+            if (skillCount == 0) skillCount = countHostChildren(mirror.resolve("skills"), true);
+            if (subagentCount == 0) subagentCount = countHostMdFiles(mirror.resolve("subagents"));
+            if (dailyMemoryCount == 0) dailyMemoryCount = countHostMdFiles(mirror.resolve("memory"));
+            if (chartArtifactCount == 0) chartArtifactCount = countHostChildren(mirror.resolve("artifacts/charts"), false);
+            if (reportArtifactCount == 0) reportArtifactCount = countHostChildren(mirror.resolve("artifacts/reports"), false);
+            if (datasetArtifactCount == 0) datasetArtifactCount = countHostChildren(mirror.resolve("artifacts/datasets"), false);
+        }
+        boolean hasContent = agentsMdExists || memoryMdExists || skillCount > 0 || 
+                             subagentCount > 0 || dailyMemoryCount > 0 || 
+                             (chartArtifactCount + reportArtifactCount + datasetArtifactCount) > 0;
         return new AgentWorkspaceController.WorkspaceSummary(
                 agentId,
+                ctx.workspace().toAbsolutePath().toString(),
+                "/workspace",
                 ctx.workspace().toAbsolutePath().toString(),
                 true,
                 agentsMdExists,
                 memoryMdExists,
                 skillCount,
                 subagentCount,
-                dailyMemoryCount);
+                dailyMemoryCount,
+                chartArtifactCount + reportArtifactCount + datasetArtifactCount,
+                chartArtifactCount,
+                reportArtifactCount,
+                datasetArtifactCount,
+                ctx.localMirrorPath(),
+                sandboxAccessible,
+                !hasContent && !sandboxAccessible);
     }
 
     private static int countDirChildren(
@@ -180,5 +211,38 @@ public class WorkspaceSummaryService {
     static String fileName(String path) {
         int slash = path.lastIndexOf('/');
         return slash >= 0 ? path.substring(slash + 1) : path;
+    }
+
+    private static Path mirrorRoot(WorkspaceResolutionService.ResolvedWorkspace ctx) {
+        if (ctx.localMirrorPath() == null || ctx.localMirrorPath().isBlank()) {
+            return null;
+        }
+        Path root = Paths.get(ctx.localMirrorPath()).toAbsolutePath().normalize();
+        return Files.isDirectory(root) ? root : null;
+    }
+
+    private static int countHostChildren(Path dir, boolean dirOnly) {
+        if (!Files.isDirectory(dir)) {
+            return 0;
+        }
+        try (var stream = Files.list(dir)) {
+            return (int) stream.filter(path -> !dirOnly || Files.isDirectory(path)).count();
+        } catch (Exception ignored) {
+            return 0;
+        }
+    }
+
+    private static int countHostMdFiles(Path dir) {
+        if (!Files.isDirectory(dir)) {
+            return 0;
+        }
+        try (var stream = Files.list(dir)) {
+            return (int) stream
+                    .filter(path -> Files.isRegularFile(path)
+                            && path.getFileName().toString().endsWith(".md"))
+                    .count();
+        } catch (Exception ignored) {
+            return 0;
+        }
     }
 }

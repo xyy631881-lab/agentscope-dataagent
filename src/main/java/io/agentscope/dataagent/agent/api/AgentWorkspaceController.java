@@ -14,43 +14,19 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.agent.api;
+
+import io.agentscope.dataagent.agent.application.AgentAccessGuard;
+import io.agentscope.dataagent.agent.application.AgentAclService.Tier;
 import io.agentscope.dataagent.agent.application.SubagentService;
 import io.agentscope.dataagent.agent.application.WorkspaceFileService;
 import io.agentscope.dataagent.agent.application.WorkspaceResolutionService;
 import io.agentscope.dataagent.agent.application.WorkspaceSummaryService;
-import io.agentscope.dataagent.agent.application.AgentAclService;
-
 import com.fasterxml.jackson.annotation.JsonInclude;
-import io.agentscope.dataagent.agent.application.AgentAccessGuard;
-import io.agentscope.dataagent.agent.application.AgentAclService.Tier;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RequestPart;
-import org.springframework.web.bind.annotation.ResponseStatus;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
-/**
- * Generic workspace file CRUD for an agent.
- *
- * <p>Thin HTTP layer — all business logic has been extracted to:
- * <ul>
- *   <li>{@link WorkspaceFileService} — file tree, read, write, create, move, delete, upload
- *   <li>{@link WorkspaceSummaryService} — summary, scaffold, memory view
- *   <li>{@link SubagentService} — subagent declaration CRUD
- * </ul>
- *
- * <p>Each endpoint follows the same pattern: extract userId → guard.require →
- * resolutionService.resolve → delegate to service.
- */
 @RestController
 @RequestMapping("/api/agents/{agentId}/workspace")
 public class AgentWorkspaceController {
@@ -74,10 +50,6 @@ public class AgentWorkspaceController {
         this.subagentService = subagentService;
     }
 
-    // -----------------------------------------------------------------
-    //  Summary + scaffold
-    // -----------------------------------------------------------------
-
     @GetMapping
     public WorkspaceSummary summary(@PathVariable String agentId, Authentication auth) {
         String userId = (String) auth.getPrincipal();
@@ -97,10 +69,6 @@ public class AgentWorkspaceController {
         return summaryService.scaffold(agentId, agentName, ctx);
     }
 
-    // -----------------------------------------------------------------
-    //  Memory (read-only convenience view)
-    // -----------------------------------------------------------------
-
     @GetMapping("/memory")
     public MemoryView memory(@PathVariable String agentId, Authentication auth) {
         String userId = (String) auth.getPrincipal();
@@ -108,10 +76,6 @@ public class AgentWorkspaceController {
         var ctx = resolutionService.resolve(userId, agentId);
         return summaryService.memory(ctx);
     }
-
-    // -----------------------------------------------------------------
-    //  Generic file CRUD
-    // -----------------------------------------------------------------
 
     @GetMapping("/files")
     public List<FileNode> tree(
@@ -191,10 +155,6 @@ public class AgentWorkspaceController {
         return fileService.upload(ctx, agentId, userId, path, file);
     }
 
-    // -----------------------------------------------------------------
-    //  Subagent CRUD
-    // -----------------------------------------------------------------
-
     @GetMapping("/subagents")
     public List<SubagentInfo> listSubagents(
             @PathVariable String agentId, Authentication auth) {
@@ -236,10 +196,6 @@ public class AgentWorkspaceController {
         subagentService.deleteSubagent(ctx, name);
     }
 
-    // -----------------------------------------------------------------
-    //  DTOs
-    // -----------------------------------------------------------------
-
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record FileNode(
             String name, String path, String type, Long size, List<FileNode> children) {}
@@ -254,12 +210,21 @@ public class AgentWorkspaceController {
     public record WorkspaceSummary(
             String agentId,
             String workspacePath,
+            String runtimeWorkspacePath,
+            String definitionWorkspacePath,
             boolean exists,
             boolean agentsMdExists,
             boolean memoryMdExists,
             int skillCount,
             int subagentCount,
-            int dailyMemoryCount) {}
+            int dailyMemoryCount,
+            int artifactCount,
+            int chartArtifactCount,
+            int reportArtifactCount,
+            int datasetArtifactCount,
+            String localMirrorPath,
+            boolean sandboxAccessible,
+            boolean emptyNotSynced) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record MemoryView(String memoryMd, List<DailyMemoryFile> dailyFiles) {}

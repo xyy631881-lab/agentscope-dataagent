@@ -16,7 +16,6 @@
 package io.agentscope.dataagent.workspace.infrastructure;
 
 import io.agentscope.core.state.AgentStateStore;
-import io.agentscope.dataagent.workspace.domain.SharedWorkspaceProjection;
 import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
 import io.agentscope.harness.agent.sandbox.SandboxClient;
 import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
@@ -36,22 +35,22 @@ import java.util.Objects;
 public final class WorkspaceManagerFactory {
 
     private final SandboxClient<DockerSandboxClientOptions> sandboxClient;
-    private final SharedWorkspaceProjection projection;
     private final AgentStateStore stateStore;
     private final SandboxSnapshotSpec snapshotSpec;
     private final SandboxExecutionGuard executionGuard;
+    private final Path localMirrorRoot;
 
     public WorkspaceManagerFactory(
             SandboxClient<DockerSandboxClientOptions> sandboxClient,
-            SharedWorkspaceProjection projection,
             AgentStateStore stateStore,
             SandboxSnapshotSpec snapshotSpec,
-            SandboxExecutionGuard executionGuard) {
+            SandboxExecutionGuard executionGuard,
+            Path localMirrorRoot) {
         this.sandboxClient = Objects.requireNonNull(sandboxClient, "sandboxClient");
-        this.projection = Objects.requireNonNull(projection, "projection");
         this.stateStore = Objects.requireNonNull(stateStore, "stateStore");
         this.snapshotSpec = Objects.requireNonNull(snapshotSpec, "snapshotSpec");
         this.executionGuard = Objects.requireNonNull(executionGuard, "executionGuard");
+        this.localMirrorRoot = localMirrorRoot;
     }
 
     public WorkspaceManager forAgent(String ownerId, String agentId) {
@@ -59,10 +58,21 @@ public final class WorkspaceManagerFactory {
     }
 
     public WorkspaceManager forAgent(String ownerId, String agentId, String workspacePath) {
+        return forAgent(ownerId, agentId, workspacePath, agentId);
+    }
+
+    /**
+     * Builds a browser manager for a logical agent while reusing the sandbox-state namespace of
+     * its running HarnessAgent. Those values differ when an agent has a display name.
+     */
+    public WorkspaceManager forAgent(
+            String ownerId, String agentId, String workspacePath, String sandboxStateNamespace) {
         validateSegment("ownerId", ownerId);
         validateSegment("agentId", agentId);
+        validateSegment("sandboxStateNamespace", sandboxStateNamespace);
         return new WorkspaceManager(
-                resolveAgentDataPath(workspacePath, agentId), filesystem(ownerId, agentId));
+                resolveAgentDataPath(workspacePath, agentId),
+                filesystem(ownerId, sandboxStateNamespace, agentId));
     }
 
     public WorkspaceManager forGlobalAgent(String userId, String agentId) {
@@ -73,16 +83,29 @@ public final class WorkspaceManagerFactory {
         return forAgent(userId, agentId, workspacePath);
     }
 
+    public WorkspaceManager forGlobalAgent(
+            String userId, String agentId, String workspacePath, String sandboxStateNamespace) {
+        return forAgent(userId, agentId, workspacePath, sandboxStateNamespace);
+    }
+
     public AbstractFilesystem userDataFs(String ownerId, String agentId, String workspacePath) {
         validateSegment("ownerId", ownerId);
         validateSegment("agentId", agentId);
-        return filesystem(ownerId, agentId);
+        return filesystem(ownerId, agentId, agentId);
     }
 
     public String userDataPathPrefix(String ownerId, String agentId, String workspacePath) {
         validateSegment("ownerId", ownerId);
         validateSegment("agentId", agentId);
         return "/";
+    }
+
+    public String localMirrorPath(String ownerId, String agentId) {
+        validateSegment("ownerId", ownerId);
+        validateSegment("agentId", agentId);
+        return localMirrorRoot == null
+                ? null
+                : localMirrorRoot.resolve(ownerId).resolve(agentId).toAbsolutePath().toString();
     }
 
     public Path resolveAgentDataPath(String workspacePath, String fallbackAgentId) {
@@ -106,15 +129,18 @@ public final class WorkspaceManagerFactory {
                 : agentScopeBase.resolve(path).normalize();
     }
 
-    private AbstractFilesystem filesystem(String ownerId, String agentId) {
+    private AbstractFilesystem filesystem(
+            String ownerId, String sandboxStateNamespace, String mirrorAgentId) {
         return new SharedSandboxFilesystem(
                 sandboxClient,
-                projection,
                 stateStore,
                 snapshotSpec,
                 executionGuard,
                 ownerId,
-                agentId);
+                sandboxStateNamespace,
+                localMirrorRoot == null
+                        ? null
+                        : localMirrorRoot.resolve(ownerId).resolve(mirrorAgentId));
     }
 
     private static void validateSegment(String label, String value) {

@@ -2,7 +2,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { ACTIVE_AGENT_ID } from '../api/activeAgent';
 import { clearToken, getToken, isAdmin } from '../api/auth';
-import { InboxEntry, deleteSession, inbox } from '../api/sessions';
+import {
+  InboxEntry,
+  createSession,
+  deleteSession,
+  getHistorySettings,
+  inbox,
+  updateHistorySettings,
+} from '../api/sessions';
 
 interface UtilityItem {
   label: string;
@@ -16,6 +23,8 @@ const UTILITY_ITEMS: UtilityItem[] = [
   { label: '贡献', path: '/contributions', icon: '🤝' },
   { label: '绑定', path: '/bindings', icon: '🔗' },
   { label: '用量', path: '/usage', icon: '📈' },
+  { label: '运行记录', path: '/traces', icon: '⌘' },
+  { label: '模型连接', path: '/models', icon: '◉' },
 ];
 
 function decodeJwt(token: string): Record<string, unknown> {
@@ -98,13 +107,22 @@ export default function SessionsSidebar({ refreshKey }: SessionsSidebarProps) {
   const [entries, setEntries] = useState<InboxEntry[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [historyLimit, setHistoryLimit] = useState(100);
+  const [historyLimitDraft, setHistoryLimitDraft] = useState('100');
+  const [historySettingsOpen, setHistorySettingsOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setErr(null);
     setLoading(true);
-    inbox(ACTIVE_AGENT_ID, { limit: 100 })
-      .then(list => { if (!cancelled) setEntries(list); })
+    Promise.all([inbox(ACTIVE_AGENT_ID, { limit: 500 }), getHistorySettings(ACTIVE_AGENT_ID)])
+      .then(([list, settings]) => {
+        if (cancelled) return;
+        setEntries(list);
+        setHistoryLimit(settings.maxSessions);
+        setHistoryLimitDraft(String(settings.maxSessions));
+      })
       .catch(e => { if (!cancelled) setErr(e instanceof Error ? e.message : 'Failed'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -130,17 +148,42 @@ export default function SessionsSidebar({ refreshKey }: SessionsSidebarProps) {
 
   const grouped = useMemo(() => {
     const map: Record<Bucket, InboxEntry[]> = { today: [], yesterday: [], earlier: [] };
-    if (draftEntry) map.today.push(draftEntry);
     for (const e of entries) map[bucketOf(e.lastActivityMs)].push(e);
     return map;
   }, [entries, draftEntry]);
 
-  function handleNewChat() {
-    const fresh = (typeof crypto !== 'undefined' && crypto.randomUUID)
-      ? crypto.randomUUID()
-      : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    try { localStorage.setItem(`claw_chat_session:${ACTIVE_AGENT_ID}`, fresh); } catch { /* ignore */ }
-    navigate(`/chat?session=${encodeURIComponent(fresh)}`);
+  async function handleNewChat() {
+    if (creating) return;
+    setCreating(true);
+    setErr(null);
+    try {
+      const created = await createSession(ACTIVE_AGENT_ID);
+      try { localStorage.setItem(`claw_chat_session:${ACTIVE_AGENT_ID}`, created.sessionKey); } catch { /* ignore */ }
+      const list = await inbox(ACTIVE_AGENT_ID, { limit: 500 });
+      setEntries(list);
+      navigate(`/chat?session=${encodeURIComponent(created.sessionKey)}`);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Unable to create a new conversation');
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function saveHistoryLimit() {
+    const requested = Number(historyLimitDraft);
+    if (!Number.isInteger(requested) || requested < 1 || requested > 500) {
+      setErr('History limit must be an integer between 1 and 500');
+      return;
+    }
+    try {
+      const settings = await updateHistorySettings(ACTIVE_AGENT_ID, requested);
+      setHistoryLimit(settings.maxSessions);
+      setHistoryLimitDraft(String(settings.maxSessions));
+      setEntries(await inbox(ACTIVE_AGENT_ID, { limit: 500 }));
+      setHistorySettingsOpen(false);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Unable to save conversation history settings');
+    }
   }
 
   function entryNavKey(entry: InboxEntry): string {
@@ -176,15 +219,48 @@ export default function SessionsSidebar({ refreshKey }: SessionsSidebarProps) {
   return (
     <div style={S.root}>
       <div style={S.headerRow}>
-        <button onClick={handleNewChat} style={S.newBtn}>
+        <button onClick={handleNewChat} style={S.newBtn} disabled={creating}>
           <span style={{ fontSize: '1rem' }}>＋</span> 新建对话
         </button>
       </div>
 
+      <div style={S.historyRow}>
+        <span>{`\u4fdd\u7559 ${historyLimit} \u6761`}</span>
+        <button
+          type="button"
+          style={S.historySettingsButton}
+          onClick={() => setHistorySettingsOpen(open => !open)}
+          title="Conversation history retention settings"
+        >
+          {'\u2699'}
+        </button>
+      </div>
+      {historySettingsOpen && (
+        <div style={S.historySettings}>
+          <label style={S.historyLabel} htmlFor="history-limit-input">
+            {'\u6700\u591a\u4fdd\u7559 1 - 500 \u6761'}
+          </label>
+          <div style={S.historyInputRow}>
+            <input
+              id="history-limit-input"
+              type="number"
+              min={1}
+              max={500}
+              value={historyLimitDraft}
+              onChange={event => setHistoryLimitDraft(event.target.value)}
+              style={S.historyInput}
+            />
+            <button type="button" style={S.historySaveButton} onClick={saveHistoryLimit}>
+              {'\u4fdd\u5b58'}
+            </button>
+          </div>
+        </div>
+      )}
+
       <div style={S.scroll}>
         {loading && <div style={S.muted}>加载中…</div>}
         {err && <div style={S.error}>{err}</div>}
-        {!loading && !err && entries.length === 0 && !draftEntry && (
+        {!loading && !err && entries.length === 0 && (
           <div style={S.muted}>暂无会话。发送消息即可开始第一段对话。</div>
         )}
 
@@ -393,6 +469,28 @@ const S: Record<string, React.CSSProperties> = {
     borderRadius: 10, padding: '11px 14px', fontSize: '0.92rem', fontWeight: 600,
     cursor: 'pointer',
     boxShadow: '0 2px 6px rgba(99,102,241,0.35), inset 0 1px 0 rgba(255,255,255,0.18)',
+  },
+  historyRow: {
+    minHeight: 30, padding: '4px 12px', display: 'flex', alignItems: 'center',
+    justifyContent: 'space-between', borderBottom: '1px solid #f1f5f9',
+    color: '#94a3b8', fontSize: '0.72rem',
+  },
+  historySettingsButton: {
+    width: 24, height: 24, display: 'grid', placeItems: 'center', padding: 0,
+    border: 'none', background: 'transparent', color: '#64748b', cursor: 'pointer', fontSize: '0.9rem',
+  },
+  historySettings: {
+    padding: '10px 12px', borderBottom: '1px solid #e2e8f0', background: '#f8fafc',
+  },
+  historyLabel: { display: 'block', marginBottom: 6, color: '#475569', fontSize: '0.75rem' },
+  historyInputRow: { display: 'flex', gap: 6 },
+  historyInput: {
+    minWidth: 0, flex: 1, border: '1px solid #cbd5e1', borderRadius: 6,
+    padding: '5px 7px', color: '#0f172a', background: '#ffffff', fontSize: '0.78rem',
+  },
+  historySaveButton: {
+    border: '1px solid #1d4ed8', borderRadius: 6, padding: '5px 9px',
+    background: '#1d4ed8', color: '#ffffff', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600,
   },
   scroll: { flex: 1, overflowY: 'auto', padding: '10px 8px 16px' },
   muted: { padding: '8px 12px', fontSize: '0.85rem', color: '#94a3b8' },

@@ -34,7 +34,8 @@ public interface SessionEntityRepository extends JpaRepository<SessionEntity, Lo
 
     boolean existsBySessionKey(String sessionKey);
 
-    Optional<SessionEntity> findByGateKeyAndUserId(String gateKey, String userId);
+    List<SessionEntity> findAllByGateKeyAndUserIdOrderByLastActivityMsDesc(
+            String gateKey, String userId);
 
     List<SessionEntity> findByUserIdOrderByLastActivityMsDesc(String userId);
 

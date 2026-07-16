@@ -142,7 +142,7 @@ function ConfigPanel({ detail, agentId }: { detail: AgentDetailView; agentId: st
     };
     try {
       const r = await updateAgentConfig(agentId, req);
-      setMessage({ text: r.restartRequired ? `Saved — restart required: ${r.message}` : 'Saved.', kind: r.restartRequired ? 'warn' : 'ok' });
+      setMessage({ text: `Saved ${r.id} and applied the updated runtime configuration.`, kind: 'ok' });
     } catch (e: unknown) {
       setMessage({ text: e instanceof Error ? e.message : String(e), kind: 'err' });
     } finally {

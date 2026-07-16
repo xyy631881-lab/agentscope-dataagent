@@ -122,7 +122,7 @@ export default function ToolsActivePanel({ agentId, refreshKey, onChange, onRequ
         <div style={{ flex: 1 }}>
           <div style={S.title}>已激活的工具</div>
           <div style={S.sub}>
-            实时视图，通过对临时 agent 进行工作区自省解析得到。
+            实时视图，来自当前运行中 Agent 的工具集。
           </div>
         </div>
         <button style={S.refreshBtn} onClick={() => onChange()} disabled={loading}>
@@ -147,7 +147,7 @@ export default function ToolsActivePanel({ agentId, refreshKey, onChange, onRequ
         )}
         {Array.from(grouped.entries()).map(([source, tools]) => (
           <div key={source}>
-            <div style={S.groupHeader}>{source === 'built-in' ? '内置' : `MCP — ${source}`}</div>
+            <div style={S.groupHeader}>{source === 'built-in' ? '内置' : source === 'data-agent' ? '数据分析能力' : `MCP — ${source}`}</div>
             {tools.map(t => (
               <div key={`${source}:${t.name}`} style={S.card}>
                 <span style={t.source === 'built-in' ? S.badge : S.mcpBadge}>{t.source}</span>

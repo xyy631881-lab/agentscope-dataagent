@@ -17,7 +17,6 @@ package io.agentscope.dataagent.workspace.infrastructure;
 
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.state.AgentStateStore;
-import io.agentscope.dataagent.workspace.domain.SharedWorkspaceProjection;
 import io.agentscope.harness.agent.IsolationScope;
 import io.agentscope.harness.agent.filesystem.sandbox.BaseSandboxFilesystem;
 import io.agentscope.harness.agent.filesystem.model.ExecuteResponse;
@@ -33,15 +32,22 @@ import io.agentscope.harness.agent.sandbox.SandboxExecutionGuard;
 import io.agentscope.harness.agent.sandbox.SandboxException;
 import io.agentscope.harness.agent.sandbox.SandboxManager;
 import io.agentscope.harness.agent.sandbox.SessionSandboxStateStore;
+import io.agentscope.harness.agent.sandbox.WorkspaceSpec;
 import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClientOptions;
+import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxState;
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,17 +66,17 @@ public final class SharedSandboxFilesystem extends BaseSandboxFilesystem {
     private final SandboxManager sandboxManager;
     private final SandboxContext sandboxContext;
     private final RuntimeContext sandboxRuntimeContext;
+    private final Path localMirrorDirectory;
 
     public SharedSandboxFilesystem(
             SandboxClient<DockerSandboxClientOptions> sandboxClient,
-            SharedWorkspaceProjection projection,
             AgentStateStore stateStore,
             SandboxSnapshotSpec snapshotSpec,
             SandboxExecutionGuard executionGuard,
             String userId,
-            String agentId) {
+            String agentId,
+            Path localMirrorDirectory) {
         Objects.requireNonNull(sandboxClient, "sandboxClient");
-        Objects.requireNonNull(projection, "projection");
         Objects.requireNonNull(stateStore, "stateStore");
         Objects.requireNonNull(snapshotSpec, "snapshotSpec");
         Objects.requireNonNull(executionGuard, "executionGuard");
@@ -86,12 +92,16 @@ public final class SharedSandboxFilesystem extends BaseSandboxFilesystem {
                 SandboxContext.builder()
                         .client(sandboxClient)
                         .clientOptions(new DockerSandboxClientOptions())
-                        .workspaceSpec(projection.buildSpec(userId, agentId))
+                        // Match the agent's DockerFilesystemSpec exactly. A different projection
+                        // hash causes the framework to allocate another sandbox state slot, making
+                        // plan files visible in Docker but absent from the browser workspace.
+                        .workspaceSpec(new WorkspaceSpec())
                         .snapshotSpec(snapshotSpec)
                         .isolationScope(IsolationScope.USER)
                         .build();
         this.sandboxRuntimeContext = RuntimeContext.builder().userId(userId).build();
         this.fsId = "framework-sandbox-" + UUID.randomUUID().toString().substring(0, 8);
+        this.localMirrorDirectory = localMirrorDirectory;
     }
 
     @Override
@@ -204,7 +214,9 @@ public final class SharedSandboxFilesystem extends BaseSandboxFilesystem {
         try {
             acquired.getSandbox().start();
             started = true;
-            return action.apply(acquired.getSandbox());
+            T value = action.apply(acquired.getSandbox());
+            mirrorToHost(acquired.getSandbox());
+            return value;
         } finally {
             try {
                 if (started) {
@@ -225,6 +237,48 @@ public final class SharedSandboxFilesystem extends BaseSandboxFilesystem {
                 + (e.getStderr() != null && !e.getStderr().isBlank()
                         ? "\n" + e.getStderr()
                         : "");
+    }
+
+    /**
+     * Exports the current user-isolated workspace after a successful browser operation. This is a
+     * one-way local mirror for inspection; writes still go through the workspace API and sandbox
+     * permission model.
+     */
+    private void mirrorToHost(Sandbox sandbox) {
+        if (localMirrorDirectory == null || !(sandbox.getState() instanceof DockerSandboxState state)) {
+            return;
+        }
+        String containerId = state.getContainerId();
+        if (containerId == null || containerId.isBlank()) return;
+        try {
+            Files.createDirectories(localMirrorDirectory);
+            String workspaceRoot = state.getWorkspaceRoot();
+            if (workspaceRoot == null || workspaceRoot.isBlank()) workspaceRoot = "/workspace";
+            Process process = new ProcessBuilder(
+                    "docker", "cp", containerId + ":" + workspaceRoot + "/.", localMirrorDirectory.toString())
+                    .redirectErrorStream(true)
+                    .start();
+            boolean finished = process.waitFor(30, TimeUnit.SECONDS);
+            String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+            if (!finished) {
+                process.destroyForcibly();
+                log.warn("[workspace-mirror] docker cp timed out for {}", containerId);
+                return;
+            }
+            if (process.exitValue() != 0) {
+                log.warn("[workspace-mirror] docker cp failed for {}: {}", containerId, output);
+                return;
+            }
+            Files.writeString(
+                    localMirrorDirectory.resolve(".dataagent-mirror"),
+                    "Read-only mirror of sandbox /workspace. Last sync: " + Instant.now() + System.lineSeparator(),
+                    StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            log.warn("[workspace-mirror] failed to sync {}: {}", localMirrorDirectory, e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("[workspace-mirror] interrupted while syncing {}", localMirrorDirectory);
+        }
     }
 
     @FunctionalInterface

@@ -117,8 +117,10 @@ public class AgentSkillsController {
             @PathVariable String agentId, Authentication auth) {
         String userId = (String) auth.getPrincipal();
         guard.require(userId, agentId, Tier.RUN);
-        AbstractFilesystem fs = resolutionService.resolveFilesystem(userId, agentId);
-        LsResult ls = fs.ls(null, "/skills");
+        var ctx = resolutionService.resolve(userId, agentId);
+        AbstractFilesystem fs = ctx.filesystem();
+        RuntimeContext runtimeContext = RuntimeContext.builder().userId(ctx.ownerId()).build();
+        LsResult ls = fs.ls(runtimeContext, "/skills");
         if (ls == null || !ls.isSuccess() || ls.entries() == null) {
             return List.<WorkspaceSkillInfo>of();
         }
@@ -127,7 +129,7 @@ public class AgentSkillsController {
             if (!info.isDirectory()) continue;
             String dirName = SkillFileService.leafName(info.path());
             if (dirName.isBlank()) continue;
-            WorkspaceSkillInfo skill = SkillFileService.readWorkspaceSkill(fs, dirName);
+            WorkspaceSkillInfo skill = SkillFileService.readWorkspaceSkill(fs, runtimeContext, dirName);
             if (skill != null) out.add(skill);
         }
         out.sort(Comparator.comparing(WorkspaceSkillInfo::name));
@@ -140,13 +142,15 @@ public class AgentSkillsController {
         String userId = (String) auth.getPrincipal();
         guard.require(userId, agentId, Tier.RUN);
         SkillFileService.validateSkillName(name);
-        AbstractFilesystem fs = resolutionService.resolveFilesystem(userId, agentId);
-        String markdown = SkillFileService.readUtf8(fs, "/skills/" + name + "/SKILL.md");
+        var ctx = resolutionService.resolve(userId, agentId);
+        AbstractFilesystem fs = ctx.filesystem();
+        RuntimeContext runtimeContext = RuntimeContext.builder().userId(ctx.ownerId()).build();
+        String markdown = SkillFileService.readUtf8(fs, runtimeContext, "/skills/" + name + "/SKILL.md");
         if (markdown == null) {
             throw new ResponseStatusException(
                     HttpStatus.NOT_FOUND, "SKILL.md missing for: " + name);
         }
-        Map<String, String> resources = SkillFileService.collectResources(fs, name);
+        Map<String, String> resources = SkillFileService.collectResources(fs, runtimeContext, name);
         String description =
                 SkillFileService.parseFrontMatterField(markdown, SkillFileService.DESCRIPTION_LINE);
         return new WorkspaceSkillDetail(name, description, markdown, resources);
@@ -167,9 +171,10 @@ public class AgentSkillsController {
         }
         var ctx = resolutionService.resolve(userId, agentId);
         WorkspaceManager wsm = ctx.manager();
+        RuntimeContext runtimeContext = RuntimeContext.builder().userId(ctx.ownerId()).build();
         wsm.writeUtf8WorkspaceRelative(
-                RuntimeContext.empty(), "skills/" + name + "/SKILL.md", req.markdown());
-        SkillFileService.writeResources(wsm, name, req.resources());
+                runtimeContext, "skills/" + name + "/SKILL.md", req.markdown());
+        SkillFileService.writeResources(wsm, runtimeContext, name, req.resources());
         activity.record(
                 ctx.ownerId(),
                 agentId,
@@ -178,7 +183,7 @@ public class AgentSkillsController {
                 "skills/" + name,
                 null);
         lifecycleService.invalidateUca(ctx.ownerId(), agentId);
-        return SkillFileService.readWorkspaceSkill(wsm.getFilesystem(), name);
+        return SkillFileService.readWorkspaceSkill(wsm.getFilesystem(), runtimeContext, name);
     }
 
     @DeleteMapping("/workspace/{name}")
@@ -190,11 +195,12 @@ public class AgentSkillsController {
         SkillFileService.validateSkillName(name);
         var ctx = resolutionService.resolve(userId, agentId);
         AbstractFilesystem fs = ctx.manager().getFilesystem();
-        if (!fs.exists(null, "/skills/" + name)) {
+        RuntimeContext runtimeContext = RuntimeContext.builder().userId(ctx.ownerId()).build();
+        if (!fs.exists(runtimeContext, "/skills/" + name)) {
             throw new ResponseStatusException(
                     HttpStatus.NOT_FOUND, "Skill not found: " + name);
         }
-        fs.delete(null, "/skills/" + name);
+        fs.delete(runtimeContext, "/skills/" + name);
         activity.record(
                 ctx.ownerId(),
                 agentId,

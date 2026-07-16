@@ -69,6 +69,7 @@ public class ConversationService {
     private final AgentLifecycleService lifecycleService;
     private final SessionMaintenanceConfig maintenanceConfig;
     private final io.agentscope.core.state.AgentStateStore agentStateStore;
+    private final ConversationHistorySettingsService historySettingsService;
 
     public ConversationService(
             SessionEntityRepository sessionRepo,
@@ -76,13 +77,15 @@ public class ConversationService {
             DataAgentBootstrap bootstrap,
             AgentLifecycleService lifecycleService,
             ConversationMigrationService migrationService,
-            io.agentscope.core.state.AgentStateStore agentStateStore) {
+            io.agentscope.core.state.AgentStateStore agentStateStore,
+            ConversationHistorySettingsService historySettingsService) {
         this.sessionRepo = sessionRepo;
         this.readStateRepo = readStateRepo;
         this.bootstrap = bootstrap;
         this.lifecycleService = lifecycleService;
         this.maintenanceConfig = ConversationSupport.resolveMaintenanceConfig(bootstrap.loadedConfig());
         this.agentStateStore = agentStateStore;
+        this.historySettingsService = historySettingsService;
         // migrationService is injected to guarantee it initializes (and runs migration) first
     }
 
@@ -100,13 +103,19 @@ public class ConversationService {
     public Optional<SessionEntry> findByGateKey(String gateKey, String userId) {
         if (gateKey == null) return Optional.empty();
         return sessionRepo
-                .findByGateKeyAndUserId(gateKey, userId)
+                .findAllByGateKeyAndUserIdOrderByLastActivityMsDesc(gateKey, userId)
+                .stream()
+                .findFirst()
                 .map(SessionEntity::toEntry);
     }
 
     /** 按 conversationId 查找会话（前端只知道 conversationId）。 */
     public SessionEntry createSessionRecord(
-            String agentId, String sessionKey, String userId, String gateKey) {
+            String agentId,
+            String sessionKey,
+            String userId,
+            String gateKey,
+            String initialLabel) {
         if (sessionKey == null || sessionKey.isBlank()) {
             return null;
         }
@@ -114,7 +123,14 @@ public class ConversationService {
         if (existing.isPresent()) {
             SessionEntity e = existing.get();
             e.setLastActivityMs(System.currentTimeMillis());
+            if ((e.getLabel() == null || e.getLabel().isBlank()) && initialLabel != null && !initialLabel.isBlank()) {
+                e.setLabel(initialLabel);
+            }
+            if ((e.getGateKey() == null || e.getGateKey().isBlank()) && gateKey != null && !gateKey.isBlank()) {
+                e.setGateKey(gateKey);
+            }
             sessionRepo.save(e);
+            historySettingsService.enforceRetention(userId, agentId);
             return e.toEntry();
         }
 
@@ -122,7 +138,7 @@ public class ConversationService {
         entity.setSessionKey(sessionKey.trim());
         entity.setAgentId(agentId);
         entity.setSessionId("main-" + UUID.randomUUID());
-        entity.setLabel(null);
+        entity.setLabel(initialLabel != null && !initialLabel.isBlank() ? initialLabel : null);
         entity.setKind("main");
         entity.setSpawnedBy(null);
         entity.setSpawnDepth(0);
@@ -133,6 +149,7 @@ public class ConversationService {
         entity.setGateKey(gateKey);
         entity.setUserId(userId);
         sessionRepo.save(entity);
+        historySettingsService.enforceRetention(userId, agentId);
         log.info(
                 "Created new session record: sessionKey={}, agentId={}, userId={}",
                 sessionKey, agentId, userId);
@@ -144,7 +161,7 @@ public class ConversationService {
         String gatewayAgentId = lifecycleService.peekGatewayAgentId(userId, agentId);
         List<SessionEntity> mains = sessionRepo.findByUserIdAndKind(userId, SessionKind.MAIN.getValue());
         for (SessionEntity e : mains) {
-            if (!ConversationSupport.sessionMatchesAgent(e.toEntry(), gatewayAgentId)) continue;
+            if (!ConversationSupport.sessionMatchesAgent(e.toEntry(), agentId, gatewayAgentId)) continue;
             if (key.equals(ConversationSupport.extractConversationId(e.getGateKey()))) {
                 return e.toEntry();
             }
@@ -177,7 +194,7 @@ public class ConversationService {
         }
         String gatewayAgentId = lifecycleService.peekGatewayAgentId(userId, agentId);
         if (!Objects.equals(entry.userId(), userId)
-                || !ConversationSupport.sessionMatchesAgent(entry, gatewayAgentId)) {
+                || !ConversationSupport.sessionMatchesAgent(entry, agentId, gatewayAgentId)) {
             throw new org.springframework.web.server.ResponseStatusException(
                     org.springframework.http.HttpStatus.FORBIDDEN, "Access denied");
         }
@@ -202,7 +219,7 @@ public class ConversationService {
         List<SessionEntity> all = sessionRepo.findByUserIdOrderByLastActivityMsDesc(userId);
         List<SessionEntity> matched = new ArrayList<>();
         for (SessionEntity e : all) {
-            if (!ConversationSupport.sessionMatchesAgent(e.toEntry(), gatewayAgentId)) continue;
+            if (!ConversationSupport.sessionMatchesAgent(e.toEntry(), agentId, gatewayAgentId)) continue;
             matched.add(e);
         }
         matched.sort(Comparator.comparingLong(SessionEntity::getLastActivityMs).reversed());
@@ -388,15 +405,16 @@ public class ConversationService {
             WorkspaceManager wm = ha.getWorkspaceManager();
             String innerAgentId = ha.getName();
             if (wm != null && innerAgentId != null && !innerAgentId.isBlank()) {
+                RuntimeContext runtimeContext = RuntimeContext.builder().userId(entry.userId()).build();
                 String relLog =
                         "agents/" + innerAgentId + "/sessions/" + entry.sessionId() + ".log.jsonl";
-                String fromLog = wm.readManagedWorkspaceFileUtf8(RuntimeContext.empty(), relLog);
+                String fromLog = wm.readManagedWorkspaceFileUtf8(runtimeContext, relLog);
                 if (fromLog != null && !fromLog.isEmpty()) {
                     return fromLog;
                 }
                 String relCtx =
                         "agents/" + innerAgentId + "/sessions/" + entry.sessionId() + ".jsonl";
-                String fromCtx = wm.readManagedWorkspaceFileUtf8(RuntimeContext.empty(), relCtx);
+                String fromCtx = wm.readManagedWorkspaceFileUtf8(runtimeContext, relCtx);
                 if (fromCtx != null && !fromCtx.isEmpty()) {
                     return fromCtx;
                 }
@@ -426,10 +444,9 @@ public class ConversationService {
     public String lastMessagePreview(String agentId, SessionEntry entry) {
         try {
             String content = readSessionLogContent(agentId, entry);
-            if (content == null || content.isEmpty()) {
-                return null;
-            }
-            List<TurnEntry> turns = SessionTurnParser.parse(content);
+            List<TurnEntry> turns = content == null || content.isEmpty()
+                    ? getTurnsFromAgentStateStore(entry.userId(), entry)
+                    : SessionTurnParser.parse(content);
             for (int i = turns.size() - 1; i >= 0; i--) {
                 TurnEntry t = turns.get(i);
                 if (t.content() != null && !t.content().isBlank()) {
@@ -452,9 +469,8 @@ public class ConversationService {
         HarnessAgent ha =
                 gatewayAgentId != null ? bootstrap.gateway().findAgent(gatewayAgentId) : null;
         if (ha != null && ha.getWorkspaceManager() != null) {
-            // 使用 RuntimeContext.empty() 与 readSessionLogContent 保持一致，
-            // 避免 userId 被加入路径前缀导致数据库中 session_file_path 与实际文件路径不一致
-            return ha.getWorkspaceManager().resolveSessionFile(RuntimeContext.empty(), agentId, sessionId).toString();
+            RuntimeContext runtimeContext = RuntimeContext.builder().userId(userId).build();
+            return ha.getWorkspaceManager().resolveSessionFile(runtimeContext, agentId, sessionId).toString();
         }
         return null;
     }

@@ -14,7 +14,18 @@ import io.agentscope.dataagent.runtime.config.AgentscopeConfig;
  */
 final class ConversationSupport {
 
-    static boolean sessionMatchesAgent(SessionEntry e, String gatewayAgentId) {
+    /**
+     * The logical agent id is persisted with every new session and stays valid across process
+     * restarts.  The gateway id is only a compatibility fallback for sessions created before
+     * that column was populated.
+     */
+    static boolean sessionMatchesAgent(
+            SessionEntry e, String requestedAgentId, String gatewayAgentId) {
+        if (requestedAgentId != null
+                && !requestedAgentId.isBlank()
+                && requestedAgentId.equals(e.agentId())) {
+            return true;
+        }
         if (gatewayAgentId == null) return false;
         String gateKey = e.gateKey();
         if (e.kind() == SessionKind.MAIN) {

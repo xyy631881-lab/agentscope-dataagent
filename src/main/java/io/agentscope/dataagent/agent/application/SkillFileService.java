@@ -78,14 +78,23 @@ public class SkillFileService {
      */
     static void walk(
             AbstractFilesystem fs, String rootAbs, String relativeBase, FileVisitor visitor) {
-        LsResult ls = fs.ls(null, rootAbs);
+        walk(fs, RuntimeContext.empty(), rootAbs, relativeBase, visitor);
+    }
+
+    static void walk(
+            AbstractFilesystem fs,
+            RuntimeContext context,
+            String rootAbs,
+            String relativeBase,
+            FileVisitor visitor) {
+        LsResult ls = fs.ls(context, rootAbs);
         if (ls == null || !ls.isSuccess() || ls.entries() == null) return;
         for (FileInfo info : ls.entries()) {
             String abs = info.path();
             String name = leafName(abs);
             if (name.isBlank()) continue;
             if (info.isDirectory()) {
-                walk(fs, abs, relativeBase, visitor);
+                walk(fs, context, abs, relativeBase, visitor);
             } else {
                 String rel =
                         abs.startsWith(relativeBase) ? abs.substring(relativeBase.length()) : name;
@@ -95,6 +104,10 @@ public class SkillFileService {
     }
 
     static long fileSize(AbstractFilesystem fs, String absolutePath) {
+        return fileSize(fs, RuntimeContext.empty(), absolutePath);
+    }
+
+    static long fileSize(AbstractFilesystem fs, RuntimeContext context, String absolutePath) {
         // The cheap path — info.size() from ls — is already consumed by the caller's walk; we
         // re-stat via a parent ls to keep this function self-contained. One shell exec per call
         // in the sandbox-backed filesystem, used only on individual workspace skill directories.
@@ -102,7 +115,7 @@ public class SkillFileService {
         if (slash <= 0) return 0L;
         String parent = absolutePath.substring(0, slash);
         String name = absolutePath.substring(slash + 1);
-        LsResult ls = fs.ls(null, parent);
+        LsResult ls = fs.ls(context, parent);
         if (ls == null || !ls.isSuccess() || ls.entries() == null) return 0L;
         for (FileInfo info : ls.entries()) {
             if (leafName(info.path()).equals(name)) return info.size();
@@ -115,7 +128,12 @@ public class SkillFileService {
     // -----------------------------------------------------------------
 
     public static String readUtf8(AbstractFilesystem fs, String absolutePath) {
-        ReadResult r = fs.read(null, absolutePath, 0, Integer.MAX_VALUE);
+        return readUtf8(fs, RuntimeContext.empty(), absolutePath);
+    }
+
+    public static String readUtf8(
+            AbstractFilesystem fs, RuntimeContext context, String absolutePath) {
+        ReadResult r = fs.read(context, absolutePath, 0, Integer.MAX_VALUE);
         if (r == null || !r.isSuccess() || r.fileData() == null) return null;
         return r.fileData().content();
     }
@@ -131,31 +149,43 @@ public class SkillFileService {
     // -----------------------------------------------------------------
 
     static AgentSkillsController.SkillSize computeSize(AbstractFilesystem fs, String dirName) {
+        return computeSize(fs, RuntimeContext.empty(), dirName);
+    }
+
+    static AgentSkillsController.SkillSize computeSize(
+            AbstractFilesystem fs, RuntimeContext context, String dirName) {
         long[] total = new long[] {0L};
         int[] count = new int[] {0};
         walk(
                 fs,
+                context,
                 "/skills/" + dirName,
                 "/skills/" + dirName + "/",
                 (relativePath, absolutePath) -> {
                     if (relativePath.equals(INSTALL_META_FILE)) return;
-                    total[0] += fileSize(fs, absolutePath);
+                    total[0] += fileSize(fs, context, absolutePath);
                     if (!relativePath.equals("SKILL.md")) count[0]++;
                 });
         return new AgentSkillsController.SkillSize(total[0], count[0]);
     }
 
     public static Map<String, String> collectResources(AbstractFilesystem fs, String dirName) {
+        return collectResources(fs, RuntimeContext.empty(), dirName);
+    }
+
+    public static Map<String, String> collectResources(
+            AbstractFilesystem fs, RuntimeContext context, String dirName) {
         Map<String, String> out = new LinkedHashMap<>();
         walk(
                 fs,
+                context,
                 "/skills/" + dirName,
                 "/skills/" + dirName + "/",
                 (relativePath, absolutePath) -> {
                     if (relativePath.equals("SKILL.md") || relativePath.equals(INSTALL_META_FILE)) {
                         return;
                     }
-                    String content = readUtf8(fs, absolutePath);
+                    String content = readUtf8(fs, context, absolutePath);
                     out.put(relativePath, content != null ? content : "");
                 });
         return out;
@@ -163,15 +193,20 @@ public class SkillFileService {
 
     public static AgentSkillsController.WorkspaceSkillInfo readWorkspaceSkill(
             AbstractFilesystem fs, String dirName) {
-        String content = readUtf8(fs, "/skills/" + dirName + "/SKILL.md");
+        return readWorkspaceSkill(fs, RuntimeContext.empty(), dirName);
+    }
+
+    public static AgentSkillsController.WorkspaceSkillInfo readWorkspaceSkill(
+            AbstractFilesystem fs, RuntimeContext context, String dirName) {
+        String content = readUtf8(fs, context, "/skills/" + dirName + "/SKILL.md");
         if (content == null) return null;
         String description = parseFrontMatterField(content, DESCRIPTION_LINE);
         String name = parseFrontMatterField(content, NAME_LINE);
         if (name == null || name.isBlank()) {
             name = dirName;
         }
-        AgentSkillsController.SkillSize size = computeSize(fs, dirName);
-        AgentSkillsController.SkillMarketplaceMeta meta = readInstallMeta(fs, dirName);
+        AgentSkillsController.SkillSize size = computeSize(fs, context, dirName);
+        AgentSkillsController.SkillMarketplaceMeta meta = readInstallMeta(fs, context, dirName);
         String origin = meta != null ? ORIGIN_MARKETPLACE : ORIGIN_CUSTOM;
         return new AgentSkillsController.WorkspaceSkillInfo(
                 dirName,
@@ -179,15 +214,20 @@ public class SkillFileService {
                 description,
                 size.totalBytes(),
                 size.resourceCount(),
-                fs.exists(null, "/skills/" + dirName + "/references"),
-                fs.exists(null, "/skills/" + dirName + "/scripts"),
+                fs.exists(context, "/skills/" + dirName + "/references"),
+                fs.exists(context, "/skills/" + dirName + "/scripts"),
                 origin,
                 meta);
     }
 
     static AgentSkillsController.SkillMarketplaceMeta readInstallMeta(
             AbstractFilesystem fs, String dirName) {
-        String json = readUtf8(fs, "/skills/" + dirName + "/" + INSTALL_META_FILE);
+        return readInstallMeta(fs, RuntimeContext.empty(), dirName);
+    }
+
+    static AgentSkillsController.SkillMarketplaceMeta readInstallMeta(
+            AbstractFilesystem fs, RuntimeContext context, String dirName) {
+        String json = readUtf8(fs, context, "/skills/" + dirName + "/" + INSTALL_META_FILE);
         if (json == null || json.isBlank()) return null;
         try {
             return MAPPER.readValue(json, AgentSkillsController.SkillMarketplaceMeta.class);
@@ -204,10 +244,18 @@ public class SkillFileService {
             WorkspaceManager wsm,
             String targetName,
             AgentSkillsController.SkillMarketplaceMeta meta) {
+        writeInstallMeta(wsm, RuntimeContext.empty(), targetName, meta);
+    }
+
+    static void writeInstallMeta(
+            WorkspaceManager wsm,
+            RuntimeContext context,
+            String targetName,
+            AgentSkillsController.SkillMarketplaceMeta meta) {
         try {
             String json = MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(meta);
             wsm.writeUtf8WorkspaceRelative(
-                    RuntimeContext.empty(), "skills/" + targetName + "/" + INSTALL_META_FILE, json);
+                    context, "skills/" + targetName + "/" + INSTALL_META_FILE, json);
         } catch (Exception e) {
             log.warn(
                     "Failed to write {} for {}: {}", INSTALL_META_FILE, targetName, e.getMessage());
@@ -216,6 +264,14 @@ public class SkillFileService {
 
     public static void writeResources(
             WorkspaceManager wsm, String targetName, Map<String, String> resources) {
+        writeResources(wsm, RuntimeContext.empty(), targetName, resources);
+    }
+
+    public static void writeResources(
+            WorkspaceManager wsm,
+            RuntimeContext context,
+            String targetName,
+            Map<String, String> resources) {
         if (resources == null) return;
         for (Map.Entry<String, String> e : resources.entrySet()) {
             String rel = e.getKey();
@@ -223,7 +279,7 @@ public class SkillFileService {
             String safe = sanitiseRelativePath(rel);
             String body = e.getValue() != null ? e.getValue() : "";
             wsm.writeUtf8WorkspaceRelative(
-                    RuntimeContext.empty(), "skills/" + targetName + "/" + safe, body);
+                    context, "skills/" + targetName + "/" + safe, body);
         }
     }
 

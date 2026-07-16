@@ -41,7 +41,7 @@
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <agentscope.version>2.0.0-SNAPSHOT</agentscope.version>
+        <agentscope.version>2.0.0</agentscope.version>
         <revision>2.0.0-SNAPSHOT</revision>
         <spring.boot.version>3.3.5</spring.boot.version>
         <!-- agentscope 内部模块版本 -->
@@ -56,18 +56,6 @@
         <sqlite-jdbc.version>3.47.2.0</sqlite-jdbc.version>
         <jjwt.version>0.12.6</jjwt.version>
     </properties>
-
-    <!-- 添加 Sonatype 快照仓库以解析 agentscope 2.0.0-SNAPSHOT 依赖 -->
-    <repositories>
-        <repository>
-            <id>sonatype-snapshots</id>
-            <url>https://oss.sonatype.org/content/repositories/snapshots/</url>
-            <snapshots>
-                <enabled>true</enabled>
-                <updatePolicy>daily</updatePolicy>
-            </snapshots>
-        </repository>
-    </repositories>
 
     <!-- 注意：不依赖 agentscope-dependencies-bom（该 BOM 未发布到公共仓库），
          所有 agentscope 依赖版本在此直接指定 -->
@@ -88,6 +76,18 @@
             <groupId>io.agentscope</groupId>
             <artifactId>agentscope-harness</artifactId>
             <version>${agentscope-harness.version}</version>
+        </dependency>
+
+        <!-- GA 2.0 将模型实现从 agentscope-core 拆分为独立提供商模块。 -->
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-model-openai</artifactId>
+            <version>${agentscope.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.agentscope</groupId>
+            <artifactId>agentscope-extensions-model-ollama</artifactId>
+            <version>${agentscope.version}</version>
         </dependency>
 
         <!-- IM 通道实现：钉钉 -->
@@ -119,10 +119,10 @@
         </dependency>
 
         <!--
-          Optional: Redis-backed Session for multi-instance / distributed sandbox mode.
+          Optional: Redis-backed AgentScope runtime state for multi-instance / distributed sandbox mode.
           Marked optional=true so single-node deployments do not pull Redis client jars,
           and so that downstream apps can replace it with Lettuce/Redisson if desired.
-          Activated at runtime by dataagent.session.redis.enabled=true.
+          Activated at runtime by dataagent.runtime.redis.enabled=true.
         -->
         <dependency>
             <groupId>io.agentscope</groupId>
@@ -235,6 +235,17 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <!--
+          AgentScope 2.0's OtelTracingMiddleware only depends on the OpenTelemetry API.
+          The SDK below provides a real tracer provider and lets the application persist a
+          privacy-filtered span index for the runtime-records page.
+        -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk</artifactId>
+            <version>1.37.0</version>
+        </dependency>
+
         <!-- Logging -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -257,7 +268,7 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <version>${spring.boot.version}</version>
                 <configuration>
-                    <mainClass>io.agentscope.dataagent.web.DataAgentApp</mainClass>
+                    <mainClass>io.agentscope.dataagent.DataAgentApp</mainClass>
                 </configuration>
                 <executions>
                     <execution>

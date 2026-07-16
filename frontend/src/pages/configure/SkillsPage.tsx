@@ -60,9 +60,7 @@ export default function SkillsPage() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <BackToChatHeader title="技能" subtitle="安装在此 agent 工作区中的技能" />
       <div style={helpStyle}>
-        Skills installed into this agent's <code>workspace/skills/</code> from a bound marketplace
-        (git / nacos / mysql / classpath / filesystem). Click <b>+ Install</b> to browse what is
-        available.
+        此 Agent 当前工作区中的全部技能都会显示在这里，包括手工创建和从 marketplace 安装的技能。
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>
         <SkillsWorkspacePanel
