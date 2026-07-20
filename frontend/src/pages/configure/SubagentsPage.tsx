@@ -1,6 +1,7 @@
 import React from 'react';
-import { ACTIVE_AGENT_ID } from '../../api/activeAgent';
+import { useOutletContext } from 'react-router-dom';
 import BackToChatHeader from '../../components/BackToChatHeader';
+import type { ShellOutletContext } from '../../components/EditTierGate';
 import SubagentPanel from '../../components/SubagentPanel';
 
 const helpBarStyle: React.CSSProperties = {
@@ -12,6 +13,7 @@ const helpBarStyle: React.CSSProperties = {
 };
 
 export default function SubagentsPage() {
+  const ctx = useOutletContext<ShellOutletContext>();
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       <BackToChatHeader title="Subagents" subtitle="Agents this one can delegate to" />
@@ -20,7 +22,7 @@ export default function SubagentsPage() {
         Add one by hand or pull from another existing agent.
       </div>
       <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
-        <SubagentPanel agentId={ACTIVE_AGENT_ID} />
+        <SubagentPanel agentId={ctx.activeAgentId} />
       </div>
     </div>
   );

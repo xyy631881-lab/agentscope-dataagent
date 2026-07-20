@@ -18,9 +18,12 @@ package io.agentscope.dataagent.agent.api;
 import java.util.List;
 import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 import io.agentscope.dataagent.agent.application.AgentCatalogService;
 import io.agentscope.dataagent.agent.application.AgentLifecycleService;
 import io.agentscope.dataagent.conversation.application.ConversationService;
@@ -92,6 +95,40 @@ public class RuntimeController {
                 .toList();
     }
 
+    @GetMapping("/sessions/{sessionKey}/tree")
+    public SessionTreeDto sessionTree(@PathVariable String sessionKey) {
+        return conversationService
+                .sessionTree(sessionKey)
+                .map(RuntimeController::toTreeDto)
+                .orElseThrow(
+                        () ->
+                                new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND,
+                                        "Session not found: " + sessionKey));
+    }
+
+    private static SessionTreeDto toTreeDto(ConversationService.SessionTreeNode node) {
+        io.agentscope.dataagent.conversation.domain.SessionEntry session = node.session();
+        long now = System.currentTimeMillis();
+        SessionDetailDto detail =
+                new SessionDetailDto(
+                        session.sessionKey(),
+                        session.agentId(),
+                        session.sessionId(),
+                        session.label(),
+                        session.kind().getValue(),
+                        session.spawnedBy(),
+                        session.spawnDepth(),
+                        session.userId(),
+                        session.gateKey(),
+                        session.sessionFilePath(),
+                        session.createdAtMs(),
+                        session.lastActivityMs(),
+                        Math.max(0L, now - session.lastActivityMs()));
+        return new SessionTreeDto(
+                detail, node.children().stream().map(RuntimeController::toTreeDto).toList());
+    }
+
     // ── DTOs ──────────────────────────────────────────────
 
     public record OverviewDto(
@@ -110,4 +147,21 @@ public class RuntimeController {
             String kind,
             long lastActivityMs,
             long idleMs) {}
+
+    public record SessionDetailDto(
+            String sessionKey,
+            String agentId,
+            String sessionId,
+            String label,
+            String kind,
+            String spawnedBy,
+            int spawnDepth,
+            String userId,
+            String gateKey,
+            String sessionFilePath,
+            long createdAtMs,
+            long lastActivityMs,
+            long idleMs) {}
+
+    public record SessionTreeDto(SessionDetailDto session, List<SessionTreeDto> children) {}
 }

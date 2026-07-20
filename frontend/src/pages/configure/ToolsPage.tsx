@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { ACTIVE_AGENT_ID } from '../../api/activeAgent';
+import { useOutletContext } from 'react-router-dom';
 import BackToChatHeader from '../../components/BackToChatHeader';
+import type { ShellOutletContext } from '../../components/EditTierGate';
 import ToolsActivePanel from '../../components/ToolsActivePanel';
 import ToolsCatalogPanel from '../../components/ToolsCatalogPanel';
 
@@ -51,7 +52,8 @@ const closeButtonStyle: React.CSSProperties = {
 };
 
 export default function ToolsPage() {
-  const agentId = ACTIVE_AGENT_ID;
+  const ctx = useOutletContext<ShellOutletContext>();
+  const agentId = ctx.activeAgentId;
   const [refreshKey, setRefreshKey] = useState(0);
   const [browseOpen, setBrowseOpen] = useState(false);
 

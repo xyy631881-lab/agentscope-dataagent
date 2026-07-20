@@ -156,6 +156,78 @@ public class ConversationService {
         return entity.toEntry();
     }
 
+    /**
+     * Projects a framework subagent start event into the application's session read model.
+     * AgentScope remains the owner of the child runtime state; this row exists so the admin UI can
+     * inspect the parent/child execution tree without parsing framework-internal files.
+     */
+    @Transactional
+    public SessionEntry recordSubagentSession(
+            String parentSessionKey,
+            String childAgentId,
+            String childSessionId,
+            String userId,
+            String sourcePath,
+            String spawnRunId) {
+        if (parentSessionKey == null
+                || parentSessionKey.isBlank()
+                || childAgentId == null
+                || childAgentId.isBlank()
+                || childSessionId == null
+                || childSessionId.isBlank()) {
+            return null;
+        }
+        String sessionKey = "subagent:" + childSessionId.trim();
+        long now = System.currentTimeMillis();
+        SessionEntity entity =
+                sessionRepo.findBySessionKey(sessionKey).orElseGet(SessionEntity::new);
+        if (entity.getCreatedAtMs() <= 0) {
+            entity.setCreatedAtMs(now);
+        }
+        entity.setSessionKey(sessionKey);
+        entity.setAgentId(childAgentId.trim());
+        entity.setSessionId(childSessionId.trim());
+        entity.setLabel(childAgentId.trim());
+        entity.setKind(SessionKind.SUBAGENT.getValue());
+        entity.setSpawnedBy(parentSessionKey.trim());
+        entity.setSpawnDepth(spawnDepth(sourcePath));
+        entity.setLastActivityMs(now);
+        entity.setSessionFilePath(null);
+        entity.setSpawnRunId(spawnRunId);
+        entity.setGateKey(null);
+        entity.setUserId(userId);
+        return sessionRepo.save(entity).toEntry();
+    }
+
+    /** Builds the persisted main/subagent tree used by the admin execution view. */
+    public Optional<SessionTreeNode> sessionTree(String rootSessionKey) {
+        if (rootSessionKey == null || rootSessionKey.isBlank()) {
+            return Optional.empty();
+        }
+        return sessionRepo
+                .findBySessionKey(rootSessionKey.trim())
+                .map(SessionEntity::toEntry)
+                .map(root -> buildSessionTree(root, new java.util.HashSet<>()));
+    }
+
+    private SessionTreeNode buildSessionTree(SessionEntry session, java.util.Set<String> visited) {
+        if (!visited.add(session.sessionKey())) {
+            return new SessionTreeNode(session, List.of());
+        }
+        List<SessionTreeNode> children =
+                sessionRepo.findBySpawnedByOrderByCreatedAtMsAsc(session.sessionKey()).stream()
+                        .map(SessionEntity::toEntry)
+                        .map(child -> buildSessionTree(child, visited))
+                        .toList();
+        return new SessionTreeNode(session, children);
+    }
+
+    private static int spawnDepth(String sourcePath) {
+        if (sourcePath == null || sourcePath.isBlank()) return 1;
+        long separators = sourcePath.chars().filter(ch -> ch == '/').count();
+        return Math.max(1, (int) separators);
+    }
+
     public SessionEntry findSessionByConversationId(String agentId, String key, String userId) {
         if (key == null || key.isBlank()) return null;
         String gatewayAgentId = lifecycleService.peekGatewayAgentId(userId, agentId);
@@ -613,6 +685,8 @@ public class ConversationService {
             long lastActivityMs,
             String lastMessage,
             boolean unread) {}
+
+    public record SessionTreeNode(SessionEntry session, List<SessionTreeNode> children) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record ResetResult(String sessionKey, boolean reset) {}

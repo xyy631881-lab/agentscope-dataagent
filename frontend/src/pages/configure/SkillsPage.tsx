@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { ACTIVE_AGENT_ID } from '../../api/activeAgent';
+import { useOutletContext } from 'react-router-dom';
 import BackToChatHeader from '../../components/BackToChatHeader';
+import type { ShellOutletContext } from '../../components/EditTierGate';
 import SkillsWorkspacePanel from '../../components/SkillsWorkspacePanel';
 import SkillsMarketplacesPanel from '../../components/SkillsMarketplacesPanel';
 
@@ -50,7 +51,8 @@ const closeButtonStyle: React.CSSProperties = {
 };
 
 export default function SkillsPage() {
-  const agentId = ACTIVE_AGENT_ID;
+  const ctx = useOutletContext<ShellOutletContext>();
+  const agentId = ctx.activeAgentId;
   const [refreshKey, setRefreshKey] = useState(0);
   const [browseOpen, setBrowseOpen] = useState(false);
 

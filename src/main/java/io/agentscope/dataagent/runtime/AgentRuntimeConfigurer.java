@@ -135,26 +135,28 @@ public final class AgentRuntimeConfigurer implements Consumer<HarnessAgent.Build
     public List<SubagentDeclaration> defaultSubagentDeclarations() {
         return List.of(
                 SubagentDeclaration.builder()
-                        .name("code-reviewer")
+                        .name("data-explorer")
                         .description(
-                                "Code review specialist. Reviews data-analysis scripts, SQL,"
-                                        + " and chart definitions. Returns structured findings"
-                                        + " with severity levels.")
+                                "Data source discovery specialist. Use when the correct table,"
+                                        + " columns, or join path is not yet known. Returns one"
+                                        + " canonical source and a sample query.")
                         .model(modelId)
-                        .maxIters(5)
+                        .maxIters(30)
                         .exposeToUser(false)
                         .workspaceMode(WorkspaceMode.ISOLATED)
                         .build(),
                 SubagentDeclaration.builder()
                         .name("report-writer")
                         .description(
-                                "Report writer. Composes data-analysis reports in Markdown."
-                                        + " Takes findings and chart descriptions, produces"
-                                        + " polished narrative.")
+                                "Report writing specialist. Use after the main agent has prepared"
+                                        + " verified figures, query context, and chart paths."
+                                        + " Returns a ready-to-use Markdown report.")
                         .model(modelId)
-                        .maxIters(8)
+                        .maxIters(25)
                         .exposeToUser(true)
-                        .workspaceMode(WorkspaceMode.ISOLATED)
+                        // The explorer owns isolated scratch state; the writer must publish the
+                        // final markdown into the main workspace so the parent and UI can read it.
+                        .workspaceMode(WorkspaceMode.SHARED)
                         .build());
     }
 

@@ -79,15 +79,13 @@ public class WorkspaceFileService {
      */
     public List<AgentWorkspaceController.FileNode> tree(
             WorkspaceResolutionService.ResolvedWorkspace ctx, boolean recursive) {
-        AbstractFilesystem fs = ctx.manager().getFilesystem();
-        List<AgentWorkspaceController.FileNode> sandboxTree = WorkspaceFileSupport.collectChildrenFs(
-                fs, userContext(ctx), "/", recursive ? 6 : 1);
         Path mirror = localMirrorRoot(ctx);
-        if (mirror == null) {
-            return sandboxTree;
+        if (mirror != null) {
+            return WorkspaceFileSupport.collectChildrenHost(mirror, recursive ? 6 : 1);
         }
-        return WorkspaceFileSupport.mergeTrees(
-                sandboxTree, WorkspaceFileSupport.collectChildrenHost(mirror, recursive ? 6 : 1));
+        AbstractFilesystem fs = ctx.manager().getFilesystem();
+        return WorkspaceFileSupport.collectChildrenFs(
+                fs, userContext(ctx), "/", recursive ? 6 : 1);
     }
 
     /**
@@ -99,6 +97,15 @@ public class WorkspaceFileService {
      */
     public String readFile(WorkspaceResolutionService.ResolvedWorkspace ctx, String path) {
         String rel = WorkspaceFileSupport.validateRelPath(path);
+        Path mirrorFile = localMirrorFile(ctx, rel);
+        if (mirrorFile != null && Files.isRegularFile(mirrorFile)) {
+            try {
+                return truncate(Files.readString(mirrorFile, StandardCharsets.UTF_8));
+            } catch (Exception e) {
+                throw new ResponseStatusException(
+                        HttpStatus.INTERNAL_SERVER_ERROR, "Read local mirror failed: " + e.getMessage());
+            }
+        }
         AbstractFilesystem fs = ctx.manager().getFilesystem();
         RuntimeContext rc = userContext(ctx);
         try {
@@ -114,15 +121,6 @@ public class WorkspaceFileService {
             }
         } catch (Exception ignored) {
             // The read-only local mirror remains available after Docker has reclaimed a sandbox.
-        }
-        Path mirrorFile = localMirrorFile(ctx, rel);
-        if (mirrorFile != null && Files.isRegularFile(mirrorFile)) {
-            try {
-                return truncate(Files.readString(mirrorFile, StandardCharsets.UTF_8));
-            } catch (Exception e) {
-                throw new ResponseStatusException(
-                        HttpStatus.INTERNAL_SERVER_ERROR, "Read local mirror failed: " + e.getMessage());
-            }
         }
         throw new ResponseStatusException(HttpStatus.NOT_FOUND, "File not found: " + path);
     }

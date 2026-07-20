@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { ACTIVE_AGENT_ID } from '../api/activeAgent';
+import { chatHref } from '../api/activeAgent';
 import { clearToken, getToken, isAdmin } from '../api/auth';
 import {
   InboxEntry,
@@ -95,10 +95,11 @@ function displayPreview(entry: InboxEntry): string | null {
 }
 
 export interface SessionsSidebarProps {
+  agentId: string;
   refreshKey: number;
 }
 
-export default function SessionsSidebar({ refreshKey }: SessionsSidebarProps) {
+export default function SessionsSidebar({ agentId, refreshKey }: SessionsSidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
@@ -116,7 +117,7 @@ export default function SessionsSidebar({ refreshKey }: SessionsSidebarProps) {
     let cancelled = false;
     setErr(null);
     setLoading(true);
-    Promise.all([inbox(ACTIVE_AGENT_ID, { limit: 500 }), getHistorySettings(ACTIVE_AGENT_ID)])
+    Promise.all([inbox(agentId, { limit: 500 }), getHistorySettings(agentId)])
       .then(([list, settings]) => {
         if (cancelled) return;
         setEntries(list);
@@ -126,7 +127,7 @@ export default function SessionsSidebar({ refreshKey }: SessionsSidebarProps) {
       .catch(e => { if (!cancelled) setErr(e instanceof Error ? e.message : 'Failed'); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [refreshKey]);
+  }, [agentId, refreshKey]);
 
   // When the user just clicked 新建对话 the URL carries the freshly-minted conversationId, but
   // no SessionEntry exists on the server yet (it is created on the first message). Surface a
@@ -137,14 +138,14 @@ export default function SessionsSidebar({ refreshKey }: SessionsSidebarProps) {
     return {
       sessionKey: activeKey,
       sessionId: activeKey,
-      agentId: ACTIVE_AGENT_ID,
+      agentId,
       conversationId: activeKey,
       label: '新对话',
       lastActivityMs: Date.now(),
       lastMessage: null,
       unread: false,
     };
-  }, [location.pathname, activeKey, entries]);
+  }, [location.pathname, activeKey, entries, agentId]);
 
   const grouped = useMemo(() => {
     const map: Record<Bucket, InboxEntry[]> = { today: [], yesterday: [], earlier: [] };
@@ -157,11 +158,11 @@ export default function SessionsSidebar({ refreshKey }: SessionsSidebarProps) {
     setCreating(true);
     setErr(null);
     try {
-      const created = await createSession(ACTIVE_AGENT_ID);
-      try { localStorage.setItem(`claw_chat_session:${ACTIVE_AGENT_ID}`, created.sessionKey); } catch { /* ignore */ }
-      const list = await inbox(ACTIVE_AGENT_ID, { limit: 500 });
+      const created = await createSession(agentId);
+      try { localStorage.setItem(`claw_chat_session:${agentId}`, created.sessionKey); } catch { /* ignore */ }
+      const list = await inbox(agentId, { limit: 500 });
       setEntries(list);
-      navigate(`/chat?session=${encodeURIComponent(created.sessionKey)}`);
+      navigate(chatHref(agentId, created.sessionKey));
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : 'Unable to create a new conversation');
     } finally {
@@ -176,10 +177,10 @@ export default function SessionsSidebar({ refreshKey }: SessionsSidebarProps) {
       return;
     }
     try {
-      const settings = await updateHistorySettings(ACTIVE_AGENT_ID, requested);
+      const settings = await updateHistorySettings(agentId, requested);
       setHistoryLimit(settings.maxSessions);
       setHistoryLimitDraft(String(settings.maxSessions));
-      setEntries(await inbox(ACTIVE_AGENT_ID, { limit: 500 }));
+      setEntries(await inbox(agentId, { limit: 500 }));
       setHistorySettingsOpen(false);
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : 'Unable to save conversation history settings');
@@ -194,7 +195,7 @@ export default function SessionsSidebar({ refreshKey }: SessionsSidebarProps) {
 
   function openSession(entry: InboxEntry) {
     const key = entryNavKey(entry);
-    navigate(`/chat?session=${encodeURIComponent(key)}`);
+    navigate(chatHref(agentId, key));
   }
 
   async function handleDelete(entry: InboxEntry, ev: React.MouseEvent) {
@@ -202,15 +203,15 @@ export default function SessionsSidebar({ refreshKey }: SessionsSidebarProps) {
     // The draft row has no backend session yet — just clear the URL/localStorage and let
     // SessionsSidebar drop it on the next render.
     if (draftEntry && entry.sessionKey === draftEntry.sessionKey) {
-      try { localStorage.removeItem(`claw_chat_session:${ACTIVE_AGENT_ID}`); } catch { /* ignore */ }
-      navigate('/chat');
+      try { localStorage.removeItem(`claw_chat_session:${agentId}`); } catch { /* ignore */ }
+      navigate(chatHref(agentId));
       return;
     }
     if (!confirm(`删除此会话？"${entry.label ?? entry.sessionId}"`)) return;
     try {
-      await deleteSession(ACTIVE_AGENT_ID, entryNavKey(entry));
+      await deleteSession(agentId, entryNavKey(entry));
       setEntries(prev => prev.filter(e => e.sessionKey !== entry.sessionKey));
-      if (activeKey === entryNavKey(entry)) navigate('/chat');
+      if (activeKey === entryNavKey(entry)) navigate(chatHref(agentId));
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : '删除失败');
     }

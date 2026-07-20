@@ -17,8 +17,8 @@ package io.agentscope.dataagent.conversation.api;
 import io.agentscope.dataagent.agent.application.AgentAclService;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.event.AgentEndEvent;
+import io.agentscope.core.event.AgentStartEvent;
 import io.agentscope.core.event.ModelCallEndEvent;
 import io.agentscope.core.event.ConfirmResult;
 import io.agentscope.core.event.RequireUserConfirmEvent;
@@ -36,11 +36,10 @@ import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.ChatUsage;
 import io.agentscope.dataagent.conversation.application.ConversationService;
 import io.agentscope.dataagent.conversation.domain.SessionEntry;
-import io.agentscope.dataagent.agent.domain.ActivityEvent;
-import io.agentscope.dataagent.agent.application.AgentActivityStore;
 import io.agentscope.dataagent.agent.application.AgentCatalogService;
 import io.agentscope.dataagent.agent.domain.AgentDefinition;
 import io.agentscope.dataagent.agent.application.AgentLifecycleService;
+import io.agentscope.dataagent.conversation.application.RunSessionActivityRecorder;
 import io.agentscope.dataagent.workspace.application.LocalWorkspaceMirrorService;
 import io.agentscope.dataagent.workspace.application.WorkspaceArtifactService;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
@@ -120,7 +119,7 @@ public class ChatController {
     private final ApiModelProperties apiModelProperties;
     private final TraceRunService traceRuns;
     private final AgentAccessGuard guard;
-    private final AgentActivityStore activity;
+    private final RunSessionActivityRecorder runSessionActivity;
     private final LocalWorkspaceMirrorService workspaceMirrorService;
     private final WorkspaceArtifactService workspaceArtifactService;
     private final DataAgentBootstrap bootstrap;
@@ -139,7 +138,7 @@ public class ChatController {
             ApiModelProperties apiModelProperties,
             TraceRunService traceRuns,
             AgentAccessGuard guard,
-            AgentActivityStore activity,
+            RunSessionActivityRecorder runSessionActivity,
             AgentLifecycleService lifecycleService,
             LocalWorkspaceMirrorService workspaceMirrorService,
             WorkspaceArtifactService workspaceArtifactService,
@@ -154,7 +153,7 @@ public class ChatController {
         this.apiModelProperties = apiModelProperties;
         this.traceRuns = traceRuns;
         this.guard = guard;
-        this.activity = activity;
+        this.runSessionActivity = runSessionActivity;
         this.workspaceMirrorService = workspaceMirrorService;
         this.workspaceArtifactService = workspaceArtifactService;
         this.bootstrap = bootstrap;
@@ -227,7 +226,13 @@ public class ChatController {
                     emitter,
                     "当前会话仍有执行中的请求。请先点击 Stop，或等待当前请求结束后再发送。");
         }
-        recordRunSession(def, agentId, userId, resolvedConversationId, conversationLabel(req.message()));
+        boolean recordRunActivity =
+                recordRunSession(
+                        def,
+                        agentId,
+                        userId,
+                        resolvedConversationId,
+                        conversationLabel(req.message()));
         log.info(
                 "[stream-debug] session-recorded requestId={}, conversationId={}, gateKey={}",
                 requestId,
@@ -251,6 +256,7 @@ public class ChatController {
                 emitter.completeWithError(e);
             }
             emitter.complete();
+            recordRunActivity(recordRunActivity, def, agentId, userId, gateKey);
             return emitter;
         }
 
@@ -325,6 +331,10 @@ public class ChatController {
                     return Flux.just(sseFrame("error",
                             Map.of("type", "error", "error", msg)));
                 })
+                .doFinally(
+                        signal ->
+                                recordRunActivity(
+                                        recordRunActivity, def, agentId, userId, gateKey))
                 .subscribe(
                         frame -> {
                             try {
@@ -446,10 +456,18 @@ public class ChatController {
             conversationId = UUID.randomUUID().toString();
         }
         final String resolvedConversationId = conversationId;
-        recordRunSession(def, agentId, userId, resolvedConversationId, conversationLabel(req.message()));
+        boolean recordRunActivity =
+                recordRunSession(
+                        def,
+                        agentId,
+                        userId,
+                        resolvedConversationId,
+                        conversationLabel(req.message()));
+        String gateKey = resolveGateKey(userId, agentId, resolvedConversationId);
         CommandResult cmd =
                 handleSlashCommand(userId, agentId, req.message(), resolvedConversationId);
         if (cmd != null) {
+            recordRunActivity(recordRunActivity, def, agentId, userId, gateKey);
             return new ChatResponse(
                     cmd.message,
                     cmd.newSessionKey != null ? cmd.newSessionKey : resolvedConversationId);
@@ -474,6 +492,8 @@ public class ChatController {
         } catch (RuntimeException exception) {
             traceRuns.complete(traceScope, "ERROR", exception);
             throw exception;
+        } finally {
+            recordRunActivity(recordRunActivity, def, agentId, userId, gateKey);
         }
     }
 
@@ -481,29 +501,34 @@ public class ChatController {
     //  内部辅助方法
     // -----------------------------------------------------------------
 
-    private void recordRunSession(
+    private boolean recordRunSession(
             AgentDefinition def,
             String agentId,
             String userId,
             String conversationId,
             String initialLabel) {
         String gateKey = resolveGateKey(userId, agentId, conversationId);
-        if (gateKey == null) return;
+        if (gateKey == null) return false;
 
         // 确保会话记录在数据库中存在（全局 Agent 的 def.ownerId 为 null，但会话记录仍应创建）
         conversationService.createSessionRecord(agentId, conversationId, userId, gateKey, initialLabel);
 
         if (def == null || def.ownerId() == null) {
-            return;
+            return false;
         }
-        if (!startedSessions.add(gateKey)) return;
-        activity.record(
-                def.ownerId(),
-                agentId,
-                activity.actor(userId),
-                ActivityEvent.Action.RUN_SESSION,
-                gateKey,
-                null);
+        return startedSessions.add(gateKey);
+    }
+
+    private void recordRunActivity(
+            boolean shouldRecord,
+            AgentDefinition def,
+            String agentId,
+            String userId,
+            String gateKey) {
+        if (!shouldRecord || def == null || def.ownerId() == null || gateKey == null) return;
+        if (!runSessionActivity.tryRecord(def.ownerId(), agentId, userId, gateKey)) {
+            startedSessions.remove(gateKey);
+        }
     }
 
     private static String conversationLabel(String message) {
@@ -723,6 +748,7 @@ public class ChatController {
         Flux<AgentEvent> events = chatUiChannel.dispatchStream(inbound);
         final String recordedAgentId = agentId != null ? agentId : "(default)";
         UsageTotals usageTotals = new UsageTotals();
+        SubagentSpawnResultAccumulator spawnResults = new SubagentSpawnResultAccumulator();
         AtomicReference<Throwable> terminalError = new AtomicReference<>();
         AtomicBoolean firstAgentEvent = new AtomicBoolean(true);
         log.info(
@@ -754,6 +780,22 @@ public class ChatController {
                     if (event instanceof ModelCallEndEvent modelCallEnd) {
                         usageTotals.add(modelCallEnd.getUsage());
                     }
+                    if (event instanceof AgentStartEvent agentStart) {
+                        recordSubagentStart(
+                                event,
+                                agentStart,
+                                conversationId,
+                                recordedAgentId,
+                                userId);
+                    }
+                    spawnResults
+                            .accept(event)
+                            .ifPresent(
+                                    spawn ->
+                                            recordSubagentSpawnResult(
+                                                    spawn,
+                                                    conversationId,
+                                                    userId));
                 })
                 .doOnError(error -> {
                     terminalError.set(error);
@@ -804,6 +846,54 @@ public class ChatController {
                             usageTotals.outputTokens(),
                             usageTotals.cachedPromptTokens());
                 });
+    }
+
+    private void recordSubagentStart(
+            AgentEvent event,
+            AgentStartEvent start,
+            String parentConversationId,
+            String parentAgentId,
+            String userId) {
+        String source = event.getSource();
+        if (source == null || source.isBlank() || !source.contains("/")) return;
+        try {
+            conversationService.recordSubagentSession(
+                    parentConversationId,
+                    start.getName() != null ? start.getName() : parentAgentId + "-subagent",
+                    start.getSessionId(),
+                    userId,
+                    source,
+                    event.getId());
+        } catch (RuntimeException exception) {
+            // The session tree is an operational read model and must not fail the agent stream.
+            log.warn(
+                    "Unable to record subagent session: parent={}, child={}, source={}, error={}",
+                    parentConversationId,
+                    start.getSessionId(),
+                    source,
+                    exception.getMessage());
+        }
+    }
+
+    private void recordSubagentSpawnResult(
+            SubagentSpawnResultAccumulator.SpawnResult spawn,
+            String parentConversationId,
+            String userId) {
+        try {
+            conversationService.recordSubagentSession(
+                    parentConversationId,
+                    spawn.agentId(),
+                    spawn.sessionId(),
+                    userId,
+                    parentConversationId + "/" + spawn.agentId(),
+                    spawn.toolCallId());
+        } catch (RuntimeException exception) {
+            log.warn(
+                    "Unable to record agent_spawn result: parent={}, child={}, error={}",
+                    parentConversationId,
+                    spawn.sessionId(),
+                    exception.getMessage());
+        }
     }
 
     private TraceRunService.TraceScope startTrace(

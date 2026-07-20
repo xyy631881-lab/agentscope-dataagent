@@ -44,6 +44,8 @@ public interface SessionEntityRepository extends JpaRepository<SessionEntity, Lo
 
     List<SessionEntity> findByKind(String kind);
 
+    List<SessionEntity> findBySpawnedByOrderByCreatedAtMsAsc(String spawnedBy);
+
     /** 查询最后活跃时间早于 cutoff 的会话（用于空闲重置和过期清理）。 */
     List<SessionEntity> findByLastActivityMsBefore(long cutoff);
 

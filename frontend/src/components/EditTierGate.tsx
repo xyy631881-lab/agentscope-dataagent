@@ -4,6 +4,8 @@ import { AgentDefinition } from '../api/agents';
 import { chatHrefPreservingSession } from '../utils/session';
 
 export interface ShellOutletContext {
+  activeAgentId: string;
+  setActiveAgentId: (agentId: string) => void;
   agent: AgentDefinition | null;
   agentLoading: boolean;
   agentError: string | null;

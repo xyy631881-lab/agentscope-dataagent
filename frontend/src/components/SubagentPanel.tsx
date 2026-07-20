@@ -320,7 +320,7 @@ export default function SubagentPanel({ agentId, onChanged }: Props) {
               value={form.name}
               onChange={e => setForm({ ...form, name: e.target.value })}
               disabled={!isNew}
-              placeholder="例如 code-reviewer"
+              placeholder="例如 data-explorer"
             />
           </div>
           <div style={S.row}>

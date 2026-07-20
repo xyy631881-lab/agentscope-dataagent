@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useOutletContext } from 'react-router-dom';
 import {
   listMyContributions,
   submitFromWorkspace,
@@ -6,7 +7,7 @@ import {
   type ContributionTargetType,
 } from '../api/contributions';
 import { tree as fetchTree, type FileNode } from '../api/workspace';
-import { ACTIVE_AGENT_ID } from '../api/activeAgent';
+import type { ShellOutletContext } from '../components/EditTierGate';
 
 const S: Record<string, React.CSSProperties> = {
   page: {
@@ -246,11 +247,12 @@ function TreeRow({ node, depth, expanded, selected, toggleExpand, toggleSelect }
 }
 
 export default function ContributionsPage() {
+  const ctx = useOutletContext<ShellOutletContext>();
   const [items, setItems] = useState<Contribution[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  const [sourceAgentId, setSourceAgentId] = useState(ACTIVE_AGENT_ID);
+  const [sourceAgentId, setSourceAgentId] = useState(ctx.activeAgentId);
   const [targetAgentId, setTargetAgentId] = useState('');
   const [nodes, setNodes] = useState<FileNode[]>([]);
   const [treeErr, setTreeErr] = useState<string | null>(null);
@@ -296,6 +298,9 @@ export default function ContributionsPage() {
   useEffect(() => {
     load();
   }, [load]);
+  useEffect(() => {
+    setSourceAgentId(ctx.activeAgentId);
+  }, [ctx.activeAgentId]);
   useEffect(() => {
     reloadTree(sourceAgentId);
     setSelected(new Set());
@@ -383,7 +388,7 @@ export default function ContributionsPage() {
                   style={S.input}
                   value={sourceAgentId}
                   onChange={e => setSourceAgentId(e.target.value)}
-                  placeholder={ACTIVE_AGENT_ID}
+                  placeholder={ctx.activeAgentId}
                 />
               </div>
               <div style={{ flex: 1 }}>

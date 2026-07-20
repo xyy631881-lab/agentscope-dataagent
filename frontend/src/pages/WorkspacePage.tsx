@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { ACTIVE_AGENT_ID } from '../api/activeAgent';
+import { useOutletContext, useSearchParams } from 'react-router-dom';
 import { summary as fetchSummary, WorkspaceSummary } from '../api/workspace';
 import BackToChatHeader from '../components/BackToChatHeader';
 import WorkspaceFileTree from '../components/WorkspaceFileTree';
 import WorkspaceEditor from '../components/WorkspaceEditor';
+import type { ShellOutletContext } from '../components/EditTierGate';
 
 const pathBar: React.CSSProperties = {
   display: 'grid', gridTemplateColumns: '120px minmax(0, 1fr) auto', alignItems: 'center', gap: 8,
@@ -41,7 +41,8 @@ const statItem: React.CSSProperties = {
 };
 
 export default function WorkspacePage() {
-  const agentId = ACTIVE_AGENT_ID;
+  const ctx = useOutletContext<ShellOutletContext>();
+  const agentId = ctx.activeAgentId;
   const [searchParams] = useSearchParams();
   const sessionKey = searchParams.get('session') ?? undefined;
   const [selected, setSelected] = useState<string | null>(null);

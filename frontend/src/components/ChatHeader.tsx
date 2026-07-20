@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { AgentDefinition } from '../api/agents';
+import { AgentDefinition, listAgents } from '../api/agents';
+import { hrefForAgent } from '../api/activeAgent';
 import { listModels, updateAgentConfig } from '../api/admin';
 import type { ModelOption } from '../api/admin';
 
@@ -14,18 +15,25 @@ const CONFIG_BUTTONS: { key: string; label: string; icon: string }[] = [
 ];
 
 export interface ChatHeaderProps {
+  agentId: string;
   agent: AgentDefinition | null;
+  onAgentChange: (agentId: string) => void;
 }
 
-export default function ChatHeader({ agent }: ChatHeaderProps) {
+export default function ChatHeader({ agentId, agent, onAgentChange }: ChatHeaderProps) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const sessionKey = searchParams.get('session');
 
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+  const [agentOptions, setAgentOptions] = useState<AgentDefinition[]>([]);
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [changing, setChanging] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
+
+  useEffect(() => {
+    listAgents().then(setAgentOptions).catch(() => setAgentOptions([]));
+  }, [agentId]);
 
   useEffect(() => {
     if (!agent) return;
@@ -56,7 +64,7 @@ export default function ChatHeader({ agent }: ChatHeaderProps) {
   const canEdit = agent?.tierForCurrentUser === 'EDIT';
   const name = agent?.name ?? 'data-agent';
   const emoji = agent?.identityEmoji ?? '📊';
-  const workspaceHref = sessionKey ? `/workspace?session=${encodeURIComponent(sessionKey)}` : '/workspace';
+  const workspaceHref = hrefForAgent('/workspace', agentId, sessionKey);
 
   return (
     <div style={S.root}>
@@ -74,6 +82,21 @@ export default function ChatHeader({ agent }: ChatHeaderProps) {
       </div>
 
       <div style={S.right}>
+        {agentOptions.length > 0 && (
+          <div style={S.modelWrap}>
+            <span style={S.modelLabel}>Agent</span>
+            <select
+              value={agentId}
+              onChange={event => onAgentChange(event.target.value)}
+              title="切换当前 Agent"
+              style={S.agentSelect}
+            >
+              {agentOptions.map(option => (
+                <option key={option.id} value={option.id}>{option.name} ({option.id})</option>
+              ))}
+            </select>
+          </div>
+        )}
         {modelOptions.length > 0 && (
           <div style={S.modelWrap}>
             <span style={S.modelLabel}>模型</span>
@@ -98,7 +121,7 @@ export default function ChatHeader({ agent }: ChatHeaderProps) {
           <button
             type="button"
             key={b.key}
-            onClick={() => navigate(`/configure/${b.key}`)}
+            onClick={() => navigate(hrefForAgent(`/configure/${b.key}`, agentId, sessionKey))}
             style={S.btn}
             onMouseEnter={e => { e.currentTarget.style.background = '#eef2ff'; e.currentTarget.style.color = '#3730a3'; }}
             onMouseLeave={e => { e.currentTarget.style.background = '#ffffff'; e.currentTarget.style.color = '#475569'; }}
@@ -167,6 +190,10 @@ const S: Record<string, React.CSSProperties> = {
     color: '#3730a3', fontSize: '0.82rem', fontWeight: 600,
     cursor: 'pointer', outline: 'none',
     maxWidth: 200,
+  },
+  agentSelect: {
+    border: 'none', background: 'transparent', color: '#0f172a',
+    fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer', outline: 'none', maxWidth: 220,
   },
   modelError: {
     color: '#b91c1c', fontWeight: 700, fontSize: '0.78rem', cursor: 'help',

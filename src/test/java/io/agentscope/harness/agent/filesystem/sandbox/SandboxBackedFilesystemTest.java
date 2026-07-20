@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.harness.agent.filesystem.model.FileUploadResponse;
+import io.agentscope.harness.agent.filesystem.model.WriteResult;
 import io.agentscope.harness.agent.sandbox.ExecResult;
 import io.agentscope.harness.agent.sandbox.Sandbox;
 import io.agentscope.harness.agent.sandbox.SandboxState;
@@ -32,7 +33,26 @@ class SandboxBackedFilesystemTest {
         assertThat(sandbox.commands)
                 .anyMatch(command -> command.contains("base64 -d >>"))
                 .anyMatch(command -> command.startsWith("mv "))
+                .noneMatch(command -> command.contains("$("))
                 .allMatch(command -> command.length() < 12_000);
+    }
+
+    @Test
+    void writesNestedFileWithoutShellCommandSubstitution() {
+        RecordingSandbox sandbox = new RecordingSandbox();
+        SandboxBackedFilesystem filesystem = new SandboxBackedFilesystem();
+        filesystem.setSandbox(sandbox);
+
+        WriteResult result =
+                filesystem.write(
+                        RuntimeContext.empty(),
+                        "reports/shared-handoff-test.md",
+                        "# Shared Handoff Test\n");
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(sandbox.commands)
+                .anyMatch(command -> command.startsWith("mkdir -p 'reports'"))
+                .noneMatch(command -> command.contains("$("));
     }
 
     private static final class RecordingSandbox implements Sandbox {

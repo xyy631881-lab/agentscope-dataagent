@@ -1,0 +1,2 @@
+{"type":"message","id":"9f2e5c11-7829-4630-9dbd-3ccfb7eab703","timestamp":1784529490.494127600,"role":"USER","content":"只回复：Insight Agent 已接管本会话。不要调用任何工具。"}
+{"type":"message","id":"5d0f0f12ae94468393d3a7a7b3c420cb","parentId":"9f2e5c11-7829-4630-9dbd-3ccfb7eab703","timestamp":1784529490.494127600,"role":"ASSISTANT","content":"Insight Agent 已接管本会话。"}

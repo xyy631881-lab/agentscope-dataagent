@@ -1,3 +1,5 @@
+import { activeAgentIdFromSearch, chatHref, storedActiveAgentId } from '../api/activeAgent';
+
 /**
  * Builds a `/chat` href that preserves the current `?session=` query parameter (if any).
  *
@@ -9,5 +11,6 @@ export function chatHrefPreservingSession(): string {
   if (typeof window === 'undefined') return '/chat';
   const params = new URLSearchParams(window.location.search);
   const session = params.get('session');
-  return session ? `/chat?session=${encodeURIComponent(session)}` : '/chat';
+  const agentId = activeAgentIdFromSearch(window.location.search) ?? storedActiveAgentId();
+  return chatHref(agentId, session);
 }

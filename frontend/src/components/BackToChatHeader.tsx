@@ -1,5 +1,7 @@
 import React from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom';
+import { chatHref as buildChatHref } from '../api/activeAgent';
+import type { ShellOutletContext } from './EditTierGate';
 
 export interface BackToChatHeaderProps {
   title: string;
@@ -8,9 +10,10 @@ export interface BackToChatHeaderProps {
 
 export default function BackToChatHeader({ title, subtitle }: BackToChatHeaderProps) {
   const navigate = useNavigate();
+  const ctx = useOutletContext<ShellOutletContext>();
   const [searchParams] = useSearchParams();
   const sessionKey = searchParams.get('session');
-  const chatHref = sessionKey ? `/chat?session=${encodeURIComponent(sessionKey)}` : '/chat';
+  const chatHref = buildChatHref(ctx.activeAgentId, sessionKey);
 
   return (
     <div style={S.root}>
