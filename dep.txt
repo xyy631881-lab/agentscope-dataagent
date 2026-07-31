@@ -1,0 +1,10 @@
+io.agentscope.examples:agentscope-dataagent:jar:2.0.0-SNAPSHOT
++- io.agentscope:agentscope-harness:jar:2.0.0:compile
+|  \- io.agentscope:agentscope-core:jar:2.0.0:compile
++- io.agentscope:agentscope-extensions-model-openai:jar:2.0.0:compile
++- io.agentscope:agentscope-extensions-model-ollama:jar:2.0.0:compile
++- io.agentscope:agentscope-extensions-channel-dingtalk:jar:2.0.0:compile
+|  \- io.agentscope:agentscope-extensions-channel-common:jar:2.0.0:compile
++- io.agentscope:agentscope-extensions-skill-git-repository:jar:2.0.0:compile
++- io.agentscope:agentscope-extensions-nacos-skill:jar:2.0.0:compile
+\- io.agentscope:agentscope-extensions-redis:jar:2.0.0:compile

@@ -23,6 +23,7 @@ import io.agentscope.core.state.AgentStateStore;
 import io.agentscope.core.state.InMemoryAgentStateStore;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.runtime.AgentRuntimeConfigurer;
+import io.agentscope.dataagent.tools.data.DataAgentToolkit;
 import io.agentscope.dataagent.runtime.config.ChannelConfigEntry;
 import io.agentscope.dataagent.config.ModelConfig;
 import io.agentscope.dataagent.config.properties.AgentProperties;
@@ -64,7 +65,8 @@ public class BootstrapConfig {
             Optional<AgentStateStore> sessionOpt,
             SandboxSnapshotSpec snapshotSpec,
             SandboxExecutionGuard sandboxExecutionGuard,
-            OpenTelemetry openTelemetry) {
+            OpenTelemetry openTelemetry,
+            DataAgentToolkit dataAgentToolkit) {
         AgentStateStore stateStore = sessionOpt.orElseGet(InMemoryAgentStateStore::new);
         if (sessionOpt.isEmpty()) {
             log.warn(
@@ -83,7 +85,8 @@ public class BootstrapConfig {
                 activeModelId,
                 fallbackModelId,
                 snapshotSpec,
-                sandboxExecutionGuard);
+                sandboxExecutionGuard,
+                dataAgentToolkit);
     }
 
     @Bean
@@ -167,6 +170,8 @@ public class BootstrapConfig {
         Path workspaceRoot = DataAgentBootstrap.DEFAULT_WORKSPACE_ROOT;
 
         if (Files.exists(configFile)) {
+            upgradeGeneratedWorkspacePrompt(
+                    workspaceRoot.resolve("AGENTS.md"), resolvePrompt(agentProps.getSystemPrompt()));
             return;
         }
 
@@ -204,18 +209,44 @@ public class BootstrapConfig {
                 workspaceRoot, "Data Agent", resolvePrompt(agentProps.getSystemPrompt()));
     }
 
-    private static String resolvePrompt(String prompt) {
+    static void upgradeGeneratedWorkspacePrompt(Path agentsMd, String prompt)
+            throws IOException {
+        if (!Files.isRegularFile(agentsMd) || prompt == null || prompt.isBlank()) {
+            return;
+        }
+        String current = Files.readString(agentsMd);
+        String generatedIntro =
+                "You are a Data Agent built with AgentScope. You help users explore, analyse, "
+                        + "visualise and report on data. Prefer registered skills and sub-agents "
+                        + "over ad-hoc reasoning; always cite the data source you used.";
+        String marker = "\n## How this folder works";
+        int markerIndex = current.indexOf(marker);
+        String currentIntro = markerIndex >= 0
+                ? current.substring(0, markerIndex).trim()
+                : "";
+        boolean generatedPrompt = current.contains(generatedIntro)
+                || currentIntro.equals("# Data Agent\n\nclasspath:/prompts/system.md");
+        if (!generatedPrompt || markerIndex < 0) {
+            return;
+        }
+        String upgraded = "# Data Agent\n\n" + prompt.trim() + "\n" + current.substring(markerIndex);
+        Files.writeString(agentsMd, upgraded);
+        log.info("Upgraded generated Data Agent workspace prompt at {}", agentsMd);
+    }
+
+    static String resolvePrompt(String prompt) {
         if (prompt == null || !prompt.startsWith("classpath:")) {
             return prompt;
         }
         String resourcePath = prompt.substring("classpath:".length());
-        try {
-            return new String(
-                    ClassLoader.getSystemResourceAsStream(
-                            resourcePath.startsWith("/") ? resourcePath.substring(1) : resourcePath)
-                            .readAllBytes(),
-                    java.nio.charset.StandardCharsets.UTF_8);
+        String absoluteResource = resourcePath.startsWith("/") ? resourcePath : "/" + resourcePath;
+        try (var input = BootstrapConfig.class.getResourceAsStream(absoluteResource)) {
+            if (input == null) {
+                throw new IOException("Prompt resource not found: " + absoluteResource);
+            }
+            return new String(input.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
         } catch (Exception e) {
+            log.warn("Unable to resolve system prompt resource {}: {}", prompt, e.getMessage());
             return prompt;
         }
     }

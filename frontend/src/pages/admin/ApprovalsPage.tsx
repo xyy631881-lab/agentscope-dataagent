@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import AdminAppShell from '../../components/admin/AdminAppShell';
+import { confirmAction } from '../../components/InteractionHost';
 import {
   approveContribution,
   getContribution,
   listContributions,
   rejectContribution,
+  rollbackContribution,
   type Contribution,
   type ContributionDetail,
   type ContributionStatus,
@@ -170,9 +171,17 @@ interface DetailViewProps {
   initialNote: string;
   onApproved: () => void;
   onRejected: () => void;
+  onRolledBack: () => void;
 }
 
-function DetailView({ contributionId, status, initialNote, onApproved, onRejected }: DetailViewProps) {
+function DetailView({
+  contributionId,
+  status,
+  initialNote,
+  onApproved,
+  onRejected,
+  onRolledBack,
+}: DetailViewProps) {
   const [detail, setDetail] = useState<ContributionDetail | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [active, setActive] = useState(0);
@@ -242,6 +251,20 @@ function DetailView({ contributionId, status, initialNote, onApproved, onRejecte
     try {
       await rejectContribution(contributionId, note || '');
       onRejected();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setWorking(false);
+    }
+  }
+  async function doRollback() {
+    const version = detail?.contribution.version;
+    if (!version || !(await confirmAction(`将共享资产回滚到 v${version}？`))) return;
+    setWorking(true);
+    setErr(null);
+    try {
+      await rollbackContribution(contributionId);
+      onRolledBack();
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -335,6 +358,14 @@ function DetailView({ contributionId, status, initialNote, onApproved, onRejecte
           </button>
         </div>
       )}
+      {status === 'APPROVED' && detail.contribution.version > 0 && (
+        <div style={S.actions}>
+          <span style={S.meta}>已归档为 v{detail.contribution.version}</span>
+          <button style={S.smallBtn} onClick={doRollback} disabled={working}>
+            {working ? '回滚中…' : `回滚至 v${detail.contribution.version}`}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -373,8 +404,7 @@ export default function ApprovalsPage() {
   };
 
   return (
-    <AdminAppShell>
-      <div style={S.page}>
+    <div style={S.page}>
         <div style={S.header}>
         <div style={S.h1}>工作区贡献审批</div>
         <div style={S.sub}>
@@ -403,6 +433,7 @@ export default function ApprovalsPage() {
             <div style={S.cardHeader}>
               <div style={S.cardTitle}>
                 #{c.id} · {c.targetType} · <code>{c.targetPath}</code>
+                {c.version > 0 ? ` · v${c.version}` : ''}
               </div>
               <span style={badgeStyle(c.status)}>{c.status}</span>
             </div>
@@ -450,11 +481,14 @@ export default function ApprovalsPage() {
                   toggleExpand(c.id);
                   load();
                 }}
+                onRolledBack={() => {
+                  toggleExpand(c.id);
+                  load();
+                }}
               />
             )}
           </div>
         ))}
-      </div>
-    </AdminAppShell>
+    </div>
   );
 }

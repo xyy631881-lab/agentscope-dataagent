@@ -20,9 +20,9 @@ import io.agentscope.dataagent.agent.application.SkillInstallService;
 import io.agentscope.dataagent.agent.application.WorkspaceResolutionService;
 import io.agentscope.dataagent.agent.application.AgentAclService;
 import io.agentscope.dataagent.capability.marketplace.application.UserMarketplaceRegistry;
+import io.agentscope.dataagent.workspace.application.SandboxStateInvalidator;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.skill.AgentSkill;
 import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.dataagent.agent.domain.ActivityEvent;
@@ -30,10 +30,6 @@ import io.agentscope.dataagent.agent.application.AgentActivityStore;
 import io.agentscope.dataagent.agent.application.AgentLifecycleService;
 import io.agentscope.dataagent.agent.application.AgentAccessGuard;
 import io.agentscope.dataagent.agent.application.AgentAclService.Tier;
-import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
-import io.agentscope.harness.agent.filesystem.model.FileInfo;
-import io.agentscope.harness.agent.filesystem.model.LsResult;
-import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -94,18 +90,21 @@ public class AgentSkillsController {
     private final AgentLifecycleService lifecycleService;
     private final WorkspaceResolutionService resolutionService;
     private final SkillInstallService skillInstallService;
+    private final SandboxStateInvalidator sandboxStateInvalidator;
 
     public AgentSkillsController(
             AgentAccessGuard guard,
             AgentActivityStore activity,
             WorkspaceResolutionService resolutionService,
             AgentLifecycleService lifecycleService,
-            SkillInstallService skillInstallService) {
+            SkillInstallService skillInstallService,
+            SandboxStateInvalidator sandboxStateInvalidator) {
         this.guard = guard;
         this.activity = activity;
         this.lifecycleService = lifecycleService;
         this.resolutionService = resolutionService;
         this.skillInstallService = skillInstallService;
+        this.sandboxStateInvalidator = sandboxStateInvalidator;
     }
 
     // -----------------------------------------------------------------
@@ -118,22 +117,7 @@ public class AgentSkillsController {
         String userId = (String) auth.getPrincipal();
         guard.require(userId, agentId, Tier.RUN);
         var ctx = resolutionService.resolve(userId, agentId);
-        AbstractFilesystem fs = ctx.filesystem();
-        RuntimeContext runtimeContext = RuntimeContext.builder().userId(ctx.ownerId()).build();
-        LsResult ls = fs.ls(runtimeContext, "/skills");
-        if (ls == null || !ls.isSuccess() || ls.entries() == null) {
-            return List.<WorkspaceSkillInfo>of();
-        }
-        List<WorkspaceSkillInfo> out = new ArrayList<>();
-        for (FileInfo info : ls.entries()) {
-            if (!info.isDirectory()) continue;
-            String dirName = SkillFileService.leafName(info.path());
-            if (dirName.isBlank()) continue;
-            WorkspaceSkillInfo skill = SkillFileService.readWorkspaceSkill(fs, runtimeContext, dirName);
-            if (skill != null) out.add(skill);
-        }
-        out.sort(Comparator.comparing(WorkspaceSkillInfo::name));
-        return out;
+        return SkillFileService.listDurable(ctx.workspace());
     }
 
     @GetMapping("/workspace/{name}")
@@ -143,17 +127,7 @@ public class AgentSkillsController {
         guard.require(userId, agentId, Tier.RUN);
         SkillFileService.validateSkillName(name);
         var ctx = resolutionService.resolve(userId, agentId);
-        AbstractFilesystem fs = ctx.filesystem();
-        RuntimeContext runtimeContext = RuntimeContext.builder().userId(ctx.ownerId()).build();
-        String markdown = SkillFileService.readUtf8(fs, runtimeContext, "/skills/" + name + "/SKILL.md");
-        if (markdown == null) {
-            throw new ResponseStatusException(
-                    HttpStatus.NOT_FOUND, "SKILL.md missing for: " + name);
-        }
-        Map<String, String> resources = SkillFileService.collectResources(fs, runtimeContext, name);
-        String description =
-                SkillFileService.parseFrontMatterField(markdown, SkillFileService.DESCRIPTION_LINE);
-        return new WorkspaceSkillDetail(name, description, markdown, resources);
+        return SkillFileService.readDurableDetail(ctx.workspace(), name);
     }
 
     @PutMapping("/workspace/{name}")
@@ -170,20 +144,21 @@ public class AgentSkillsController {
                     HttpStatus.BAD_REQUEST, "markdown is required");
         }
         var ctx = resolutionService.resolve(userId, agentId);
-        WorkspaceManager wsm = ctx.manager();
-        RuntimeContext runtimeContext = RuntimeContext.builder().userId(ctx.ownerId()).build();
-        wsm.writeUtf8WorkspaceRelative(
-                runtimeContext, "skills/" + name + "/SKILL.md", req.markdown());
-        SkillFileService.writeResources(wsm, runtimeContext, name, req.resources());
-        activity.record(
-                ctx.ownerId(),
-                agentId,
-                activity.actor(userId),
-                ActivityEvent.Action.EDIT_FILE,
-                "skills/" + name,
-                null);
+        WorkspaceSkillInfo saved =
+                SkillFileService.upsertDurable(
+                        ctx.workspace(), name, req.markdown(), req.resources());
+        if (!ctx.directLocalWrites()) {
+            activity.record(
+                    ctx.ownerId(),
+                    agentId,
+                    activity.actor(userId),
+                    ActivityEvent.Action.EDIT_FILE,
+                    "skills/" + name,
+                    null);
+        }
+        sandboxStateInvalidator.invalidateAll();
         lifecycleService.invalidateUca(ctx.ownerId(), agentId);
-        return SkillFileService.readWorkspaceSkill(wsm.getFilesystem(), runtimeContext, name);
+        return saved;
     }
 
     @DeleteMapping("/workspace/{name}")
@@ -194,20 +169,17 @@ public class AgentSkillsController {
         guard.require(userId, agentId, Tier.EDIT);
         SkillFileService.validateSkillName(name);
         var ctx = resolutionService.resolve(userId, agentId);
-        AbstractFilesystem fs = ctx.manager().getFilesystem();
-        RuntimeContext runtimeContext = RuntimeContext.builder().userId(ctx.ownerId()).build();
-        if (!fs.exists(runtimeContext, "/skills/" + name)) {
-            throw new ResponseStatusException(
-                    HttpStatus.NOT_FOUND, "Skill not found: " + name);
+        SkillFileService.deleteDurable(ctx.workspace(), name);
+        if (!ctx.directLocalWrites()) {
+            activity.record(
+                    ctx.ownerId(),
+                    agentId,
+                    activity.actor(userId),
+                    ActivityEvent.Action.DELETE_FILE,
+                    "skills/" + name,
+                    null);
         }
-        fs.delete(runtimeContext, "/skills/" + name);
-        activity.record(
-                ctx.ownerId(),
-                agentId,
-                activity.actor(userId),
-                ActivityEvent.Action.DELETE_FILE,
-                "skills/" + name,
-                null);
+        sandboxStateInvalidator.invalidateAll();
         lifecycleService.invalidateUca(ctx.ownerId(), agentId);
     }
 
@@ -349,7 +321,11 @@ public class AgentSkillsController {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
     public record SkillMarketplaceMeta(
-            String repoType, String repoLocation, String originalName, String installedAt) {}
+            String repoType,
+            String repoLocation,
+            String originalName,
+            String installedAt,
+            Integer version) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record WorkspaceSkillDetail(
@@ -380,5 +356,9 @@ public class AgentSkillsController {
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record MarketplaceInstallRequest(
-            String marketplaceId, String skillName, String targetName, Boolean overwrite) {}
+            String marketplaceId,
+            String skillName,
+            String targetName,
+            Boolean overwrite,
+            Integer version) {}
 }

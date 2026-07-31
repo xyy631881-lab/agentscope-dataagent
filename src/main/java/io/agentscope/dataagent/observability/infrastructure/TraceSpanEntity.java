@@ -9,7 +9,7 @@ import jakarta.persistence.Index;
 import jakarta.persistence.Lob;
 import jakarta.persistence.Table;
 
-/** Sanitised span exported by AgentScope's OtelTracingMiddleware. */
+/** 执行过程中的单个操作 Span（模型调用、工具调用等）. */
 @Entity
 @Table(
         name = "trace_span",

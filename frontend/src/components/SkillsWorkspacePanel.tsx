@@ -7,6 +7,7 @@ import {
   upsertWorkspaceSkill,
   deleteWorkspaceSkill,
 } from '../api/skills';
+import { confirmAction } from './InteractionHost';
 
 interface Props {
   agentId: string;
@@ -175,12 +176,18 @@ export default function SkillsWorkspacePanel({
 
   const handleDelete = async () => {
     if (!selectedDir) return;
-    if (!window.confirm(`Uninstall skill "${selectedDir}"? This removes the entire directory.`)) return;
+    if (!(await confirmAction(`卸载技能“${selectedDir}”？该技能目录及其中资源将被删除。`))) return;
     setBusy(true);
     setError(null);
     try {
       await deleteWorkspaceSkill(agentId, selectedDir);
+      // Remove the deleted entry immediately. A subsequent no-store read below verifies the
+      // durable workspace without leaving a stale skill visible while that request is in flight.
+      setAllSkills(current => current.filter(skill => skill.dirName !== selectedDir));
       setSelectedDir(null);
+      setDetail(null);
+      setDraft('');
+      setDirty(false);
       await refreshList();
       onChange();
     } catch (e) {

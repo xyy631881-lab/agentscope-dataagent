@@ -36,6 +36,19 @@ export interface CurrentSession {
   exists: boolean;
 }
 
+export interface PendingConfirmationStatus {
+  replyId: string;
+  toolCalls: PendingToolCall[];
+}
+
+/** Runtime state survives a browser navigation; it is not tied to one SSE connection. */
+export interface ChatRunStatus {
+  sessionKey: string;
+  running: boolean;
+  requestId?: string | null;
+  pendingConfirmation?: PendingConfirmationStatus | null;
+}
+
 function authHeaders(): Record<string, string> {
   const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -50,6 +63,15 @@ export async function currentSession(
     headers: authHeaders(),
   });
   if (!res.ok) throw new Error(`解析当前会话失败: ${res.status}`);
+  return res.json();
+}
+
+export async function chatRunStatus(agentId: string, sessionKey: string): Promise<ChatRunStatus> {
+  const res = await fetch(
+    `/api/agents/${encodeURIComponent(agentId)}/chat/status?sessionKey=${encodeURIComponent(sessionKey)}`,
+    { headers: authHeaders() },
+  );
+  if (!res.ok) throw new Error(`读取会话运行状态失败: ${res.status}`);
   return res.json();
 }
 

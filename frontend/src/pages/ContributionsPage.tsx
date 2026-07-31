@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useOutletContext } from 'react-router-dom';
+import { useNavigate, useOutletContext } from 'react-router-dom';
 import {
   listMyContributions,
   submitFromWorkspace,
   type Contribution,
   type ContributionTargetType,
 } from '../api/contributions';
+import { listAgents, type AgentDefinition } from '../api/agents';
 import { tree as fetchTree, type FileNode } from '../api/workspace';
 import type { ShellOutletContext } from '../components/EditTierGate';
 
@@ -18,31 +19,40 @@ const S: Record<string, React.CSSProperties> = {
     height: '100%',
     overflow: 'auto',
   },
-  header: { display: 'flex', alignItems: 'baseline', gap: 12 },
-  h1: { fontSize: '1.05rem', fontWeight: 600, color: '#e2e8f0' },
-  sub: { fontSize: '0.78rem', color: '#7c8bad' },
-  panel: { background: '#0d0f18', border: '1px solid #1a1d2e', borderRadius: 8, padding: 16 },
-  panelTitle: { fontSize: '0.85rem', fontWeight: 600, color: '#c4caff', marginBottom: 10 },
+  header: { display: 'flex', alignItems: 'center', gap: 12 },
+  h1: { fontSize: '1.05rem', fontWeight: 600, color: '#0f172a' },
+  sub: { fontSize: '0.78rem', color: '#64748b' },
+  backBtn: {
+    border: '1px solid #cbd5e1', background: '#ffffff', color: '#334155', borderRadius: 6,
+    padding: '6px 10px', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 600,
+  },
+  panel: { background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16 },
+  panelTitle: { fontSize: '0.85rem', fontWeight: 600, color: '#1e293b', marginBottom: 10 },
+  scopeHint: {
+    marginTop: 8, padding: '9px 10px', borderRadius: 6,
+    background: '#eff6ff', border: '1px solid #bfdbfe', color: '#1e40af',
+    fontSize: '0.76rem', lineHeight: 1.55,
+  },
   submitGrid: {
     display: 'grid',
     gridTemplateColumns: 'minmax(280px, 1fr) minmax(320px, 1fr)',
     gap: 16,
   },
   treeBox: {
-    background: '#0f1117',
-    border: '1px solid #1e2235',
+    background: '#f8fafc',
+    border: '1px solid #e2e8f0',
     borderRadius: 6,
     maxHeight: 360,
     overflowY: 'auto',
     padding: '6px 4px',
   },
   row: { display: 'flex', gap: 8, marginBottom: 8 },
-  label: { fontSize: '0.72rem', color: '#7c8bad', marginBottom: 4, display: 'block' },
+  label: { fontSize: '0.72rem', color: '#475569', marginBottom: 4, display: 'block' },
   input: {
     width: '100%',
-    background: '#0f1117',
-    color: '#e2e8f0',
-    border: '1px solid #2d3148',
+    background: '#ffffff',
+    color: '#0f172a',
+    border: '1px solid #cbd5e1',
     borderRadius: 6,
     padding: '6px 8px',
     fontSize: '0.8rem',
@@ -58,34 +68,34 @@ const S: Record<string, React.CSSProperties> = {
     fontWeight: 600,
   },
   btnDisabled: {
-    background: '#312e81',
-    color: '#94a3b8',
+    background: '#c7d2fe',
+    color: '#64748b',
     cursor: 'not-allowed',
   },
   table: { width: '100%', borderCollapse: 'collapse' as const, fontSize: '0.78rem' },
   th: {
     textAlign: 'left' as const,
     padding: '6px 8px',
-    borderBottom: '1px solid #1e2235',
-    color: '#7c8bad',
+    borderBottom: '1px solid #e2e8f0',
+    color: '#475569',
     fontWeight: 500,
     fontSize: '0.72rem',
-    textTransform: 'uppercase' as const,
+    letterSpacing: 0,
   },
   td: {
     padding: '8px',
-    borderBottom: '1px solid #131726',
-    color: '#cbd5e1',
+    borderBottom: '1px solid #f1f5f9',
+    color: '#334155',
     verticalAlign: 'top' as const,
   },
-  err: { color: '#f87171', fontSize: '0.78rem' },
-  ok: { color: '#86efac', fontSize: '0.78rem' },
+  err: { color: '#b91c1c', fontSize: '0.78rem' },
+  ok: { color: '#15803d', fontSize: '0.78rem' },
   pill: {
     display: 'inline-block',
     padding: '1px 6px',
     borderRadius: 4,
-    background: '#1e2235',
-    color: '#c4caff',
+    background: '#eef2ff',
+    color: '#4338ca',
     fontSize: '0.68rem',
     fontWeight: 600,
     marginLeft: 6,
@@ -96,7 +106,7 @@ const S: Record<string, React.CSSProperties> = {
     gap: 6,
     padding: '3px 8px',
     fontSize: '0.8rem',
-    color: '#cbd5e1',
+    color: '#334155',
     cursor: 'pointer',
     userSelect: 'none' as const,
   },
@@ -112,8 +122,8 @@ function badgeStyle(status: string): React.CSSProperties {
     fontSize: '0.7rem',
     fontWeight: 600,
     background:
-      status === 'APPROVED' ? '#1e3a2b' : status === 'REJECTED' ? '#3a1e1e' : '#1e2235',
-    color: status === 'APPROVED' ? '#86efac' : status === 'REJECTED' ? '#fca5a5' : '#c4caff',
+      status === 'APPROVED' ? '#dcfce7' : status === 'REJECTED' ? '#fee2e2' : '#eef2ff',
+    color: status === 'APPROVED' ? '#15803d' : status === 'REJECTED' ? '#b91c1c' : '#4338ca',
   };
 }
 
@@ -135,6 +145,18 @@ function filterTree(nodes: FileNode[]): FileNode[] {
   return out;
 }
 
+/** A directory contribution is sent to the API as its leaf files, preserving relative paths. */
+function filePathsFor(node: FileNode): string[] {
+  if (node.type === 'file') return [node.path];
+  return (node.children ?? []).flatMap(filePathsFor);
+}
+
+function directorySelectionState(node: FileNode, selected: Set<string>): 'none' | 'partial' | 'all' {
+  const paths = filePathsFor(node);
+  if (paths.length === 0 || paths.every(path => !selected.has(path))) return 'none';
+  return paths.every(path => selected.has(path)) ? 'all' : 'partial';
+}
+
 interface Inferred {
   type: ContributionTargetType;
   path: string;
@@ -152,7 +174,7 @@ function inferTarget(selected: string[]): Inferred | null {
   const segs = first.split('/');
   if (first === 'AGENTS.md') {
     if (selected.length > 1) {
-      return { type: 'agents_md', path: 'AGENTS.md', warning: 'agents_md takes a single file.' };
+      return { type: 'agents_md', path: 'AGENTS.md', warning: 'agents_md 只能提交一个文件。' };
     }
     return { type: 'agents_md', path: 'AGENTS.md' };
   }
@@ -166,7 +188,7 @@ function inferTarget(selected: string[]): Inferred | null {
       type: 'skill',
       path: bundle,
       warning: mismatch
-        ? `All selected files must live under skills/${bundle}/ for one bundle.`
+        ? `一个 Skill 包的所有文件必须位于 skills/${bundle}/ 下。`
         : undefined,
     };
   }
@@ -174,21 +196,21 @@ function inferTarget(selected: string[]): Inferred | null {
     return {
       type: 'subagent',
       path: segs.slice(1).join('/'),
-      warning: selected.length > 1 ? 'subagent takes a single file.' : undefined,
+      warning: selected.length > 1 ? 'subagent 只能提交一个文件。' : undefined,
     };
   }
   if (segs[0] === 'memory' && segs.length >= 2) {
     return {
       type: 'memory',
       path: segs.slice(1).join('/'),
-      warning: selected.length > 1 ? 'memory takes a single file.' : undefined,
+      warning: selected.length > 1 ? 'memory 只能提交一个文件。' : undefined,
     };
   }
   if (segs[0] === 'knowledge' && segs.length >= 2) {
     return {
       type: 'knowledge',
       path: segs.slice(1).join('/'),
-      warning: selected.length > 1 ? 'knowledge takes a single file.' : undefined,
+      warning: selected.length > 1 ? 'knowledge 只能提交一个文件。' : undefined,
     };
   }
   return {
@@ -204,30 +226,67 @@ interface TreeRowProps {
   expanded: Set<string>;
   selected: Set<string>;
   toggleExpand: (p: string) => void;
-  toggleSelect: (p: string) => void;
+  toggleSelectPaths: (paths: string[]) => void;
 }
 
-function TreeRow({ node, depth, expanded, selected, toggleExpand, toggleSelect }: TreeRowProps) {
+function TreeRow({ node, depth, expanded, selected, toggleExpand, toggleSelectPaths }: TreeRowProps) {
   const isDir = node.type === 'dir';
   const isOpen = expanded.has(node.path);
+  const descendantPaths = isDir ? filePathsFor(node) : [node.path];
+  const selectionState = isDir ? directorySelectionState(node, selected) : undefined;
+  const isSkillBundleDir = isDir && /^skills\/[^/]+$/.test(node.path);
+  const hasSkillManifest = !isSkillBundleDir || (node.children ?? []).some(
+    child => child.type === 'file' && child.name === 'SKILL.md',
+  );
   return (
     <div>
       <div
         style={{ ...S.treeRow, paddingLeft: 8 + depth * 14 }}
-        onClick={() => (isDir ? toggleExpand(node.path) : toggleSelect(node.path))}
+        onClick={() => (isDir ? toggleExpand(node.path) : toggleSelectPaths(descendantPaths))}
         title={node.path}
       >
-        <span style={{ width: 10, color: '#7c8bad' }}>{isDir ? (isOpen ? '▾' : '▸') : ''}</span>
-        {!isDir && (
-          <input
-            type="checkbox"
-            checked={selected.has(node.path)}
-            onChange={() => toggleSelect(node.path)}
-            onClick={e => e.stopPropagation()}
-          />
-        )}
+        <button
+          type="button"
+          aria-label={isOpen ? `收起 ${node.name}` : `展开 ${node.name}`}
+          onClick={e => {
+            e.stopPropagation();
+            if (isDir) toggleExpand(node.path);
+          }}
+          disabled={!isDir}
+          style={{
+            width: 16,
+            padding: 0,
+            border: 'none',
+            background: 'transparent',
+            color: '#64748b',
+            cursor: isDir ? 'pointer' : 'default',
+            visibility: isDir ? 'visible' : 'hidden',
+          }}
+        >
+          {isDir ? (isOpen ? '▾' : '▸') : ''}
+        </button>
+        <input
+          type="checkbox"
+          checked={isDir ? selectionState === 'all' : selected.has(node.path)}
+          ref={input => {
+            if (input) input.indeterminate = selectionState === 'partial';
+          }}
+          disabled={descendantPaths.length === 0}
+          aria-label={isDir ? `选择整个文件夹 ${node.path}` : `选择文件 ${node.path}`}
+          onChange={() => toggleSelectPaths(descendantPaths)}
+          onClick={e => e.stopPropagation()}
+          title={isDir ? '选择整个文件夹及其中所有文件' : '选择文件'}
+        />
         <span>{isDir ? '📁' : '📄'}</span>
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{node.name}</span>
+        {isDir && (
+          <span style={{ color: '#94a3b8', fontSize: '0.7rem' }}>
+            {descendantPaths.length} 个文件
+          </span>
+        )}
+        {isSkillBundleDir && !hasSkillManifest && (
+          <span style={{ color: '#b91c1c', fontSize: '0.7rem' }}>缺少 SKILL.md，不能作为 Skill 提交</span>
+        )}
       </div>
       {isDir &&
         isOpen &&
@@ -239,7 +298,7 @@ function TreeRow({ node, depth, expanded, selected, toggleExpand, toggleSelect }
             expanded={expanded}
             selected={selected}
             toggleExpand={toggleExpand}
-            toggleSelect={toggleSelect}
+            toggleSelectPaths={toggleSelectPaths}
           />
         ))}
     </div>
@@ -248,12 +307,14 @@ function TreeRow({ node, depth, expanded, selected, toggleExpand, toggleSelect }
 
 export default function ContributionsPage() {
   const ctx = useOutletContext<ShellOutletContext>();
+  const navigate = useNavigate();
   const [items, setItems] = useState<Contribution[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
   const [sourceAgentId, setSourceAgentId] = useState(ctx.activeAgentId);
   const [targetAgentId, setTargetAgentId] = useState('');
+  const [teamAgents, setTeamAgents] = useState<AgentDefinition[]>([]);
   const [nodes, setNodes] = useState<FileNode[]>([]);
   const [treeErr, setTreeErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -299,6 +360,11 @@ export default function ContributionsPage() {
     load();
   }, [load]);
   useEffect(() => {
+    listAgents()
+      .then(agents => setTeamAgents(agents.filter(agent => agent.scope === 'global')))
+      .catch(() => setTeamAgents([]));
+  }, []);
+  useEffect(() => {
     setSourceAgentId(ctx.activeAgentId);
   }, [ctx.activeAgentId]);
   useEffect(() => {
@@ -314,11 +380,14 @@ export default function ContributionsPage() {
       return next;
     });
   };
-  const toggleSelect = (p: string) => {
+  const toggleSelectPaths = (paths: string[]) => {
     setSelected(prev => {
       const next = new Set(prev);
-      if (next.has(p)) next.delete(p);
-      else next.add(p);
+      const shouldRemove = paths.length > 0 && paths.every(path => next.has(path));
+      for (const path of paths) {
+        if (shouldRemove) next.delete(path);
+        else next.add(path);
+      }
       return next;
     });
   };
@@ -334,35 +403,46 @@ export default function ContributionsPage() {
     setSubmitErr(null);
     setSubmitOk(null);
     if (selectedList.length === 0) {
-      setSubmitErr('Pick at least one file from the workspace tree.');
+      setSubmitErr('请从工作区选择至少一个文件或文件夹。');
       return;
     }
     if (!effectiveType) {
-      setSubmitErr('Target type is required.');
+      setSubmitErr('请选择贡献类型。');
       return;
     }
     if (!effectivePath.trim()) {
-      setSubmitErr('Target path is required.');
+      setSubmitErr('请填写目标路径。');
+      return;
+    }
+    if (!targetAgentId.trim()) {
+      setSubmitErr('请选择目标团队 Agent。私有 Agent 只能向全局团队 Agent 提交贡献。');
+      return;
+    }
+    if (
+      effectiveType === 'skill' &&
+      !selectedList.some(path => path === 'SKILL.md' || path.endsWith('/SKILL.md'))
+    ) {
+      setSubmitErr('Skill 文件夹缺少 SKILL.md。请先将技能说明文件上传或新建到该文件夹根目录后再提交。');
       return;
     }
     setSubmitting(true);
     try {
       const created = await submitFromWorkspace({
         sourceAgentId,
-        targetAgentId: targetAgentId.trim() || null,
+        targetAgentId: targetAgentId.trim(),
         targetType: effectiveType,
         targetPath: effectivePath.trim(),
         rationale: rationale.trim() || null,
         sourcePaths: selectedList,
       });
-      setSubmitOk(`Submitted as #${created.id} — awaiting admin approval.`);
+      setSubmitOk(`已提交为 #${created.id}，等待管理员审核。`);
       setSelected(new Set());
       setOverridePath('');
       setOverrideType('');
       setRationale('');
       load();
     } catch (ex) {
-      setSubmitErr(String(ex));
+      setSubmitErr(ex instanceof Error ? ex.message : String(ex));
     } finally {
       setSubmitting(false);
     }
@@ -371,10 +451,23 @@ export default function ContributionsPage() {
   return (
     <div style={S.page}>
       <div style={S.header}>
+        <button
+          type="button"
+          style={S.backBtn}
+          onClick={() => navigate(`/workspace?agent=${encodeURIComponent(ctx.activeAgentId)}`)}
+        >
+          ← 返回工作区
+        </button>
         <div style={S.h1}>贡献</div>
         <div style={S.sub}>
-          选择工作区文件将其提交到共享 agent 层 — 需要管理员批准。
+          将工作区中的 Skill 整个文件夹或单个资源提交到全局团队 Agent，需由其他管理员审核。
         </div>
+      </div>
+
+      <div style={S.scopeHint}>
+        {ctx.agent?.scope === 'global'
+          ? <>当前选择的是全局智能体 <code>{ctx.activeAgentId}</code>；此处读取的仍是当前登录用户的隔离工作区投影。批准后，所选文件才会写入目标智能体的团队共享层。</>
+          : <>当前选择的是你的私有智能体 <code>{ctx.activeAgentId}</code>；此处提交的是你的私有工作区内容。批准后，所选文件才会写入目标智能体的团队共享层。</>}
       </div>
 
       <form onSubmit={onSubmit} style={S.panel}>
@@ -383,7 +476,7 @@ export default function ContributionsPage() {
           <div>
             <div style={S.row}>
               <div style={{ flex: 1 }}>
-                <span style={S.label}>源 agent ID</span>
+                <span style={S.label}>源智能体 ID</span>
                 <input
                   style={S.input}
                   value={sourceAgentId}
@@ -392,24 +485,34 @@ export default function ContributionsPage() {
                 />
               </div>
               <div style={{ flex: 1 }}>
-                <span style={S.label}>目标 agent ID（可选）</span>
-                <input
-                  style={S.input}
+                <span style={S.label}>目标团队智能体 ID</span>
+                <select
+                  style={{ ...S.input, padding: '5px 8px' }}
                   value={targetAgentId}
                   onChange={e => setTargetAgentId(e.target.value)}
-                  placeholder={`默认为 ${sourceAgentId || '源'}`}
-                />
+                >
+                  <option value="">请选择团队 Agent</option>
+                  {teamAgents.map(agent => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name} ({agent.id})
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
             <span style={S.label}>
-              选择文件{' '}
-              <span style={S.pill}>{selectedList.length} selected</span>
+              选择内容{' '}
+              <span style={S.pill}>已选 {selectedList.length} 项</span>
             </span>
+            <div style={{ ...S.sub, marginBottom: 6, lineHeight: 1.5 }}>
+              勾选文件夹会一次选中其中所有文件。提交 Skill 时请直接勾选 <code>skills/技能名</code>，会一并保留
+              <code>SKILL.md</code>、脚本、模板及子目录结构。
+            </div>
             <div style={S.treeBox}>
               {treeErr && <div style={{ ...S.err, padding: 8 }}>{treeErr}</div>}
               {!treeErr && nodes.length === 0 && (
-                <div style={{ padding: 8, fontSize: '0.78rem', color: '#7c8bad' }}>
-                  Workspace is empty.
+                <div style={{ padding: 8, fontSize: '0.78rem', color: '#64748b' }}>
+                  工作区暂无可提交文件。
                 </div>
               )}
               {nodes.map(n => (
@@ -420,7 +523,7 @@ export default function ContributionsPage() {
                   expanded={expanded}
                   selected={selected}
                   toggleExpand={toggleExpand}
-                  toggleSelect={toggleSelect}
+                  toggleSelectPaths={toggleSelectPaths}
                 />
               ))}
             </div>
@@ -450,10 +553,10 @@ export default function ContributionsPage() {
                   onChange={e => setOverridePath(e.target.value)}
                   placeholder={
                     (overrideType || inferred?.type) === 'skill'
-                      ? 'bundle name, e.g. cohort-builder'
+                      ? '技能包名称，例如 cohort-builder'
                       : (overrideType || inferred?.type) === 'agents_md'
                       ? 'AGENTS.md'
-                      : 'file path under the type directory'
+                      : '该类型目录下的文件路径'
                   }
                 />
               </div>
@@ -511,12 +614,12 @@ export default function ContributionsPage() {
             <thead>
               <tr>
                 <th style={S.th}>#</th>
-                <th style={S.th}>Status</th>
-                <th style={S.th}>Type</th>
-                <th style={S.th}>Target agent</th>
-                <th style={S.th}>Path</th>
-                <th style={S.th}>Submitted</th>
-                <th style={S.th}>Reviewer note</th>
+                <th style={S.th}>状态</th>
+                <th style={S.th}>类型</th>
+                <th style={S.th}>目标智能体</th>
+                <th style={S.th}>路径</th>
+                <th style={S.th}>提交时间</th>
+                <th style={S.th}>审核备注</th>
               </tr>
             </thead>
             <tbody>

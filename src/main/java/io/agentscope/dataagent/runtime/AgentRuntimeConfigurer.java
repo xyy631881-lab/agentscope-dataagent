@@ -16,6 +16,7 @@
 package io.agentscope.dataagent.runtime;
 import io.agentscope.dataagent.agent.application.AgentLifecycleService;
 import io.agentscope.dataagent.config.DataAgentConfig;
+import io.agentscope.dataagent.tools.data.DataAgentToolkit;
 
 import io.agentscope.core.permission.PermissionBehavior;
 import io.agentscope.core.permission.PermissionContextState;
@@ -35,6 +36,7 @@ import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxClientOption
 import io.agentscope.harness.agent.sandbox.snapshot.SandboxSnapshotSpec;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
+import io.agentscope.core.tool.Toolkit;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
@@ -70,6 +72,7 @@ public final class AgentRuntimeConfigurer implements Consumer<HarnessAgent.Build
      * 可使用 noop guard。
      */
     private final SandboxExecutionGuard executionGuard;
+    private final DataAgentToolkit dataAgentToolkit;
 
     public AgentRuntimeConfigurer(
             AgentStateStore stateStore,
@@ -77,27 +80,32 @@ public final class AgentRuntimeConfigurer implements Consumer<HarnessAgent.Build
             String modelId,
             String fallbackModelId,
             SandboxSnapshotSpec snapshotSpec,
-            SandboxExecutionGuard executionGuard) {
+            SandboxExecutionGuard executionGuard,
+            DataAgentToolkit dataAgentToolkit) {
         this.stateStore = stateStore;
         this.sandboxClient = sandboxClient;
         this.modelId = modelId;
         this.fallbackModelId = fallbackModelId;
         this.snapshotSpec = Objects.requireNonNull(snapshotSpec, "snapshotSpec");
         this.executionGuard = Objects.requireNonNull(executionGuard, "executionGuard");
+        this.dataAgentToolkit = Objects.requireNonNull(dataAgentToolkit, "dataAgentToolkit");
     }
 
     @Override
     public void accept(HarnessAgent.Builder b) {
         // ---- State store & Sandbox filesystem ----
         b.stateStore(stateStore);
-        // Emits child spans for agent, model and tool execution. The application owns only the
-        // exporter/read model; span lifecycle and Reactor context propagation stay in AgentScope.
+        // 就这一行！框架自动生成 agent、model、tool 三个层面的 Span
+        // 项目的职责只是 exporter（JpaTraceSpanExporter）和读模型（TraceRunService）
+        // Span 生命周期和 Reactor 上下文传播全部由 AgentScope 框架自动处理
         b.middleware(new OtelTracingMiddleware());
-        // Framework-owned sandbox lifecycle. The application configures policy and storage; the
-        // framework owns acquire/start/persist/release.
         b.filesystem(
                 new DockerFilesystemSpec()
                         .client(sandboxClient)
+                        // DockerSandbox.doExec always passes this value to `docker exec -w`.
+                        // Leaving it null only fails later on the asynchronous session mirror
+                        // thread as a ProcessBuilder NPE.
+                        .workspaceRoot("/workspace")
                         .isolationScope(IsolationScope.USER)
                         .snapshotSpec(snapshotSpec)
                         .executionGuard(executionGuard));
@@ -126,6 +134,11 @@ public final class AgentRuntimeConfigurer implements Consumer<HarnessAgent.Build
 
         // ---- Subagent declarations ----
         defaultSubagentDeclarations().forEach(b::subagent);
+        // The framework uses SubagentDeclaration.tools only to filter tools inherited from the
+        // parent toolkit. It subsequently adds its default filesystem tools, so the declaration
+        // alone cannot confine a data-explorer. Registering the same name last makes this factory
+        // authoritative while retaining the declaration for agent_spawn metadata and UI display.
+        b.subagentFactory("data-explorer", ignored -> buildRestrictedDataExplorer());
 
         // ---- Permissions ----
         b.permissionContext(buildPermissionContext());
@@ -141,7 +154,8 @@ public final class AgentRuntimeConfigurer implements Consumer<HarnessAgent.Build
                                         + " columns, or join path is not yet known. Returns one"
                                         + " canonical source and a sample query.")
                         .model(modelId)
-                        .maxIters(30)
+                        .maxIters(12)
+                        .tools(List.of("list_data_sources", "describe_table"))
                         .exposeToUser(false)
                         .workspaceMode(WorkspaceMode.ISOLATED)
                         .build(),
@@ -153,11 +167,48 @@ public final class AgentRuntimeConfigurer implements Consumer<HarnessAgent.Build
                                         + " Returns a ready-to-use Markdown report.")
                         .model(modelId)
                         .maxIters(25)
+                        .tools(List.of("write_file"))
                         .exposeToUser(true)
                         // The explorer owns isolated scratch state; the writer must publish the
                         // final markdown into the main workspace so the parent and UI can read it.
                         .workspaceMode(WorkspaceMode.SHARED)
                         .build());
+    }
+
+    private HarnessAgent buildRestrictedDataExplorer() {
+        Toolkit toolkit = restrictedDataExplorerToolkit(dataAgentToolkit);
+        HarnessAgent.Builder builder = HarnessAgent.builder()
+                .name("data-explorer")
+                .description("Data source discovery specialist with read-only metadata access.")
+                .sysPrompt(
+                        "You are the data-explorer subagent. Use only list_data_sources and "
+                                + "describe_table to identify a source, schema, date column, and "
+                                + "a sample SQL shape. Never infer from memory, inspect files, run "
+                                + "shell commands, delegate work, or execute SQL.")
+                .model(modelId)
+                .maxIters(12)
+                .toolkit(toolkit)
+                .disableFilesystemTools()
+                .disableShellTool()
+                .disableMemoryTools()
+                .disableWorkspaceContext()
+                .disableDefaultWorkspaceSkills()
+                .disableDynamicSubagents()
+                .disableSubagents();
+        if (fallbackModelId != null && !fallbackModelId.isBlank()) {
+            builder.fallbackModel(fallbackModelId);
+        }
+        return builder.build();
+    }
+
+    static Toolkit restrictedDataExplorerToolkit(DataAgentToolkit dataAgentToolkit) {
+        Toolkit toolkit = new Toolkit();
+        toolkit.registerTool(dataAgentToolkit);
+        // DataAgentToolkit also contains query execution and chart rendering. The explorer may
+        // only inspect source metadata, so remove those methods after reflection registration.
+        toolkit.removeTool("run_sql_preview");
+        toolkit.removeTool("render_chart");
+        return toolkit;
     }
 
     /**

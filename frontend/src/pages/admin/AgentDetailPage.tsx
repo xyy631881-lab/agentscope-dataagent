@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { confirmAction } from '../../components/InteractionHost';
+import { useParams, useSearchParams } from 'react-router-dom';
 import AdminPageLayout, { AdminTab } from '../../components/admin/AdminPageLayout';
 import {
   getAgentDetail,
@@ -496,7 +497,7 @@ export function WorkspaceExplorer({ agentId, agentName }: { agentId: string; age
     if (!selected) return;
     const label = selected.kind === 'skill' ? selected.name
       : selected.kind === 'subagent' ? selected.name : '';
-    if (!confirm(`Delete "${label}"?`)) return;
+    if (!(await confirmAction(`删除“${label}”？`))) return;
     try {
       if (selected.kind === 'skill') await deleteWorkspaceSkill(agentId, selected.name);
       if (selected.kind === 'subagent') await deleteWorkspaceSubagent(agentId, selected.name);
@@ -792,13 +793,6 @@ export default function AdminAgentDetailPage() {
         onTabChange={k => setPageTab(k as PageTab)}
         bannerRight={bannerRight}
       >
-        {/* Back link */}
-        <div style={{ padding: '12px 24px', borderBottom: `1px solid ${C.border}`, flexShrink: 0, display: 'flex', alignItems: 'center', background: '#ffffff' }}>
-          <Link to="/admin/agents" style={{ color: C.muted, textDecoration: 'none', fontSize: '0.9rem', fontWeight: 500 }}>
-            ← 所有 Agents
-          </Link>
-        </div>
-
         {loading && (
           <div style={{ color: C.dimmed, padding: '2.5rem', textAlign: 'center', fontSize: '0.92rem' }}>Loading…</div>
         )}

@@ -1,12 +1,14 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 
 import { chatHrefPreservingSession } from './utils/session';
 
 import LoginPage from './pages/LoginPage';
 import AppShell from './components/AppShell';
+import AdminAppShell from './components/admin/AdminAppShell';
 import EditTierGate from './components/EditTierGate';
+import InteractionHost from './components/InteractionHost';
 
 import ChatPage from './pages/ChatPage';
 import WorkspacePage from './pages/WorkspacePage';
@@ -31,7 +33,6 @@ import InstancesPage from './pages/admin/InstancesPage';
 import AdminChannelsPage from './pages/admin/ChannelsPage';
 import ConfigPage from './pages/admin/ConfigPage';
 import DebugPage from './pages/admin/DebugPage';
-import AdminUsagePage from './pages/admin/UsagePage';
 import UsersPage from './pages/admin/UsersPage';
 import AdminSessionsPage from './pages/admin/SessionsPage';
 import AdminAgentsPage from './pages/admin/AgentsPage';
@@ -64,9 +65,18 @@ function AdminRoute({ children }: { children: React.ReactElement }) {
   return children;
 }
 
+function AdminShellRoute() {
+  return (
+    <AdminRoute>
+      <AdminAppShell><Outlet /></AdminAppShell>
+    </AdminRoute>
+  );
+}
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <BrowserRouter>
+      <InteractionHost />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
 
@@ -96,19 +106,22 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <Route path="/traces" element={<TraceRunsPage />} />
           <Route path="/models" element={<TenantModelsPage />} />
 
-          {/* 管理后台页面 */}
-          <Route path="/admin/overview"        element={<AdminRoute><OverviewPage /></AdminRoute>} />
-          <Route path="/admin/instances"       element={<AdminRoute><InstancesPage /></AdminRoute>} />
-          <Route path="/admin/sessions"        element={<AdminRoute><AdminSessionsPage /></AdminRoute>} />
-          <Route path="/admin/channels"        element={<AdminRoute><AdminChannelsPage /></AdminRoute>} />
-          <Route path="/admin/channels/:id"    element={<AdminRoute><AdminChannelDetailPage /></AdminRoute>} />
-          <Route path="/admin/agents"          element={<AdminRoute><AdminAgentsPage /></AdminRoute>} />
-          <Route path="/admin/agents/:id"      element={<AdminRoute><AdminAgentDetailPage /></AdminRoute>} />
-          <Route path="/admin/approvals"       element={<AdminRoute><ApprovalsPage /></AdminRoute>} />
-          <Route path="/admin/users"           element={<AdminRoute><UsersPage /></AdminRoute>} />
-          <Route path="/admin/usage"           element={<AdminRoute><AdminUsagePage /></AdminRoute>} />
-          <Route path="/admin/config"          element={<AdminRoute><ConfigPage /></AdminRoute>} />
-          <Route path="/admin/debug"           element={<AdminRoute><DebugPage /></AdminRoute>} />
+        </Route>
+
+        {/* 管理后台是独立工作台，不能嵌在聊天 AppShell 中。 */}
+        <Route element={<AdminShellRoute />}>
+          <Route path="/admin/overview"     element={<OverviewPage />} />
+          <Route path="/admin/instances"    element={<InstancesPage />} />
+          <Route path="/admin/sessions"     element={<AdminSessionsPage />} />
+          <Route path="/admin/channels"     element={<AdminChannelsPage />} />
+          <Route path="/admin/channels/:id" element={<AdminChannelDetailPage />} />
+          <Route path="/admin/agents"       element={<AdminAgentsPage />} />
+          <Route path="/admin/agents/:id"   element={<AdminAgentDetailPage />} />
+          <Route path="/admin/approvals"    element={<ApprovalsPage />} />
+          <Route path="/admin/users"        element={<UsersPage />} />
+          <Route path="/admin/usage"        element={<Navigate to="/usage" replace />} />
+          <Route path="/admin/config"       element={<ConfigPage />} />
+          <Route path="/admin/debug"        element={<DebugPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to={chatHrefPreservingSession()} replace />} />

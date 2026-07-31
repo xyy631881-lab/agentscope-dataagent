@@ -116,7 +116,7 @@ public class ContributionEntity {
      * FileEntry[]}. Preserved across approval for audit.
      */
     @Lob
-    @Column(name = "payload", nullable = false)
+    @Column(name = "payload", nullable = false, columnDefinition = "LONGTEXT")
     private String payload;
 
     /**
@@ -124,7 +124,7 @@ public class ContributionEntity {
      * this instead of {@link #payload}. Null when the admin accepted the original as-is.
      */
     @Lob
-    @Column(name = "approved_payload")
+    @Column(name = "approved_payload", columnDefinition = "LONGTEXT")
     private String approvedPayload;
 
     @Column(name = "reviewer_user_id", length = 128)
@@ -138,6 +138,17 @@ public class ContributionEntity {
 
     @Column(name = "updated_at", nullable = false)
     private long updatedAt;
+
+    /**
+     * Version number assigned at approval time. {@code 0} means the contribution is still
+     * pending (or was submitted before versioning was introduced). On approval, this becomes
+     * {@code max(existingApprovedVersions) + 1} for the same
+     * {@code (targetAgentId, targetType, targetPath)} key — so each approved contribution for
+     * the same asset carries a monotonically increasing version, enabling version-aware install
+     * and rollback.
+     */
+    @Column(name = "version", nullable = false)
+    private int version = 0;
 
     public ContributionEntity() {}
 
@@ -251,5 +262,13 @@ public class ContributionEntity {
 
     public void setUpdatedAt(long updatedAt) {
         this.updatedAt = updatedAt;
+    }
+
+    public int getVersion() {
+        return version;
+    }
+
+    public void setVersion(int version) {
+        this.version = version;
     }
 }

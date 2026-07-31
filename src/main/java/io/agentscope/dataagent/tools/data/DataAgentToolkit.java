@@ -146,7 +146,10 @@ public final class DataAgentToolkit {
                     """
                     Execute a read-only SQL query against a configured data source and return the \
                     first N rows as a small markdown table. Only SELECT and WITH statements are \
-                    accepted. The connector enforces a row cap of 500 rows.\
+                    accepted. The connector enforces a row cap of 500 rows. When SQL is ready, \
+                    call this tool immediately; do not first ask the user for confirmation in \
+                    natural language. The runtime permission middleware intercepts this call and \
+                    displays the real approval card before any SQL executes.\
                     """)
     public String runSqlPreview(
             @ToolParam(name = "source_id", description = "Data source id from list_data_sources")
@@ -225,8 +228,12 @@ public final class DataAgentToolkit {
                     (ConnectionCallback<List<String[]>>) conn -> {
                         List<String[]> cols = new ArrayList<>();
                         java.sql.DatabaseMetaData meta = conn.getMetaData();
+                        // MySQL may expose lower-case table names on Windows/Linux depending on
+                        // lower_case_table_names. Preserve the caller's actual table name instead
+                        // of forcing driver-specific upper case, and scope the lookup to the
+                        // current catalog so metadata and sample rows describe the same database.
                         try (java.sql.ResultSet rs = meta.getColumns(
-                                null, null, tableName.toUpperCase(), null)) {
+                                conn.getCatalog(), null, tableName, null)) {
                             while (rs.next()) {
                                 cols.add(new String[]{
                                         rs.getString("COLUMN_NAME"),

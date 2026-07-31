@@ -5,7 +5,6 @@ import { getChannelDetail, ChannelDetailView } from '../../api/admin';
 
 const S: Record<string, React.CSSProperties> = {
   page:    { maxWidth: 1200 },
-  back:    { color: '#64748b', textDecoration: 'none', fontSize: '0.88rem', marginBottom: 18, display: 'inline-block', fontWeight: 500 },
   titleRow:{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 22 },
   title:   { margin: 0, fontSize: '1.6rem', fontWeight: 700, color: '#0f172a', letterSpacing: '-0.02em' },
   subtitle:{ fontSize: '0.88rem', color: '#64748b', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', marginTop: 4 },
@@ -91,8 +90,6 @@ export default function AdminChannelDetailPage() {
     <>
       <AdminPageLayout>
         <div style={S.page}>
-          <Link to="/admin/channels" style={S.back}>← Back to Channels</Link>
-
           {loading && <div style={S.loading}>Loading…</div>}
           {error && <div style={S.err}>{error}</div>}
 

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import AdminPageLayout from '../../components/admin/AdminPageLayout';
+import AdminPageLayout from '../../components/AdminPageLayout';
 import { getToken } from '../../api/auth';
 
 interface UsageSummary {
@@ -11,7 +11,7 @@ interface UsageSummary {
   totalTokens: number;
   totalCostMicrousd: number;
   avgDurationMs: number;
-  uniqueUsers: number;
+  uniqueUsers?: number;
 }
 
 interface BucketCount {
@@ -41,23 +41,33 @@ function authHeaders() {
 }
 
 async function apiFetch<T>(path: string): Promise<T> {
-  const res = await fetch(path, { headers: authHeaders() });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const res = await fetch(path, { headers: authHeaders(), cache: 'no-store' });
+  if (!res.ok) throw new Error(`请求失败（状态码 ${res.status}）`);
   return res.json() as Promise<T>;
 }
 
-const getSummary    = () => apiFetch<UsageSummary>('/api/admin/usage/summary');
-const getHourly     = (hours: number) => apiFetch<BucketCount[]>(`/api/admin/usage/hourly?hours=${hours}`);
-const getDaily      = (days: number)  => apiFetch<BucketCount[]>(`/api/admin/usage/daily?days=${days}`);
-const getTopUsers   = (days: number)  => apiFetch<GroupCount[]>(`/api/admin/usage/top-users?days=${days}&n=10`);
-const getTopAgents  = (days: number)  => apiFetch<GroupCount[]>(`/api/admin/usage/top-agents?days=${days}&n=10`);
-const getModels     = (days: number)  => apiFetch<ModelUsage[]>(`/api/admin/usage/models?days=${days}`);
+export type UsageScope = 'personal' | 'platform';
+
+const getSummary = (scope: UsageScope) => apiFetch<UsageSummary>(
+  scope === 'platform' ? '/api/admin/usage/summary' : '/api/usage/me/summary',
+);
+const getHourly = (scope: UsageScope, hours: number) => apiFetch<BucketCount[]>(
+  scope === 'platform' ? `/api/admin/usage/hourly?hours=${hours}` : `/api/usage/me/hourly?hours=${hours}`,
+);
+const getDaily = (scope: UsageScope, days: number) => apiFetch<BucketCount[]>(
+  scope === 'platform' ? `/api/admin/usage/daily?days=${days}` : `/api/usage/me/daily?days=${days}`,
+);
+const getTopUsers = (days: number) => apiFetch<GroupCount[]>(`/api/admin/usage/top-users?days=${days}&n=10`);
+const getTopAgents = (days: number) => apiFetch<GroupCount[]>(`/api/admin/usage/top-agents?days=${days}&n=10`);
+const getModels = (scope: UsageScope, days: number) => apiFetch<ModelUsage[]>(
+  scope === 'platform' ? `/api/admin/usage/models?days=${days}` : `/api/usage/me/models?days=${days}`,
+);
 
 const fmtTokens = (value: number) => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(2)}M` : value >= 1_000 ? `${(value / 1_000).toFixed(1)}K` : value.toLocaleString();
 const fmtCost = (microusd: number) => `$${(microusd / 1_000_000).toFixed(microusd > 0 && microusd < 10_000 ? 4 : 2)}`;
 
 function TopList({ title, items, color }: { title: string; items: GroupCount[]; color: string }) {
-  if (!items.length) return <div style={{ color: '#94a3b8', fontSize: '0.88rem' }}>(no data yet)</div>;
+  if (!items.length) return <div style={{ color: '#94a3b8', fontSize: '0.88rem' }}>暂无数据</div>;
   const max = Math.max(...items.map(i => i.count), 1);
   return (
     <div>
@@ -82,7 +92,7 @@ function ModelTable({ items }: { items: ModelUsage[] }) {
   return (
     <div style={{ overflowX: 'auto' }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.82rem', minWidth: 680 }}>
-        <thead><tr>{['模型', '请求', '输入', '缓存', '输出', '总 Token', '均耗时', '成本'].map(header => <th key={header} style={{ textAlign: 'left', padding: '8px 10px', color: '#64748b', borderBottom: '1px solid #e2e8f0', fontSize: '0.72rem' }}>{header}</th>)}</tr></thead>
+        <thead><tr>{['模型', '请求', '输入', '缓存', '输出', '总 Token', '平均耗时', '成本'].map(header => <th key={header} style={{ textAlign: 'left', padding: '8px 10px', color: '#64748b', borderBottom: '1px solid #e2e8f0', fontSize: '0.72rem' }}>{header}</th>)}</tr></thead>
         <tbody>{items.map(item => <tr key={item.modelId}>
           <td style={{ padding: '10px', borderBottom: '1px solid #f1f5f9' }}><code style={{ color: '#3730a3' }}>{item.modelId}</code></td>
           <td style={{ padding: '10px', borderBottom: '1px solid #f1f5f9' }}>{item.turns}</td><td style={{ padding: '10px', borderBottom: '1px solid #f1f5f9' }}>{fmtTokens(item.inputTokens)}</td><td style={{ padding: '10px', borderBottom: '1px solid #f1f5f9' }}>{fmtTokens(item.cachedPromptTokens)}</td>
@@ -106,7 +116,7 @@ interface BarChartProps {
 }
 
 function BarChart({ data, width = 600, height = 140, color = '#4f46e5', labelStep = 4 }: BarChartProps) {
-  if (!data.length) return <div style={{ color: '#94a3b8', fontSize: '0.88rem' }}>(no data yet)</div>;
+  if (!data.length) return <div style={{ color: '#94a3b8', fontSize: '0.88rem' }}>暂无数据</div>;
 
   const maxCount = Math.max(...data.map(d => d.count), 1);
   const barW = (width - 20) / data.length;
@@ -239,14 +249,15 @@ function Sparkline({ data, width = 600, height = 72, color = '#4f46e5' }: Sparkl
 
 const S: Record<string, React.CSSProperties> = {
   content: { maxWidth: 1100 },
-  heading: { fontSize: '1.5rem', fontWeight: 700, color: '#0f172a', marginBottom: '1.75rem', letterSpacing: '-0.02em' },
+  heading: { fontSize: '1.5rem', fontWeight: 700, color: '#0f172a', marginBottom: '1.75rem', letterSpacing: 0 },
   cards: { display: 'flex', gap: 18, flexWrap: 'wrap', marginBottom: '2.25rem' },
   card: { background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: 14, padding: '1.25rem 1.6rem', flex: '1 1 180px', boxShadow: '0 1px 3px rgba(15,23,42,0.04)' },
-  cardLabel: { fontSize: '0.78rem', color: '#64748b', marginBottom: 10, textTransform: 'uppercase', letterSpacing: '0.06em', fontWeight: 600 },
-  cardValue: { fontSize: '2.1rem', fontWeight: 700, color: '#4f46e5', lineHeight: 1, letterSpacing: '-0.02em' },
+  cardLabel: { fontSize: '0.78rem', color: '#64748b', marginBottom: 10, letterSpacing: 0, fontWeight: 600 },
+  cardValue: { fontSize: '2.1rem', fontWeight: 700, color: '#4f46e5', lineHeight: 1, letterSpacing: 0 },
   chartCard: { background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: 14, padding: '1.5rem 1.75rem', marginBottom: 20, boxShadow: '0 1px 3px rgba(15,23,42,0.04)' },
   chartTitle: { fontSize: '0.95rem', fontWeight: 600, color: '#0f172a', marginBottom: 14 },
   tabs: { display: 'flex', gap: 8, marginBottom: 0 },
+  scopeTabs: { display: 'flex', gap: 6, marginLeft: 'auto' },
   refreshBtn: {
     background: '#ffffff', border: '1px solid #d1d5db', color: '#475569',
     borderRadius: 8, padding: '7px 16px', cursor: 'pointer', fontSize: '0.86rem', marginLeft: 14, fontWeight: 500,
@@ -263,7 +274,16 @@ function tabBtnStyle(active: boolean): React.CSSProperties {
   };
 }
 
-export default function UsagePage() {
+interface UsageDashboardProps {
+  canViewPlatform?: boolean;
+  initialScope?: UsageScope;
+}
+
+export function UsageDashboard({
+  canViewPlatform = false,
+  initialScope = 'personal',
+}: UsageDashboardProps) {
+  const [scope, setScope] = useState<UsageScope>(canViewPlatform ? initialScope : 'personal');
   const [summary, setSummary] = useState<UsageSummary | null>(null);
   const [hourly, setHourly] = useState<BucketCount[]>([]);
   const [daily, setDaily] = useState<BucketCount[]>([]);
@@ -276,32 +296,48 @@ export default function UsagePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const platformScope = scope === 'platform';
+
   async function load() {
     setLoading(true);
     setError(null);
     try {
-      const [s, h, d, tu, ta, tm] = await Promise.all([
-        getSummary(),
-        getHourly(hourRange),
-        getDaily(dayRange),
-        getTopUsers(topRange),
-        getTopAgents(topRange),
-        getModels(30),
+      const [s, h, d, tm, rankings] = await Promise.all([
+        getSummary(scope),
+        getHourly(scope, hourRange),
+        getDaily(scope, dayRange),
+        getModels(scope, 30),
+        platformScope
+          ? Promise.all([getTopUsers(topRange), getTopAgents(topRange)])
+          : Promise.resolve([[], []] as [GroupCount[], GroupCount[]]),
       ]);
       setSummary(s);
       setHourly(h);
       setDaily(d);
-      setTopUsers(tu);
-      setTopAgents(ta);
+      setTopUsers(rankings[0]);
+      setTopAgents(rankings[1]);
       setModels(tm);
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : '加载用量数据失败');
     } finally {
       setLoading(false);
     }
   }
 
-  useEffect(() => { load(); }, [hourRange, dayRange, topRange]);
+  useEffect(() => {
+    void load();
+    const refresh = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load();
+    }, 15_000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void load();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearInterval(refresh);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [scope, hourRange, dayRange, topRange]);
 
   function fmtDuration(ms: number) {
     if (ms < 1000) return `${ms}ms`;
@@ -312,9 +348,17 @@ export default function UsagePage() {
     <>
       <AdminPageLayout>
       <div style={S.content}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: '1.75rem' }}>
-          <h2 style={{ ...S.heading, marginBottom: 0 }}>Usage &amp; Metrics</h2>
-          <button style={S.refreshBtn} onClick={load} disabled={loading}>{loading ? 'Loading…' : '↺ Refresh'}</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: '1.75rem', flexWrap: 'wrap' }}>
+          <h2 style={{ ...S.heading, marginBottom: 0, marginRight: 'auto' }}>
+            {platformScope ? '平台用量与指标' : '我的用量'}
+          </h2>
+          {canViewPlatform && (
+            <div style={S.scopeTabs}>
+              <button style={tabBtnStyle(platformScope)} onClick={() => setScope('platform')}>平台用量</button>
+              <button style={tabBtnStyle(!platformScope)} onClick={() => setScope('personal')}>我的用量</button>
+            </div>
+          )}
+          <button style={S.refreshBtn} onClick={load} disabled={loading}>{loading ? '加载中…' : '↺ 刷新'}</button>
         </div>
 
         {error && <div style={S.err}>{error}</div>}
@@ -322,27 +366,29 @@ export default function UsagePage() {
         {summary && (
           <div style={S.cards}>
             <div style={S.card}>
-              <div style={S.cardLabel}>Total Tokens</div>
+              <div style={S.cardLabel}>总 Token</div>
               <div style={S.cardValue}>{fmtTokens(summary.totalTokens)}</div>
             </div>
             <div style={S.card}>
-              <div style={S.cardLabel}>Cached Prompt</div>
+              <div style={S.cardLabel}>缓存 Prompt</div>
               <div style={S.cardValue}>{fmtTokens(summary.cachedPromptTokens)}</div>
             </div>
             <div style={S.card}>
-              <div style={S.cardLabel}>Accounted Cost</div>
+              <div style={S.cardLabel}>累计成本</div>
               <div style={S.cardValue}>{fmtCost(summary.totalCostMicrousd)}</div>
             </div>
             <div style={S.card}>
-              <div style={S.cardLabel}>Avg Duration</div>
+              <div style={S.cardLabel}>平均耗时</div>
               <div style={S.cardValue}>{fmtDuration(summary.avgDurationMs)}</div>
             </div>
+            {platformScope && (
+              <div style={S.card}>
+                <div style={S.cardLabel}>独立用户数</div>
+                <div style={S.cardValue}>{summary.uniqueUsers ?? 0}</div>
+              </div>
+            )}
             <div style={S.card}>
-              <div style={S.cardLabel}>Unique Users</div>
-              <div style={S.cardValue}>{summary.uniqueUsers}</div>
-            </div>
-            <div style={S.card}>
-              <div style={S.cardLabel}>Requests Today</div>
+              <div style={S.cardLabel}>今日请求数</div>
               <div style={S.cardValue}>{summary.todayTurns}</div>
             </div>
           </div>
@@ -351,10 +397,10 @@ export default function UsagePage() {
         {/* Hourly sparkline */}
         <div style={S.chartCard}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-            <span style={S.chartTitle}>Turns — Hourly Trend</span>
+            <span style={S.chartTitle}>请求次数 - 小时趋势</span>
             <div style={S.tabs}>
               {[12, 24, 48, 72].map(h => (
-                <button key={h} style={tabBtnStyle(hourRange === h)} onClick={() => setHourRange(h)}>{h}h</button>
+                <button key={h} style={tabBtnStyle(hourRange === h)} onClick={() => setHourRange(h)}>{h} 小时</button>
               ))}
             </div>
           </div>
@@ -364,10 +410,10 @@ export default function UsagePage() {
         {/* Daily bar chart */}
         <div style={S.chartCard}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-            <span style={S.chartTitle}>Turns — Daily</span>
+            <span style={S.chartTitle}>请求次数 - 每日趋势</span>
             <div style={S.tabs}>
               {[7, 14, 30].map(d => (
-                <button key={d} style={tabBtnStyle(dayRange === d)} onClick={() => setDayRange(d)}>{d}d</button>
+                <button key={d} style={tabBtnStyle(dayRange === d)} onClick={() => setDayRange(d)}>{d} 天</button>
               ))}
             </div>
           </div>
@@ -376,39 +422,44 @@ export default function UsagePage() {
 
         <div style={S.chartCard}>
           <div style={{ marginBottom: 16 }}>
-            <span style={S.chartTitle}>Model Usage (30d)</span>
+            <span style={S.chartTitle}>模型用量（近 30 天）</span>
           </div>
           <ModelTable items={models} />
         </div>
 
-        {/* Top users / agents */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-          <div style={S.chartCard}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-              <span style={S.chartTitle}>Top Users by Turns</span>
-              <div style={S.tabs}>
-                {[7, 14, 30].map(d => (
-                  <button key={d} style={tabBtnStyle(topRange === d)} onClick={() => setTopRange(d)}>{d}d</button>
-                ))}
+        {platformScope && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 20 }}>
+            <div style={S.chartCard}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+                <span style={S.chartTitle}>请求次数最多的用户</span>
+                <div style={S.tabs}>
+                  {[7, 14, 30].map(d => (
+                    <button key={d} style={tabBtnStyle(topRange === d)} onClick={() => setTopRange(d)}>{d} 天</button>
+                  ))}
+                </div>
               </div>
+              <TopList title="" items={topUsers} color="#4f46e5" />
             </div>
-            <TopList title="" items={topUsers} color="#4f46e5" />
-          </div>
-          <div style={S.chartCard}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
-              <span style={S.chartTitle}>Top Agents by Turns</span>
+            <div style={S.chartCard}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+                <span style={S.chartTitle}>请求次数最多的智能体</span>
+              </div>
+              <TopList title="" items={topAgents} color="#6366f1" />
             </div>
-            <TopList title="" items={topAgents} color="#6366f1" />
           </div>
-        </div>
+        )}
 
         {summary?.totalTurns === 0 && (
           <p style={{ color: '#94a3b8', fontSize: '0.9rem', textAlign: 'center', marginTop: '1.5rem' }}>
-            No usage data yet. Start some conversations and come back here.
+            暂无用量数据。发起对话后再回来查看。
           </p>
         )}
       </div>
       </AdminPageLayout>
     </>
   );
+}
+
+export default function AdminUsagePage() {
+  return <UsageDashboard canViewPlatform initialScope="platform" />;
 }

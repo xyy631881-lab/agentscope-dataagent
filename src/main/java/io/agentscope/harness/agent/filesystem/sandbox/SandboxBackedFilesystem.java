@@ -31,6 +31,10 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,9 +49,19 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
 
     private static final Logger log = LoggerFactory.getLogger(SandboxBackedFilesystem.class);
     private static final int UPLOAD_CHUNK_BYTES = 8 * 1024;  // 上传文件的分块大小，8KB
+    private static final long SESSION_TREE_MIRROR_GRACE_MILLIS = 12_000;
+    private static final ScheduledExecutorService SESSION_TREE_MIRROR_CLEANUP =
+            Executors.newSingleThreadScheduledExecutor(
+                    runnable -> {
+                        Thread thread = new Thread(runnable, "sandbox-filesystem-cleanup");
+                        thread.setDaemon(true);
+                        return thread;
+                    });
 
     private final String fsId;  // 文件系统 ID
     private volatile Sandbox sandbox;  // 持有的沙箱引用，volatile 保证多线程可见性
+    private volatile Sandbox releasedSandbox;
+    private final AtomicLong releasedSandboxGeneration = new AtomicLong();
 
     public SandboxBackedFilesystem() {
         this.fsId = "sandbox-" + UUID.randomUUID().toString().substring(0, 8);
@@ -55,6 +69,9 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
 
     @Override
     public void setSandbox(Sandbox sandbox) {
+        if (sandbox == null) {
+            retainForSessionTreeMirror(this.sandbox);
+        }
         this.sandbox = sandbox;
     }
 
@@ -323,12 +340,34 @@ public class SandboxBackedFilesystem extends BaseSandboxFilesystem implements Sa
     }
 
     private Sandbox requireSandbox() {
+        if (Thread.currentThread().getName().startsWith("session-tree-mirror")) {
+            Sandbox retained = releasedSandbox;
+            if (retained != null) {
+                return retained;
+            }
+        }
         Sandbox active = sandbox;
         if (active == null) {
             throw new SandboxException.SandboxConfigurationException(
                     "No active sandbox — sandbox filesystem used outside of a call context");
         }
         return active;
+    }
+
+    private void retainForSessionTreeMirror(Sandbox active) {
+        if (active == null) {
+            return;
+        }
+        releasedSandbox = active;
+        long generation = releasedSandboxGeneration.incrementAndGet();
+        SESSION_TREE_MIRROR_CLEANUP.schedule(
+                () -> {
+                    if (releasedSandboxGeneration.compareAndSet(generation, generation)) {
+                        releasedSandbox = null;
+                    }
+                },
+                SESSION_TREE_MIRROR_GRACE_MILLIS,
+                TimeUnit.MILLISECONDS);
     }
 
     private static String combinedOutput(SandboxException.ExecException e) {

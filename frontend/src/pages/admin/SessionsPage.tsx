@@ -69,7 +69,14 @@ async function fetchWorkspaceEvents(key: string, limit = 500): Promise<MutationE
     `/api/admin/sessions/${encodeURIComponent(key)}/workspace/events?limit=${limit}`,
     { headers: authH() },
   );
-  if (!r.ok) throw new Error('Failed to load workspace events');
+  if (!r.ok) {
+    const body = await r.text().catch(() => '');
+    throw new Error(body || `加载工作区变更失败: ${r.status}`);
+  }
+  const contentType = r.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    throw new Error('工作区演化接口未命中后端。请重新构建并重启 8080 服务。');
+  }
   return r.json();
 }
 
@@ -88,6 +95,7 @@ function kindBadgeStyle(kind: string | null): React.CSSProperties {
   if (kind === 'CREATE') return { ...base, background: '#dcfce7', color: '#15803d', border: '1px solid #86efac' };
   if (kind === 'EDIT')   return { ...base, background: '#eef2ff', color: '#4338ca', border: '1px solid #c7d2fe' };
   if (kind === 'DELETE') return { ...base, background: '#fee2e2', color: '#b91c1c', border: '1px solid #fecaca' };
+  if (kind === 'MOVE')   return { ...base, background: '#fef3c7', color: '#92400e', border: '1px solid #fde68a' };
   return { ...base, background: '#f1f5f9', color: '#475569', border: '1px solid #e5e7eb' };
 }
 

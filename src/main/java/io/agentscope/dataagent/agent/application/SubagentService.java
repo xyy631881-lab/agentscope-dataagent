@@ -27,11 +27,16 @@ import io.agentscope.harness.agent.filesystem.model.WriteResult;
 import io.agentscope.harness.agent.subagent.AgentSpecLoader;
 import io.agentscope.harness.agent.subagent.SubagentDeclaration;
 import io.agentscope.harness.agent.subagent.WorkspaceMode;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -64,43 +69,59 @@ public class SubagentService {
      * Lists built-in runtime subagents plus workspace declarations under {@code /subagents/*.md}.
      * A workspace declaration with the same name overrides the built-in declaration.
      *
+     * <p>Listing declarations is metadata work and must not acquire a Docker sandbox. The browser
+     * workspace filesystem uses AgentScope's sandbox lifecycle, so calling {@code fs.ls()} here
+     * can leave the configuration page permanently loading when Docker is unavailable or a lease
+     * is blocked. User-owned Agents read their durable host workspace directly; team Agents retain
+     * the local mirror as their read path.
+     *
      * @param ctx the resolved workspace to operate on
      * @return a sorted list of subagent info DTOs (empty if the directory is missing)
      */
     public List<AgentWorkspaceController.SubagentInfo> listSubagents(
             WorkspaceResolutionService.ResolvedWorkspace ctx) {
-        AbstractFilesystem fs = ctx.manager().getFilesystem();
-        RuntimeContext rc = RuntimeContext.builder().userId(ctx.ownerId()).build();
         Map<String, AgentWorkspaceController.SubagentInfo> result = new LinkedHashMap<>();
         for (SubagentDeclaration declaration : runtimeConfigurer.defaultSubagentDeclarations()) {
             result.put(declaration.getName(), toSubagentInfo(declaration));
         }
-        LsResult ls = fs.ls(rc, "/subagents");
-        if (!ls.isSuccess() || ls.entries() == null) {
-            return result.values().stream()
-                    .sorted(Comparator.comparing(AgentWorkspaceController.SubagentInfo::name))
-                    .toList();
-        }
-        for (FileInfo fi : ls.entries()) {
-            String entryPath = fi.path();
-            if (fi.isDirectory() || !entryPath.endsWith(".md")) {
-                continue;
-            }
-            ReadResult rr = fs.read(rc, "subagents/" + fileName(entryPath), 0, 50000);
-            if (!rr.isSuccess()) {
-                continue;
-            }
-            String markdown = rr.fileData().content();
-            String name = stripMdExtension(fileName(entryPath));
-            SubagentDeclaration decl =
-                    AgentSpecLoader.parse(markdown, name, ctx.workspace());
-            if (decl != null) {
-                result.put(decl.getName(), toSubagentInfo(decl));
-            }
-        }
+        mergeMirrorDeclarations(ctx, result);
         return result.values().stream()
                 .sorted(Comparator.comparing(AgentWorkspaceController.SubagentInfo::name))
                 .toList();
+    }
+
+    private static void mergeMirrorDeclarations(
+            WorkspaceResolutionService.ResolvedWorkspace ctx,
+            Map<String, AgentWorkspaceController.SubagentInfo> result) {
+        Path mirrorRoot;
+        if (ctx.directLocalWrites()) {
+            mirrorRoot = ctx.workspace().toAbsolutePath().normalize();
+        } else {
+            String mirrorPath = ctx.localMirrorPath();
+            if (mirrorPath == null || mirrorPath.isBlank()) return;
+            mirrorRoot = Path.of(mirrorPath).toAbsolutePath().normalize();
+        }
+        Path subagentsRoot = mirrorRoot.resolve("subagents").normalize();
+        if (!subagentsRoot.startsWith(mirrorRoot) || !Files.isDirectory(subagentsRoot)) return;
+        try (Stream<Path> entries = Files.list(subagentsRoot)) {
+            entries.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().endsWith(".md"))
+                    .sorted()
+                    .forEach(
+                            path -> {
+                                try {
+                                    String name = stripMdExtension(path.getFileName().toString());
+                                    String markdown = Files.readString(path, StandardCharsets.UTF_8);
+                                    SubagentDeclaration decl =
+                                            AgentSpecLoader.parse(markdown, name, ctx.workspace());
+                                    if (decl != null) result.put(decl.getName(), toSubagentInfo(decl));
+                                } catch (IOException ignored) {
+                                    // A partially synced optional declaration must not block the page.
+                                }
+                            });
+        } catch (IOException ignored) {
+            // The built-in declarations remain usable when no local mirror has been created yet.
+        }
     }
 
     /**
@@ -123,11 +144,7 @@ public class SubagentService {
         }
         validateSubagentName(name);
         String markdown = renderSubagentMarkdown(req);
-        ctx.manager()
-                .writeUtf8WorkspaceRelative(
-                        RuntimeContext.builder().userId(ctx.ownerId()).build(),
-                        "subagents/" + name + ".md",
-                        markdown);
+        writeDeclaration(ctx, name, markdown);
         SubagentDeclaration decl =
                 AgentSpecLoader.parse(markdown, name, ctx.workspace());
         if (decl == null) {
@@ -190,11 +207,7 @@ public class SubagentService {
                         source.sysPrompt(),
                         req.sourceAgentId());
         String markdown = renderSubagentMarkdown(upsert);
-        ctx.manager()
-                .writeUtf8WorkspaceRelative(
-                        RuntimeContext.builder().userId(ctx.ownerId()).build(),
-                        "subagents/" + subName + ".md",
-                        markdown);
+        writeDeclaration(ctx, subName, markdown);
         SubagentDeclaration decl =
                 AgentSpecLoader.parse(markdown, subName, ctx.workspace());
         if (decl == null) {
@@ -216,6 +229,20 @@ public class SubagentService {
     public void deleteSubagent(
             WorkspaceResolutionService.ResolvedWorkspace ctx, String name) {
         validateSubagentName(name);
+        if (ctx.directLocalWrites()) {
+            Path file = declarationPath(ctx, name);
+            if (!Files.isRegularFile(file)) {
+                throw new ResponseStatusException(
+                        HttpStatus.NOT_FOUND, "Subagent not found: " + name);
+            }
+            try {
+                Files.delete(file);
+                return;
+            } catch (IOException e) {
+                throw new ResponseStatusException(
+                        HttpStatus.INTERNAL_SERVER_ERROR, "Delete failed: " + e.getMessage());
+            }
+        }
         AbstractFilesystem fs = ctx.manager().getFilesystem();
         String path = "subagents/" + name + ".md";
         if (!fs.exists(RuntimeContext.builder().userId(ctx.ownerId()).build(), path)) {
@@ -232,6 +259,36 @@ public class SubagentService {
     // -----------------------------------------------------------------
     //  Subagent helpers
     // -----------------------------------------------------------------
+
+    private static void writeDeclaration(
+            WorkspaceResolutionService.ResolvedWorkspace ctx, String name, String markdown) {
+        if (ctx.directLocalWrites()) {
+            Path file = declarationPath(ctx, name);
+            try {
+                Files.createDirectories(file.getParent());
+                Files.writeString(file, markdown, StandardCharsets.UTF_8);
+                return;
+            } catch (IOException e) {
+                throw new ResponseStatusException(
+                        HttpStatus.INTERNAL_SERVER_ERROR, "Write failed: " + e.getMessage());
+            }
+        }
+        ctx.manager()
+                .writeUtf8WorkspaceRelative(
+                        RuntimeContext.builder().userId(ctx.ownerId()).build(),
+                        "subagents/" + name + ".md",
+                        markdown);
+    }
+
+    private static Path declarationPath(
+            WorkspaceResolutionService.ResolvedWorkspace ctx, String name) {
+        Path root = ctx.workspace().toAbsolutePath().normalize();
+        Path file = root.resolve("subagents").resolve(name + ".md").normalize();
+        if (!file.startsWith(root)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid subagent name: " + name);
+        }
+        return file;
+    }
 
     private static AgentWorkspaceController.SubagentInfo toSubagentInfo(SubagentDeclaration decl) {
         return new AgentWorkspaceController.SubagentInfo(

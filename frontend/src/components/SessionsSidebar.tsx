@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { confirmAction, showNotice } from './InteractionHost';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { chatHref } from '../api/activeAgent';
 import { clearToken, getToken, isAdmin } from '../api/auth';
@@ -117,12 +118,19 @@ export default function SessionsSidebar({ agentId, refreshKey }: SessionsSidebar
     let cancelled = false;
     setErr(null);
     setLoading(true);
-    Promise.all([inbox(agentId, { limit: 500 }), getHistorySettings(agentId)])
-      .then(([list, settings]) => {
+    setHistoryLimit(100);
+    setHistoryLimitDraft('100');
+    Promise.allSettled([inbox(agentId, { limit: 500 }), getHistorySettings(agentId)])
+      .then(([inboxResult, settingsResult]) => {
         if (cancelled) return;
-        setEntries(list);
-        setHistoryLimit(settings.maxSessions);
-        setHistoryLimitDraft(String(settings.maxSessions));
+        if (inboxResult.status === 'rejected') {
+          throw inboxResult.reason;
+        }
+        setEntries(inboxResult.value);
+        if (settingsResult.status === 'fulfilled') {
+          setHistoryLimit(settingsResult.value.maxSessions);
+          setHistoryLimitDraft(String(settingsResult.value.maxSessions));
+        }
       })
       .catch(e => { if (!cancelled) setErr(e instanceof Error ? e.message : 'Failed'); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -183,7 +191,7 @@ export default function SessionsSidebar({ agentId, refreshKey }: SessionsSidebar
       setEntries(await inbox(agentId, { limit: 500 }));
       setHistorySettingsOpen(false);
     } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : 'Unable to save conversation history settings');
+      setErr(e instanceof Error ? e.message : '保存会话保留设置失败');
     }
   }
 
@@ -207,13 +215,13 @@ export default function SessionsSidebar({ agentId, refreshKey }: SessionsSidebar
       navigate(chatHref(agentId));
       return;
     }
-    if (!confirm(`删除此会话？"${entry.label ?? entry.sessionId}"`)) return;
+    if (!(await confirmAction(`删除此会话？“${entry.label ?? entry.sessionId}”`))) return;
     try {
       await deleteSession(agentId, entryNavKey(entry));
       setEntries(prev => prev.filter(e => e.sessionKey !== entry.sessionKey));
       if (activeKey === entryNavKey(entry)) navigate(chatHref(agentId));
     } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : '删除失败');
+      showNotice(e instanceof Error ? e.message : '删除失败');
     }
   }
 
@@ -374,6 +382,11 @@ function UserMenu({ username, onLogout }: { username: string; onLogout: () => vo
         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>
           {username || '用户'}
         </span>
+        {isAdmin() && (
+          <span style={{ fontSize: '0.64rem', color: '#4338ca', background: '#e0e7ff', borderRadius: 4, padding: '2px 4px' }}>
+            管理员
+          </span>
+        )}
         <span style={{ fontSize: '0.6rem', color: '#94a3b8', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}>▼</span>
       </button>
 

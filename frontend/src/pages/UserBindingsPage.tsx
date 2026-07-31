@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { confirmAction } from '../components/InteractionHost';
 import { getToken } from '../api/auth';
 
 interface UserBinding {
@@ -150,7 +151,7 @@ export default function UserBindingsPage() {
   useEffect(() => { load(); }, []);
 
   async function onDelete(i: number) {
-    if (!confirm('Delete this preference?')) return;
+    if (!(await confirmAction('删除此偏好设置？'))) return;
     try {
       await apiRemove(i);
       setOk('Preference removed.');

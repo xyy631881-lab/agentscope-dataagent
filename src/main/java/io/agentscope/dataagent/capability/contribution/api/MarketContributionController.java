@@ -19,19 +19,19 @@ import io.agentscope.dataagent.capability.contribution.domain.FileEntry;
 import io.agentscope.dataagent.capability.contribution.infrastructure.ContributionEntity;
 
 import io.agentscope.core.agent.RuntimeContext;
-import io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory;
+import io.agentscope.dataagent.agent.application.WorkspaceResolutionService;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
-import org.springframework.http.HttpStatus;
+import java.util.Map;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
 
 /**
  * User-facing REST surface for nominating workspace artifacts for promotion to the shared
@@ -49,32 +49,29 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/api/me/contributions")
 public class MarketContributionController {
     private final MarketContributionService service;
-    private final WorkspaceManagerFactory workspaceFactory;
+    private final WorkspaceResolutionService workspaceResolutionService;
 
     public MarketContributionController(
-            MarketContributionService service, WorkspaceManagerFactory workspaceFactory) {
+            MarketContributionService service,
+            WorkspaceResolutionService workspaceResolutionService) {
         this.service = service;
-        this.workspaceFactory = workspaceFactory;
+        this.workspaceResolutionService = workspaceResolutionService;
     }
 
     @PostMapping
     public ContributionView submit(@RequestBody SubmitRequest req, Authentication auth) {
         String userId = (String) auth.getPrincipal();
 
-                    try {
-                ContributionEntity saved =
-                        service.submit(
-                                userId,
-                                req.sourceAgentId(),
-                                req.targetAgentId(),
-                                req.targetType(),
-                                req.targetPath(),
-                                req.rationale(),
-                                req.payload());
-                return ContributionView.from(saved);
-                    } catch (IllegalArgumentException e) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
-                    }
+        ContributionEntity saved =
+                service.submit(
+                        userId,
+                        req.sourceAgentId(),
+                        req.targetAgentId(),
+                        req.targetType(),
+                        req.targetPath(),
+                        req.rationale(),
+                        req.payload());
+        return ContributionView.from(saved);
     }
 
     @PostMapping("/from-workspace")
@@ -82,26 +79,22 @@ public class MarketContributionController {
             @RequestBody FromWorkspaceRequest req, Authentication auth) {
         String userId = (String) auth.getPrincipal();
 
-                    try {
-                List<FileEntry> payload =
-                        harvestFromUserSandbox(
-                                userId,
-                                req.sourceAgentId(),
-                                req.targetType(),
-                                req.sourcePaths());
-                ContributionEntity saved =
-                        service.submit(
-                                userId,
-                                req.sourceAgentId(),
-                                req.targetAgentId(),
-                                req.targetType(),
-                                req.targetPath(),
-                                req.rationale(),
-                                payload);
-                return ContributionView.from(saved);
-                    } catch (IllegalArgumentException e) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
-                    }
+        List<FileEntry> payload =
+                harvestFromUserSandbox(
+                        userId,
+                        req.sourceAgentId(),
+                        req.targetType(),
+                        req.sourcePaths());
+        ContributionEntity saved =
+                service.submit(
+                        userId,
+                        req.sourceAgentId(),
+                        req.targetAgentId(),
+                        req.targetType(),
+                        req.targetPath(),
+                        req.rationale(),
+                        payload);
+        return ContributionView.from(saved);
     }
 
     @GetMapping
@@ -127,21 +120,63 @@ public class MarketContributionController {
                     + sourcePaths.size()
                     + ")");
         }
-        WorkspaceManager wm = workspaceFactory.forAgent(userId, sourceAgentId);
+        WorkspaceManager wm = workspaceResolutionService.resolve(userId, sourceAgentId).manager();
         RuntimeContext rc = RuntimeContext.builder().userId(userId).build();
         List<FileEntry> out = new ArrayList<>(sourcePaths.size());
-        for (String path : sourcePaths) {
+        List<String> skillRelPaths =
+                isSkillBundle ? skillBundleRelativePaths(sourcePaths) : List.of();
+        for (int i = 0; i < sourcePaths.size(); i++) {
+            String path = sourcePaths.get(i);
             if (path == null || path.isBlank()) {
                 throw new IllegalArgumentException("sourcePaths entries must be non-blank");
             }
             String content = wm.readManagedWorkspaceFileUtf8(rc, path);
-            if (content == null || content.isEmpty()) {
-                throw new IllegalArgumentException("source file is empty or unreadable: " + path);
+            if (content == null) {
+                throw new IllegalArgumentException("source file is unreadable: " + path);
             }
-            String relPath = isSkillBundle ? Paths.get(path).getFileName().toString() : "";
+            String relPath = isSkillBundle ? skillRelPaths.get(i) : "";
             out.add(new FileEntry(relPath, content));
         }
         return out;
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, String>> handleInvalidContribution(IllegalArgumentException ex) {
+        String message = ex.getMessage() == null ? "contribution request is invalid" : ex.getMessage();
+        return ResponseEntity.badRequest().body(Map.of("message", message));
+    }
+
+    /**
+     * Keeps a contributed skill's bundle layout instead of flattening every file to its basename.
+     * All files must come from the same directory that contains {@code SKILL.md}.
+     */
+    static List<String> skillBundleRelativePaths(List<String> sourcePaths) {
+        List<String> normalized = sourcePaths.stream()
+                .map(path -> path == null ? "" : path.replace('\\', '/'))
+                .toList();
+        String manifest = normalized.stream()
+                .filter(path -> path.endsWith("/SKILL.md") || "SKILL.md".equals(path))
+                .findFirst()
+                .orElseThrow(
+                        () ->
+                                new IllegalArgumentException(
+                                        "skill bundle selection must include SKILL.md"));
+        int slash = manifest.lastIndexOf('/');
+        String root = slash >= 0 ? manifest.substring(0, slash) : "";
+        String prefix = root.isEmpty() ? "" : root + "/";
+        List<String> relPaths = new ArrayList<>(normalized.size());
+        for (String path : normalized) {
+            if (path.isBlank() || (!prefix.isEmpty() && !path.startsWith(prefix))) {
+                throw new IllegalArgumentException(
+                        "all skill files must come from the same bundle directory");
+            }
+            String rel = prefix.isEmpty() ? path : path.substring(prefix.length());
+            if (rel.isBlank() || rel.startsWith("/") || rel.contains("..")) {
+                throw new IllegalArgumentException("invalid skill source path: " + path);
+            }
+            relPaths.add(rel);
+        }
+        return relPaths;
     }
 
     public record SubmitRequest(
@@ -171,6 +206,7 @@ public class MarketContributionController {
             String rationale,
             String reviewerUserId,
             String reviewerNote,
+            int version,
             long createdAt,
             long updatedAt) {
         public static ContributionView from(ContributionEntity e) {
@@ -185,6 +221,7 @@ public class MarketContributionController {
                     e.getRationale(),
                     e.getReviewerUserId(),
                     e.getReviewerNote(),
+                    e.getVersion(),
                     e.getCreatedAt(),
                     e.getUpdatedAt());
         }

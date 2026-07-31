@@ -105,7 +105,9 @@ public final class LocalApprovalMarketplace implements DataAgentMarketplace {
                                 if (!Files.isRegularFile(skillMd)) return;
                                 String name = dir.getFileName().toString();
                                 String description = firstNonBlankLine(skillMd);
-                                out.add(new MarketSkillSummary(name, description, null));
+                                List<Integer> versions = listVersions(name);
+                                String latest = versions.isEmpty() ? null : Integer.toString(versions.get(0));
+                                out.add(new MarketSkillSummary(name, description, latest));
                             });
         } catch (IOException e) {
             log.warn(
@@ -158,6 +160,92 @@ public final class LocalApprovalMarketplace implements DataAgentMarketplace {
                 name, firstNonBlankLine(skillMd), markdown, Collections.unmodifiableMap(resources));
     }
 
+    /**
+     * 从 {@code shared/agents/<agentId>/.versions/v<n>/skills/<name>/} 读取归档版本快照。
+     * 归档由 {@code MarketContributionService.archiveVersion} 在审批通过时写入，
+     * 布局镜像 live skills 目录，所以这里直接用 {@code skillsRoot.getParent()} 拿到 agent root，
+     * 再下钻到 {@code .versions/v<n>/skills/<name>/}。
+     */
+    @Override
+    public MarketSkillContent fetchVersion(String name, int version) {
+        if (name == null || name.isBlank()) return null;
+        if (version < 1) return null;
+        Path agentRoot = skillsRoot.getParent().normalize();
+        Path versionedDir =
+                agentRoot
+                        .resolve(".versions")
+                        .resolve("v" + version)
+                        .resolve("skills")
+                        .resolve(name)
+                        .normalize();
+        if (!Files.isDirectory(versionedDir) || !versionedDir.startsWith(agentRoot)) {
+            return null;
+        }
+        Path skillMd = versionedDir.resolve("SKILL.md");
+        if (!Files.isRegularFile(skillMd)) return null;
+
+        String markdown;
+        try {
+            markdown = Files.readString(skillMd, StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        Map<String, String> resources = new LinkedHashMap<>();
+        try (Stream<Path> stream = Files.walk(versionedDir)) {
+            stream.filter(Files::isRegularFile)
+                    .filter(p -> !p.equals(skillMd))
+                    .sorted()
+                    .forEach(
+                            p -> {
+                                String rel = versionedDir.relativize(p).toString().replace('\\', '/');
+                                try {
+                                    resources.put(rel, Files.readString(p, StandardCharsets.UTF_8));
+                                } catch (IOException ignored) {
+                                    // 尽力而为：跳过不可读的附属文件
+                                }
+                            });
+        } catch (IOException e) {
+            log.warn(
+                    "LocalApprovalMarketplace '{}' 部分获取版本 '{}@v{}': {}",
+                    id,
+                    name,
+                    version,
+                    e.getMessage());
+        }
+        return new MarketSkillContent(
+                name, firstNonBlankLine(skillMd), markdown, Collections.unmodifiableMap(resources));
+    }
+
+    @Override
+    public List<Integer> listVersions(String name) {
+        if (name == null || name.isBlank()) return List.of();
+        Path agentRoot = skillsRoot.getParent().normalize();
+        Path versionsRoot = agentRoot.resolve(".versions").normalize();
+        if (!Files.isDirectory(versionsRoot) || !versionsRoot.startsWith(agentRoot)) {
+            return List.of();
+        }
+        try (Stream<Path> stream = Files.list(versionsRoot)) {
+            return stream.filter(Files::isDirectory)
+                    .filter(
+                            dir ->
+                                    Files.isRegularFile(
+                                            dir.resolve("skills")
+                                                    .resolve(name)
+                                                    .resolve("SKILL.md")))
+                    .map(path -> parseVersion(path.getFileName().toString()))
+                    .filter(Objects::nonNull)
+                    .sorted(Collections.reverseOrder())
+                    .toList();
+        } catch (IOException e) {
+            log.warn(
+                    "LocalApprovalMarketplace '{}' 列举 '{}' 版本失败: {}",
+                    id,
+                    name,
+                    e.getMessage());
+            return List.of();
+        }
+    }
+
     @Override
     public void close() {
         // 无需释放持久化资源。
@@ -174,5 +262,14 @@ public final class LocalApprovalMarketplace implements DataAgentMarketplace {
             // 继续执行
         }
         return "";
+    }
+
+    private static Integer parseVersion(String directoryName) {
+        if (directoryName == null || !directoryName.matches("v[1-9][0-9]*")) return null;
+        try {
+            return Integer.parseInt(directoryName.substring(1));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 }

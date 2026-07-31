@@ -53,7 +53,7 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>三层架构的 Service 层：Controller 只管 HTTP 收发，Repository 只管数据库读写，
  * 业务逻辑（会话查找、权限校验、inbox 组装、日志读取、维护清理）全部在这里。
  *
- * <p>持久化从 sessions.json + ConcurrentHashMap 迁移到 JPA（MySQL/H2），
+ * <p>持久化从 sessions.json + ConcurrentHashMap 迁移到 JPA（MySQL），
  * 消除了 JSON 文件读写和内存索引，查询直接走数据库索引。
  *
  * <p>启动迁移（sessions.json → JPA）已提取到 {@link ConversationMigrationService}。
@@ -291,6 +291,7 @@ public class ConversationService {
         List<SessionEntity> all = sessionRepo.findByUserIdOrderByLastActivityMsDesc(userId);
         List<SessionEntity> matched = new ArrayList<>();
         for (SessionEntity e : all) {
+            if (!SessionKind.MAIN.getValue().equals(e.getKind())) continue;
             if (!ConversationSupport.sessionMatchesAgent(e.toEntry(), agentId, gatewayAgentId)) continue;
             matched.add(e);
         }

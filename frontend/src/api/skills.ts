@@ -7,6 +7,7 @@ export interface SkillMarketplaceMeta {
   repoLocation: string;
   originalName: string;
   installedAt: string;
+  version?: number | null;
 }
 
 export interface WorkspaceSkillInfo {
@@ -54,7 +55,10 @@ async function readError(res: Response, fallback: string): Promise<Error> {
 }
 
 export async function listWorkspaceSkills(agentId: string): Promise<WorkspaceSkillInfo[]> {
-  const res = await fetch(`${base(agentId)}/workspace`, { headers: authHeaders() });
+  const res = await fetch(`${base(agentId)}/workspace`, {
+    headers: authHeaders(),
+    cache: 'no-store',
+  });
   if (!res.ok) throw await readError(res, 'Failed to list workspace skills');
   return res.json();
 }
@@ -65,6 +69,7 @@ export async function getWorkspaceSkill(
 ): Promise<WorkspaceSkillDetail> {
   const res = await fetch(`${base(agentId)}/workspace/${encodeURIComponent(name)}`, {
     headers: authHeaders(),
+    cache: 'no-store',
   });
   if (!res.ok) throw await readError(res, 'Failed to load workspace skill');
   return res.json();
@@ -104,6 +109,7 @@ export interface MarketplaceInstallRequest {
   skillName: string;
   targetName?: string;
   overwrite?: boolean;
+  version?: number;
 }
 
 export async function installFromMarketplace(

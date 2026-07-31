@@ -24,11 +24,10 @@ const ADMIN_NAV: NavItem[] = [
   { label: '概览',  path: '/admin/overview',  icon: '📊' },
   { label: '会话',  path: '/admin/sessions',  icon: '🗂' },
   { label: '实例', path: '/admin/instances', icon: '⚡' },
-  { label: 'Agents',    path: '/admin/agents',    icon: '🤖' },
+  { label: '智能体',    path: '/admin/agents',    icon: '🤖' },
   { label: '通道',  path: '/admin/channels',  icon: '📡' },
   { label: '审批', path: '/admin/approvals', icon: '✅' },
   { label: '用户',     path: '/admin/users',     icon: '👥' },
-  { label: '用量',     path: '/admin/usage',     icon: '📈' },
   { label: '配置',    path: '/admin/config',    icon: '⚙️' },
   { label: '调试',     path: '/admin/debug',     icon: '🐛' },
 ];
@@ -81,10 +80,9 @@ function NavButton({ item, location, navigate }: {
   );
 }
 
-function UserMenu({ username, onLogout, onSwitchToChat }: {
+function UserMenu({ username, onLogout }: {
   username: string;
   onLogout: () => void;
-  onSwitchToChat: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -142,18 +140,6 @@ function UserMenu({ username, onLogout, onSwitchToChat }: {
             <div style={{ fontSize: '0.78rem', color: '#6366f1', marginTop: 2, fontWeight: 500 }}>管理员</div>
           </div>
           <button
-            onClick={() => { onSwitchToChat(); setOpen(false); }}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 10, width: '100%',
-              background: 'transparent', border: 'none', padding: '12px 16px',
-              cursor: 'pointer', fontSize: '0.92rem', color: '#475569',
-              textAlign: 'left' as const, borderBottom: '1px solid #f1f5f9',
-              fontWeight: 500,
-            }}
-          >
-            <span style={{ fontSize: '0.95rem' }}>💬</span>切换到聊天
-          </button>
-          <button
             onClick={() => { onLogout(); setOpen(false); }}
             style={{
               display: 'flex', alignItems: 'center', gap: 10, width: '100%',
@@ -181,6 +167,11 @@ export default function AdminAppShell({ children }: AppShellProps) {
     (n.path !== '/' && location.pathname.startsWith(n.path + '/'))
   );
   const pageTitle = currentNav ? `${currentNav.icon} ${currentNav.label}` : '';
+  const parentNav = location.pathname === '/admin/overview'
+    ? null
+    : ADMIN_NAV.find(item => location.pathname.startsWith(item.path + '/'))
+      ?? ADMIN_NAV.find(item => item.path === '/admin/overview')
+      ?? null;
 
   function logout() {
     clearToken();
@@ -198,13 +189,13 @@ export default function AdminAppShell({ children }: AppShellProps) {
             ⚙ AgentScope
           </span>
           <span style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: 4, display: 'block', fontWeight: 500 }}>
-            Admin Console
+            管理控制台
           </span>
         </div>
 
         <div style={{ padding: '16px 12px 8px' }}>
-          <span style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.1em', color: '#94a3b8', textTransform: 'uppercase' as const, padding: '0 10px', marginBottom: 8, display: 'block' }}>
-            Administration
+          <span style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: 0, color: '#94a3b8', padding: '0 10px', marginBottom: 8, display: 'block' }}>
+            管理
           </span>
           {ADMIN_NAV.map(item => (
             <NavButton key={item.path} item={item} location={location} navigate={navigate} />
@@ -217,7 +208,6 @@ export default function AdminAppShell({ children }: AppShellProps) {
           <UserMenu
             username={username}
             onLogout={logout}
-            onSwitchToChat={() => navigate(chatHrefPreservingSession())}
           />
         </div>
       </div>
@@ -228,7 +218,30 @@ export default function AdminAppShell({ children }: AppShellProps) {
           display: 'flex', alignItems: 'center', padding: '0 28px', flexShrink: 0,
         }}>
           <span style={{ fontSize: '1rem', color: '#0f172a', fontWeight: 600, flex: 1 }}>{pageTitle}</span>
-          <span style={{ fontSize: '0.8rem', color: '#94a3b8', fontWeight: 500 }}>Admin Console</span>
+          {parentNav && (
+            <button
+              type="button"
+              onClick={() => navigate(parentNav.path)}
+              style={{
+                background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: 6,
+                padding: '6px 11px', cursor: 'pointer', fontSize: '0.82rem', color: '#475569',
+                fontWeight: 500, marginRight: 8,
+              }}
+            >
+              ← 返回{parentNav.label}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => navigate(chatHrefPreservingSession())}
+            style={{
+              background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 6,
+              padding: '6px 11px', cursor: 'pointer', fontSize: '0.82rem', color: '#4338ca',
+              fontWeight: 600,
+            }}
+          >
+            返回工作台
+          </button>
         </div>
         <div style={{ flex: 1, overflow: 'auto' }}>{children}</div>
       </div>

@@ -89,13 +89,15 @@ public class WorkspaceResolutionService {
         // ctx.ownerId() in the file/summary services.
         if (AgentDefinition.SCOPE_USER.equals(def.scope())) {
             String ownerId = def.ownerId() != null ? def.ownerId() : userId;
+            Path workspacePath = workspaceFactory.userWorkspacePath(ownerId, agentId);
             WorkspaceManager wm =
                     workspaceFactory.forAgent(
                             ownerId,
                             agentId,
-                            def.workspacePath(),
+                            workspacePath.toString(),
                             sandboxStateNamespace(userId, agentId, def));
-            return new ResolvedWorkspace(wm, ownerId, workspaceFactory.localMirrorPath(ownerId, agentId));
+            return new ResolvedWorkspace(
+                    wm, ownerId, workspaceFactory.localMirrorPath(ownerId, agentId), false);
         }
         WorkspaceManager wm =
                 workspaceFactory.forGlobalAgent(
@@ -103,7 +105,8 @@ public class WorkspaceResolutionService {
                         agentId,
                         def.workspacePath(),
                         sandboxStateNamespace(userId, agentId, def));
-        return new ResolvedWorkspace(wm, userId, workspaceFactory.localMirrorPath(userId, agentId));
+        return new ResolvedWorkspace(
+                wm, userId, workspaceFactory.localMirrorPath(userId, agentId), false);
     }
 
     /** 只获取 WorkspaceManager（不抛 404，内部使用）。 */
@@ -134,7 +137,15 @@ public class WorkspaceResolutionService {
      * @param manager  WorkspaceManager 实例
      * @param ownerId  工作空间所有者 ID（SCOPE_USER 时是 Agent 的 ownerId，全局时是当前 userId）
      */
-    public record ResolvedWorkspace(WorkspaceManager manager, String ownerId, String localMirrorPath) {
+    public record ResolvedWorkspace(
+            WorkspaceManager manager,
+            String ownerId,
+            String localMirrorPath,
+            boolean directLocalWrites) {
+        public ResolvedWorkspace(
+                WorkspaceManager manager, String ownerId, String localMirrorPath) {
+            this(manager, ownerId, localMirrorPath, false);
+        }
         /** 工作空间在容器内的归一化路径。 */
         public Path workspace() {
             return manager.getWorkspace().normalize();

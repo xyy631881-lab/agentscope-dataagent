@@ -274,12 +274,18 @@ public class AgentActivityStore {
     // -----------------------------------------------------------------
 
     private AbstractFilesystem scopedFs(String ownerId, String agentId) {
-        String workspacePath =
-                agentStore
-                        .findById(ownerId, agentId)
-                        .map(UserAgentDefinitionStore.StoredEntry::workspacePath)
-                        .orElse(null);
-        return workspaceFactory.userDataFs(ownerId, agentId, workspacePath);
+        Optional<UserAgentDefinitionStore.StoredEntry> entry = agentStore.findById(ownerId, agentId);
+        String workspacePath = entry.map(UserAgentDefinitionStore.StoredEntry::workspacePath).orElse(null);
+        // Custom agents run under their display name (for example, "Insight Agent") while their
+        // URL id remains "insight-agent". Audit writes must address the same sandbox-state slot
+        // as file uploads; using the id here created an empty secondary sandbox and published its
+        // empty mirror over the real workspace immediately after every activity event.
+        String sandboxStateNamespace =
+                entry.map(UserAgentDefinitionStore.StoredEntry::name)
+                        .filter(name -> !name.isBlank())
+                        .orElse(agentId);
+        return workspaceFactory.userDataFs(
+                ownerId, agentId, workspacePath, sandboxStateNamespace);
     }
 
     private static Optional<String> readUtf8(AbstractFilesystem fs, String path) {

@@ -69,6 +69,25 @@ public class WorkspaceSummaryService {
             String agentId,
             String agentName,
             WorkspaceResolutionService.ResolvedWorkspace ctx) {
+        if (ctx.directLocalWrites()) {
+            Path workspace = ctx.workspace();
+            Path agentsMd = workspace.resolve("AGENTS.md");
+            try {
+                Files.createDirectories(workspace);
+                Files.createDirectories(workspace.resolve("skills"));
+                Files.createDirectories(workspace.resolve("subagents"));
+                Files.createDirectories(workspace.resolve("memory"));
+                if (!Files.exists(agentsMd)) {
+                    String displayName = agentName.isBlank() ? agentId : agentName;
+                    Files.writeString(
+                            agentsMd,
+                            "# " + displayName + "\n\nYou are " + displayName + ".\n");
+                }
+            } catch (Exception e) {
+                throw new IllegalStateException("Failed to scaffold private workspace", e);
+            }
+            return summarize(agentId, ctx);
+        }
         AbstractFilesystem fs = ctx.manager().getFilesystem();
         RuntimeContext rc = RuntimeContext.builder().userId(ctx.ownerId()).build();
         if (!fs.exists(rc, "AGENTS.md")) {
@@ -90,6 +109,39 @@ public class WorkspaceSummaryService {
      * @return a {@link AgentWorkspaceController.MemoryView}
      */
     public AgentWorkspaceController.MemoryView memory(WorkspaceResolutionService.ResolvedWorkspace ctx) {
+        if (ctx.directLocalWrites()) {
+            Path workspace = ctx.workspace();
+            String memoryContent = null;
+            Path memory = workspace.resolve("MEMORY.md");
+            try {
+                if (Files.isRegularFile(memory)) {
+                    memoryContent = Files.readString(memory);
+                    if (memoryContent.length() > 50000) memoryContent = memoryContent.substring(0, 50000);
+                }
+            } catch (Exception ignored) {
+                memoryContent = null;
+            }
+            List<AgentWorkspaceController.DailyMemoryFile> dailyFiles = new ArrayList<>();
+            Path memoryDir = workspace.resolve("memory");
+            if (Files.isDirectory(memoryDir)) {
+                try (var entries = Files.list(memoryDir)) {
+                    entries.filter(path -> Files.isRegularFile(path)
+                                    && path.getFileName().toString().endsWith(".md"))
+                            .sorted(Comparator.comparing(Path::toString).reversed())
+                            .forEach(path -> {
+                                try {
+                                    dailyFiles.add(new AgentWorkspaceController.DailyMemoryFile(
+                                            path.getFileName().toString(), Files.size(path)));
+                                } catch (Exception ignored) {
+                                    // A concurrently deleted memory entry is safe to skip.
+                                }
+                            });
+                } catch (Exception ignored) {
+                    // An unavailable optional memory directory is represented as empty.
+                }
+            }
+            return new AgentWorkspaceController.MemoryView(memoryContent, dailyFiles);
+        }
         AbstractFilesystem fs = ctx.manager().getFilesystem();
         RuntimeContext rc = RuntimeContext.builder().userId(ctx.ownerId()).build();
         String memoryContent = null;
@@ -126,6 +178,14 @@ public class WorkspaceSummaryService {
      */
     private static AgentWorkspaceController.WorkspaceSummary summarize(
             String agentId, WorkspaceResolutionService.ResolvedWorkspace ctx) {
+        if (ctx.directLocalWrites()) {
+            return summarizeHost(agentId, ctx, ctx.workspace());
+        }
+        Path mirror = mirrorRoot(ctx);
+        if (mirror != null) {
+            return summarizeHost(agentId, ctx, mirror);
+        }
+
         AbstractFilesystem fs = ctx.manager().getFilesystem();
         RuntimeContext rc = RuntimeContext.builder().userId(ctx.ownerId()).build();
         boolean agentsMdExists = fs.exists(rc, "AGENTS.md");
@@ -136,24 +196,66 @@ public class WorkspaceSummaryService {
         int chartArtifactCount = countDirChildren(fs, rc, "/artifacts/charts", false);
         int reportArtifactCount = countDirChildren(fs, rc, "/artifacts/reports", false);
         int datasetArtifactCount = countDirChildren(fs, rc, "/artifacts/datasets", false);
-        Path mirror = mirrorRoot(ctx);
         // Probe real sandbox reachability: when the sandbox slot cannot be loaded (e.g. the
         // browsing context resolved to a different isolation key than the agent execution), the
         // workspace is genuinely "not synced" rather than merely empty.
         boolean sandboxAccessible = fs.ls(rc, "/").isSuccess();
-        if (mirror != null) {
-            agentsMdExists = agentsMdExists || Files.isRegularFile(mirror.resolve("AGENTS.md"));
-            memoryMdExists = memoryMdExists || Files.isRegularFile(mirror.resolve("MEMORY.md"));
-            if (skillCount == 0) skillCount = countHostChildren(mirror.resolve("skills"), true);
-            if (subagentCount == 0) subagentCount = countHostMdFiles(mirror.resolve("subagents"));
-            if (dailyMemoryCount == 0) dailyMemoryCount = countHostMdFiles(mirror.resolve("memory"));
-            if (chartArtifactCount == 0) chartArtifactCount = countHostChildren(mirror.resolve("artifacts/charts"), false);
-            if (reportArtifactCount == 0) reportArtifactCount = countHostChildren(mirror.resolve("artifacts/reports"), false);
-            if (datasetArtifactCount == 0) datasetArtifactCount = countHostChildren(mirror.resolve("artifacts/datasets"), false);
-        }
         boolean hasContent = agentsMdExists || memoryMdExists || skillCount > 0 || 
                              subagentCount > 0 || dailyMemoryCount > 0 || 
                              (chartArtifactCount + reportArtifactCount + datasetArtifactCount) > 0;
+        return workspaceSummary(
+                agentId,
+                ctx,
+                agentsMdExists,
+                memoryMdExists,
+                skillCount,
+                subagentCount,
+                dailyMemoryCount,
+                chartArtifactCount,
+                reportArtifactCount,
+                datasetArtifactCount,
+                sandboxAccessible,
+                !hasContent && !sandboxAccessible);
+    }
+
+    private static AgentWorkspaceController.WorkspaceSummary summarizeHost(
+            String agentId, WorkspaceResolutionService.ResolvedWorkspace ctx, Path root) {
+        boolean agentsMdExists = Files.isRegularFile(root.resolve("AGENTS.md"));
+        boolean memoryMdExists = Files.isRegularFile(root.resolve("MEMORY.md"));
+        int skillCount = countHostChildren(root.resolve("skills"), true);
+        int subagentCount = countHostMdFiles(root.resolve("subagents"));
+        int dailyMemoryCount = countHostMdFiles(root.resolve("memory"));
+        int chartArtifactCount = countHostChildren(root.resolve("artifacts/charts"), false);
+        int reportArtifactCount = countHostChildren(root.resolve("artifacts/reports"), false);
+        int datasetArtifactCount = countHostChildren(root.resolve("artifacts/datasets"), false);
+        return workspaceSummary(
+                agentId,
+                ctx,
+                agentsMdExists,
+                memoryMdExists,
+                skillCount,
+                subagentCount,
+                dailyMemoryCount,
+                chartArtifactCount,
+                reportArtifactCount,
+                datasetArtifactCount,
+                true,
+                false);
+    }
+
+    private static AgentWorkspaceController.WorkspaceSummary workspaceSummary(
+            String agentId,
+            WorkspaceResolutionService.ResolvedWorkspace ctx,
+            boolean agentsMdExists,
+            boolean memoryMdExists,
+            int skillCount,
+            int subagentCount,
+            int dailyMemoryCount,
+            int chartArtifactCount,
+            int reportArtifactCount,
+            int datasetArtifactCount,
+            boolean sandboxAccessible,
+            boolean emptyNotSynced) {
         return new AgentWorkspaceController.WorkspaceSummary(
                 agentId,
                 ctx.workspace().toAbsolutePath().toString(),
@@ -171,7 +273,7 @@ public class WorkspaceSummaryService {
                 datasetArtifactCount,
                 ctx.localMirrorPath(),
                 sandboxAccessible,
-                !hasContent && !sandboxAccessible);
+                emptyNotSynced);
     }
 
     private static int countDirChildren(

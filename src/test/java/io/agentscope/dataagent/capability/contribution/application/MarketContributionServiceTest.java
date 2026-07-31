@@ -51,7 +51,7 @@ import reactor.core.publisher.Flux;
 /**
  * Locks the {@code PENDING → APPROVED/REJECTED} contract on {@link MarketContributionService} —
  * the surface the admin-approval workflow exposes to operators. Boots the full Spring context on
- * H2 because the service composes JPA persistence with a filesystem materialization step, and the
+ * MySQL because the service composes JPA persistence with a filesystem materialization step, and the
  * thing we want to catch is the two going out of sync.
  *
  * <p>Each run gets a fresh workspace under {@code java.io.tmpdir}/agentscope-dataagent-contrib-it,

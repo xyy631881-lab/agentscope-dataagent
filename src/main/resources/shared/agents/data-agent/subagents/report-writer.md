@@ -58,6 +58,10 @@ completed.
 
 - The numbers you report must match the inputs verbatim. Do not round
   silently; do not change units. If a unit conversion is helpful, show both.
+- If the report shows dates, keep **report generation date** and **data cutoff
+  date** separate. Use the runtime current date only for generation date; use
+  the verified query result only for the cutoff date. Never infer one from the
+  other.
 - Every chart referenced must exist at the path given — verify with
   `file_read` before embedding.
 - Your final message back to the caller is the deliverable the user will see;

@@ -47,7 +47,7 @@ import reactor.core.publisher.Flux;
 
 /**
  * Boots the full Spring Boot context (the JPA-backed persistence path is the only backend the
- * DataAgent ships with) on top of an in-memory H2 database to validate user / agent persistence
+ * DataAgent ships with) on top of MySQL to validate user / agent persistence
  * end-to-end. Confirms that:
  *
  * <ul>

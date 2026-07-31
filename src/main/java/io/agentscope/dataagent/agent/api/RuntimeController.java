@@ -27,6 +27,7 @@ import org.springframework.web.server.ResponseStatusException;
 import io.agentscope.dataagent.agent.application.AgentCatalogService;
 import io.agentscope.dataagent.agent.application.AgentLifecycleService;
 import io.agentscope.dataagent.conversation.application.ConversationService;
+import io.agentscope.dataagent.conversation.application.WorkspaceEvolutionService;
 import io.agentscope.dataagent.conversation.infrastructure.SessionEntity;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 
@@ -46,16 +47,19 @@ public class RuntimeController {
     private final DataAgentBootstrap bootstrap;
     private final AgentLifecycleService lifecycleService;
     private final ConversationService conversationService;
+    private final WorkspaceEvolutionService workspaceEvolutionService;
     private final AgentCatalogService catalogService;
 
     public RuntimeController(
             DataAgentBootstrap bootstrap,
             AgentLifecycleService lifecycleService,
             ConversationService conversationService,
+            WorkspaceEvolutionService workspaceEvolutionService,
             AgentCatalogService catalogService) {
         this.bootstrap = bootstrap;
         this.lifecycleService = lifecycleService;
         this.conversationService = conversationService;
+        this.workspaceEvolutionService = workspaceEvolutionService;
         this.catalogService = catalogService;
     }
 
@@ -105,6 +109,17 @@ public class RuntimeController {
                                 new ResponseStatusException(
                                         HttpStatus.NOT_FOUND,
                                         "Session not found: " + sessionKey));
+    }
+
+    @GetMapping("/sessions/{sessionKey}/workspace/events")
+    public List<WorkspaceEvolutionService.WorkspaceMutation> workspaceEvents(
+            @PathVariable String sessionKey,
+            @RequestParam(defaultValue = "500") int limit) {
+        if (conversationService.findByKey(sessionKey).isEmpty()) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "Session not found: " + sessionKey);
+        }
+        return workspaceEvolutionService.forSession(sessionKey, limit);
     }
 
     private static SessionTreeDto toTreeDto(ConversationService.SessionTreeNode node) {

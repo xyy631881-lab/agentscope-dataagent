@@ -16,7 +16,6 @@
 package io.agentscope.dataagent.agent.application;
 import io.agentscope.dataagent.agent.api.AgentSkillsController;
 
-import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.skill.AgentSkill;
 import io.agentscope.core.skill.repository.AgentSkillRepository;
 import io.agentscope.core.skill.repository.AgentSkillRepositoryInfo;
@@ -24,9 +23,8 @@ import io.agentscope.dataagent.agent.domain.ActivityEvent;
 import io.agentscope.dataagent.capability.marketplace.domain.DataAgentMarketplace;
 import io.agentscope.dataagent.capability.marketplace.domain.MarketSkillContent;
 import io.agentscope.dataagent.capability.marketplace.application.UserMarketplaceRegistry;
+import io.agentscope.dataagent.workspace.application.SandboxStateInvalidator;
 import io.agentscope.harness.agent.HarnessAgent;
-import io.agentscope.harness.agent.filesystem.AbstractFilesystem;
-import io.agentscope.harness.agent.workspace.WorkspaceManager;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -56,16 +54,19 @@ public class SkillInstallService {
     private final UserMarketplaceRegistry marketplaceRegistry;
     private final AgentActivityStore activity;
     private final AgentLifecycleService lifecycleService;
+    private final SandboxStateInvalidator sandboxStateInvalidator;
 
     public SkillInstallService(
             AgentCatalogService catalogService,
             UserMarketplaceRegistry marketplaceRegistry,
             AgentActivityStore activity,
-            AgentLifecycleService lifecycleService) {
+            AgentLifecycleService lifecycleService,
+            SandboxStateInvalidator sandboxStateInvalidator) {
         this.catalogService = catalogService;
         this.marketplaceRegistry = marketplaceRegistry;
         this.activity = activity;
         this.lifecycleService = lifecycleService;
+        this.sandboxStateInvalidator = sandboxStateInvalidator;
     }
 
     // -----------------------------------------------------------------
@@ -152,34 +153,28 @@ public class SkillInstallService {
                         : skill.getName();
         SkillFileService.validateSkillName(targetName);
 
-        AbstractFilesystem fs = ctx.manager().getFilesystem();
-        RuntimeContext runtimeContext = RuntimeContext.builder().userId(ctx.ownerId()).build();
-        if (fs.exists(runtimeContext, "/skills/" + targetName)
-                && !Boolean.TRUE.equals(req.overwrite())) {
-            throw new ResponseStatusException(
-                    HttpStatus.CONFLICT, "Workspace skill already exists: " + targetName);
-        }
-        if (fs.exists(runtimeContext, "/skills/" + targetName)) {
-            fs.delete(runtimeContext, "/skills/" + targetName);
-        }
         String markdown = skill.getSkillContent();
         if (markdown == null || markdown.isBlank()) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_GATEWAY,
                     "Repository returned empty SKILL.md for: " + req.skillName());
         }
-        WorkspaceManager wsm = ctx.manager();
-        wsm.writeUtf8WorkspaceRelative(
-                runtimeContext, "skills/" + targetName + "/SKILL.md", markdown);
-        SkillFileService.writeResources(wsm, runtimeContext, targetName, skill.getResources());
         AgentSkillRepositoryInfo repoInfo = repo.getRepositoryInfo();
         AgentSkillsController.SkillMarketplaceMeta meta =
                 new AgentSkillsController.SkillMarketplaceMeta(
                         repoInfo != null ? repoInfo.getType() : "unknown",
                         repoInfo != null ? repoInfo.getLocation() : "",
                         skill.getName(),
-                        Instant.now().toString());
-        SkillFileService.writeInstallMeta(wsm, runtimeContext, targetName, meta);
+                        Instant.now().toString(),
+                        null);
+        AgentSkillsController.WorkspaceSkillInfo installed =
+                SkillFileService.installDurable(
+                        ctx.workspace(),
+                        targetName,
+                        markdown,
+                        skill.getResources(),
+                        meta,
+                        Boolean.TRUE.equals(req.overwrite()));
         activity.record(
                 ctx.ownerId(),
                 agentId,
@@ -190,8 +185,9 @@ public class SkillInstallService {
                         "source", "repository",
                         "repoType", meta.repoType(),
                         "originalName", meta.originalName()));
+        sandboxStateInvalidator.invalidateAll();
         lifecycleService.invalidateUca(ctx.ownerId(), agentId);
-        return SkillFileService.readWorkspaceSkill(fs, runtimeContext, targetName);
+        return installed;
     }
 
     /**
@@ -200,10 +196,13 @@ public class SkillInstallService {
      * <p>Uses 404 (not 403) for cross-user lookups so the existence of another user's
      * marketplace ids is not leaked.
      *
+     * <p>当 {@code req.version()} 非 null 时，调用 {@link DataAgentMarketplace#fetchVersion}
+     * 读取该版本归档；marketplace 不支持版本化或该版本不存在时返回 404。
+     *
      * @param ctx     pre-resolved workspace context
      * @param userId  caller user id (the marketplace is scoped to this user)
      * @param agentId agent id from the URL path
-     * @param req     install request (marketplaceId, skillName, targetName, overwrite)
+     * @param req     install request (marketplaceId, skillName, targetName, overwrite, version)
      * @return info about the newly installed workspace skill
      */
     public AgentSkillsController.WorkspaceSkillInfo installFromMarketplace(
@@ -220,10 +219,24 @@ public class SkillInstallService {
                                                 HttpStatus.NOT_FOUND,
                                                 "Marketplace not registered: "
                                                         + req.marketplaceId()));
+        Integer version = req.version();
         MarketSkillContent content;
         try {
-            content = mp.fetch(req.skillName());
+            if (version != null) {
+                content = mp.fetchVersion(req.skillName(), version);
+                if (content == null) {
+                    throw new ResponseStatusException(
+                            HttpStatus.NOT_FOUND,
+                            "Skill version not found in marketplace: "
+                                    + req.skillName()
+                                    + "@v"
+                                    + version);
+                }
+            } else {
+                content = mp.fetch(req.skillName());
+            }
         } catch (RuntimeException e) {
+            if (e instanceof ResponseStatusException) throw e;
             throw new ResponseStatusException(
                     HttpStatus.BAD_GATEWAY, "Marketplace fetch failed: " + e.getMessage());
         }
@@ -237,34 +250,26 @@ public class SkillInstallService {
                         : content.name();
         SkillFileService.validateSkillName(targetName);
 
-        AbstractFilesystem fs = ctx.manager().getFilesystem();
-        RuntimeContext runtimeContext = RuntimeContext.builder().userId(ctx.ownerId()).build();
-        if (fs.exists(runtimeContext, "/skills/" + targetName)
-                && !Boolean.TRUE.equals(req.overwrite())) {
-            throw new ResponseStatusException(
-                    HttpStatus.CONFLICT, "Workspace skill already exists: " + targetName);
-        }
-        if (fs.exists(runtimeContext, "/skills/" + targetName)) {
-            fs.delete(runtimeContext, "/skills/" + targetName);
-        }
         if (content.markdown() == null || content.markdown().isBlank()) {
             throw new ResponseStatusException(
                     HttpStatus.BAD_GATEWAY,
                     "Marketplace returned empty SKILL.md for: " + req.skillName());
         }
-        WorkspaceManager wsm = ctx.manager();
-        wsm.writeUtf8WorkspaceRelative(
-                runtimeContext,
-                "skills/" + targetName + "/SKILL.md",
-                content.markdown());
-        SkillFileService.writeResources(wsm, runtimeContext, targetName, content.resources());
         AgentSkillsController.SkillMarketplaceMeta meta =
                 new AgentSkillsController.SkillMarketplaceMeta(
                         mp.type(),
                         mp.displayLocation(),
                         content.name(),
-                        Instant.now().toString());
-        SkillFileService.writeInstallMeta(wsm, runtimeContext, targetName, meta);
+                        Instant.now().toString(),
+                        version);
+        AgentSkillsController.WorkspaceSkillInfo installed =
+                SkillFileService.installDurable(
+                        ctx.workspace(),
+                        targetName,
+                        content.markdown(),
+                        content.resources(),
+                        meta,
+                        Boolean.TRUE.equals(req.overwrite()));
         activity.record(
                 ctx.ownerId(),
                 agentId,
@@ -276,7 +281,8 @@ public class SkillInstallService {
                         "marketplaceId", req.marketplaceId(),
                         "marketplaceType", meta.repoType(),
                         "originalName", meta.originalName()));
+        sandboxStateInvalidator.invalidateAll();
         lifecycleService.invalidateUca(ctx.ownerId(), agentId);
-        return SkillFileService.readWorkspaceSkill(fs, runtimeContext, targetName);
+        return installed;
     }
 }

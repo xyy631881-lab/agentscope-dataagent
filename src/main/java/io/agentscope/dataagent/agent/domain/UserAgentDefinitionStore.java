@@ -33,9 +33,8 @@ import java.util.Optional;
  *
  * <p>The only bundled implementation is
  * {@link io.agentscope.dataagent.agent.infrastructure.JpaUserAgentDefinitionStore}, which persists
- * via Spring Data JPA with a soft foreign key to the user table. The default DataSource is the
- * embedded H2 database at {@code ${user.home}/.agentscope-builder/db}; activate the
- * {@code jdbc} Spring profile (or set {@code BUILDER_DB_URL}) to point at MySQL / PostgreSQL.
+ * via Spring Data JPA with a soft foreign key to the user table. All runtime profiles use the
+ * configured MySQL datasource.
  *
  * <p>Implementations are expected to be thread-safe.
  */

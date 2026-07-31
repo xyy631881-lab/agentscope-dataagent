@@ -23,7 +23,6 @@ import io.agentscope.dataagent.common.WorkspaceCopier;
 
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.workspace.application.WorkspaceScaffolder;
-import io.agentscope.dataagent.agent.domain.AgentShareGrant;
 import io.agentscope.dataagent.capability.template.application.TemplateRegistry;
 import io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory;
 import java.io.IOException;
@@ -155,6 +154,8 @@ public class AgentMutationService {
             } else {
                 WorkspaceScaffolder.scaffold(workspace, entry.name(), entry.sysPrompt());
             }
+            copyPublicDataSkills(workspace);
+            markPublicDataSkillsSeeded(workspace);
         } catch (ResponseStatusException e) {
             throw e;
         } catch (IOException e) {
@@ -167,6 +168,39 @@ public class AgentMutationService {
         }
 
         return entry.toDefinition(userId);
+    }
+
+    /**
+     * Brings an existing private Agent forward to the public data-skill baseline without replacing
+     * any file the owner has already authored. This is used for Agents created before the baseline
+     * copy was introduced.
+     */
+    public void ensurePublicDataSkills(String userId, String agentId) {
+        UserAgentDefinitionStore.StoredEntry entry = store.findById(userId, agentId).orElse(null);
+        if (entry == null) {
+            return;
+        }
+        try {
+            Path workspace = userWorkspacePath(userId, entry);
+            if (Files.isRegularFile(publicSkillsSeedMarker(workspace))) {
+                return;
+            }
+            if (!Files.isRegularFile(workspace.resolve("AGENTS.md"))) {
+                WorkspaceScaffolder.scaffold(workspace, entry.name(), entry.sysPrompt());
+            }
+            // Existing private agents that already contain skills predate the marker but are
+            // initialized. Do not copy missing baseline skills back after an explicit uninstall.
+            if (!hasAnySkillDirectory(workspace)) {
+                copyPublicDataSkills(workspace);
+            }
+            markPublicDataSkillsSeeded(workspace);
+        } catch (IOException e) {
+            log.warn(
+                    "Failed to seed public data skills for user-custom agent '{}/{}': {}",
+                    userId,
+                    agentId,
+                    e.getMessage());
+        }
     }
 
     /** Updates an existing user-custom agent definition. Only the owner may update. */
@@ -662,9 +696,59 @@ public class AgentMutationService {
 
     /** Suffix automatically appended to the final segment of user-supplied workspace paths. */
     public static final String WORKSPACE_DIR_SUFFIX = "-workspace";
+    private static final String PUBLIC_SKILLS_SEED_MARKER = ".dataagent/public-skills-v1";
 
     private Path userWorkspacePath(String userId, UserAgentDefinitionStore.StoredEntry entry) {
-        return workspaceManagerFactory.resolveAgentDataPath(entry.workspacePath(), entry.id());
+        return workspaceManagerFactory.userWorkspacePath(userId, entry.id());
+    }
+
+    private static Path publicSkillsSeedMarker(Path workspace) {
+        return workspace.resolve(PUBLIC_SKILLS_SEED_MARKER).normalize();
+    }
+
+    private static boolean hasAnySkillDirectory(Path workspace) throws IOException {
+        Path skills = workspace.resolve("skills").normalize();
+        if (!Files.isDirectory(skills)) {
+            return false;
+        }
+        try (var entries = Files.list(skills)) {
+            return entries.anyMatch(Files::isDirectory);
+        }
+    }
+
+    private static void markPublicDataSkillsSeeded(Path workspace) throws IOException {
+        Path marker = publicSkillsSeedMarker(workspace);
+        Files.createDirectories(marker.getParent());
+        Files.writeString(marker, "seeded\n", StandardCharsets.UTF_8);
+    }
+
+    /**
+     * A private Agent starts with the team's data-analysis playbooks, then owns its copied files.
+     * Existing files are deliberately never overwritten, so later administrator edits do not
+     * erase a user's customisation.
+     */
+    private static void copyPublicDataSkills(Path workspace) throws IOException {
+        Path source = Paths.get("shared", "agents", "data-agent", "skills")
+                .toAbsolutePath()
+                .normalize();
+        if (!Files.isDirectory(source)) {
+            return;
+        }
+        Path targetRoot = workspace.resolve("skills").normalize();
+        try (var sourceFiles = Files.walk(source)) {
+            for (Path sourceFile : sourceFiles.toList()) {
+                Path target = targetRoot.resolve(source.relativize(sourceFile)).normalize();
+                if (!target.startsWith(targetRoot)) {
+                    throw new IOException("Public skill path escapes private workspace");
+                }
+                if (Files.isDirectory(sourceFile)) {
+                    Files.createDirectories(target);
+                } else if (!Files.exists(target)) {
+                    Files.createDirectories(target.getParent());
+                    Files.copy(sourceFile, target, StandardCopyOption.COPY_ATTRIBUTES);
+                }
+            }
+        }
     }
 
     /**

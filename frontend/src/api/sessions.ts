@@ -5,6 +5,16 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+async function readJson<T>(res: Response, failureMessage: string): Promise<T> {
+  if (!res.ok) throw new Error(failureMessage);
+
+  const contentType = res.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(`${failureMessage}：服务返回了网页而非 JSON，请确认后端已重启并与前端版本一致。`);
+  }
+  return res.json() as Promise<T>;
+}
+
 // ── Agent 范围的会话收件箱/轮次 ──────────────────
 
 export interface InboxEntry {
@@ -66,8 +76,7 @@ export async function inbox(agentId: string, opts: InboxOptions = {}): Promise<I
   const qs = params.toString();
   const url = `/api/agents/${encodeURIComponent(agentId)}/sessions/inbox${qs ? `?${qs}` : ''}`;
   const res = await fetch(url, { headers: authHeaders() });
-  if (!res.ok) throw new Error('加载收件箱失败');
-  return res.json();
+  return readJson<InboxEntry[]>(res, '加载会话列表失败');
 }
 
 export async function createSession(agentId: string): Promise<CreatedSession> {
@@ -82,8 +91,7 @@ export async function getHistorySettings(agentId: string): Promise<HistorySettin
   const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}/sessions/settings`, {
     headers: authHeaders(),
   });
-  if (!res.ok) throw new Error('Unable to load conversation history settings');
-  return res.json();
+  return readJson<HistorySettings>(res, '加载会话保留设置失败');
 }
 
 export async function updateHistorySettings(
@@ -94,8 +102,7 @@ export async function updateHistorySettings(
     headers: { ...authHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ maxSessions }),
   });
-  if (!res.ok) throw new Error('Unable to save conversation history settings');
-  return res.json();
+  return readJson<HistorySettings>(res, '保存会话保留设置失败');
 }
 
 export async function turns(agentId: string, sessionKey: string): Promise<TurnEntry[]> {

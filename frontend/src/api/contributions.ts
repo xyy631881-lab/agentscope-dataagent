@@ -24,6 +24,7 @@ export interface Contribution {
   rationale: string | null;
   reviewerUserId: string | null;
   reviewerNote: string | null;
+  version: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -69,7 +70,18 @@ function jsonHeaders(): Record<string, string> {
 async function unwrap<T>(res: Response, ctx: string): Promise<T> {
   if (!res.ok) {
     const txt = await res.text().catch(() => res.statusText);
-    throw new Error(txt || `${ctx} failed: ${res.status}`);
+    let message = '';
+    try {
+      const body = JSON.parse(txt) as { message?: unknown; error?: unknown };
+      if (typeof body.message === 'string' && body.message.trim()) {
+        message = body.message;
+      } else if (typeof body.error === 'string' && body.error.trim()) {
+        message = `${ctx} failed: ${body.error}`;
+      }
+    } catch {
+      // Non-JSON error bodies are displayed as received below.
+    }
+    throw new Error(message || txt || `${ctx} failed: ${res.status}`);
   }
   if (res.status === 204) return undefined as unknown as T;
   return res.json() as Promise<T>;
@@ -130,4 +142,12 @@ export async function rejectContribution(id: number, note: string): Promise<Cont
     body: JSON.stringify({ note }),
   });
   return unwrap<Contribution>(res, 'rejectContribution');
+}
+
+export async function rollbackContribution(id: number): Promise<Contribution> {
+  const res = await fetch(`/api/admin/contributions/${id}/rollback`, {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  return unwrap<Contribution>(res, 'rollbackContribution');
 }

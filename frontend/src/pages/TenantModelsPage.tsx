@@ -1,4 +1,5 @@
 import React, { FormEvent, useEffect, useState } from 'react';
+import { confirmAction } from '../components/InteractionHost';
 import BackToChatHeader from '../components/BackToChatHeader';
 import { deleteTenantModel, listTenantModels, ModelProvider, saveTenantModel, TenantModelConfig } from '../api/tenantModels';
 
@@ -63,7 +64,7 @@ export default function TenantModelsPage() {
   }
 
   async function remove(id: string) {
-    if (!window.confirm(`删除 ${id} 的租户模型配置？`)) return;
+    if (!(await confirmAction(`删除 ${id} 的租户模型配置？`))) return;
     try { await deleteTenantModel(id); await load(); if (editing === id) reset(); }
     catch (reason) { setMessage(reason instanceof Error ? reason.message : '删除失败'); }
   }

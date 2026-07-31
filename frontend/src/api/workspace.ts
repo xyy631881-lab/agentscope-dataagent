@@ -28,6 +28,16 @@ export interface WorkspaceSummary {
   emptyNotSynced?: boolean;
 }
 
+export interface UploadBatchResult {
+  uploaded: FileNode[];
+  failed: Array<{ path: string; message: string }>;
+}
+
+export interface WorkspaceUpload {
+  file: File;
+  path: string;
+}
+
 function authHeaders(): Record<string, string> {
   const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
@@ -181,4 +191,38 @@ export async function uploadFile(agentId: string, file: File, dir = 'knowledge',
     body: form,
   });
   return unwrap<FileNode>(res);
+}
+
+export async function uploadFiles(
+  agentId: string,
+  files: WorkspaceUpload[],
+  sessionKey?: string,
+): Promise<UploadBatchResult> {
+  const url = apiUrl(`${base(agentId)}/uploads`);
+  if (sessionKey) {
+    url.searchParams.set('session', sessionKey);
+  }
+  const form = new FormData();
+  for (const entry of files) {
+    form.append('files', entry.file, entry.file.name);
+    form.append('paths', entry.path);
+  }
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 60_000);
+  try {
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: authHeaders(),
+      body: form,
+      signal: controller.signal,
+    });
+    return await unwrap<UploadBatchResult>(res);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('上传在 60 秒内未完成，未确认写入结果。请刷新工作区后再重试。');
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }

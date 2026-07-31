@@ -85,6 +85,9 @@ final class WorkspaceFileSupport {
                             : (prefix.startsWith("/")
                                     ? prefix.substring(1) + basename
                                     : prefix + basename);
+            if (isWorkspaceMetadata(rel)) {
+                continue;
+            }
             if (fi.isDirectory()) {
                 String childAbs = "/" + rel;
                 List<AgentWorkspaceController.FileNode> children =
@@ -128,6 +131,7 @@ final class WorkspaceFileSupport {
                         if (name.isBlank()) return;
                         boolean isDir = Files.isDirectory(path);
                         String rel = base.relativize(path).toString().replace('\\', '/');
+                        if (isWorkspaceMetadata(rel)) return;
                         List<AgentWorkspaceController.FileNode> children =
                                 isDir ? collectChildrenHost(base, path, depth - 1) : null;
                         Long size = null;
@@ -149,6 +153,22 @@ final class WorkspaceFileSupport {
                                 n -> "dir".equals(n.type()) ? 0 : 1)
                         .thenComparing(AgentWorkspaceController.FileNode::name));
         return out;
+    }
+
+    /**
+     * The agent activity ledger shares the sandbox filesystem for durability, but it is platform
+     * metadata rather than a user workspace artifact. Do not surface it as a file that appears
+     * immediately after the user deletes their last real workspace file.
+     */
+    private static boolean isWorkspaceMetadata(String rel) {
+        if ("activity.jsonl".equals(rel)) {
+            return true;
+        }
+        return rel.startsWith("activity-")
+                && rel.endsWith(".jsonl")
+                && rel.substring("activity-".length(), rel.length() - ".jsonl".length())
+                        .chars()
+                        .allMatch(Character::isDigit);
     }
 
     public static List<AgentWorkspaceController.FileNode> mergeTrees(

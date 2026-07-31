@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { confirmAction } from '../InteractionHost';
 import {
   AgentCreateRequest,
   AgentDefinition,
@@ -265,7 +266,7 @@ export default function AgentSidebar({ selectedAgentId, onSelectAgent, userId, r
 
   async function handleDelete(agent: AgentDefinition, e: React.MouseEvent) {
     e.stopPropagation();
-    if (!confirm(`Delete agent "${agent.name}"?`)) return;
+    if (!(await confirmAction(`删除 Agent“${agent.name}”？`))) return;
     await deleteAgent(agent.id);
     if (selectedAgentId === agent.id) onSelectAgent(null);
     await load();

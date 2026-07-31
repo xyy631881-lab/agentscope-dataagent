@@ -62,7 +62,7 @@ public class MarketplacesController {
     /** Property keys never echoed back in API responses; passwords leak through history otherwise. */
     private static final Set<String> SECRET_KEYS = Set.of("password", "secretKey");
 
-    private static final Set<String> SUPPORTED_TYPES = Set.of("git", "nacos");
+    private static final Set<String> SUPPORTED_TYPES = Set.of("git", "nacos", "local");
 
     private final UserMarketplaceRegistry registry;
     private final UserMarketplacePersistence persistence;
@@ -195,7 +195,9 @@ public class MarketplacesController {
                     }
                     List<MarketSkillBrief> out = new ArrayList<>(raw.size());
                     for (MarketSkillSummary s : raw) {
-                out.add(new MarketSkillBrief(s.name(), s.description(), s.version()));
+                out.add(
+                        new MarketSkillBrief(
+                                s.name(), s.description(), s.version(), mp.listVersions(s.name())));
                     }
                     out.sort(Comparator.comparing(MarketSkillBrief::name));
                     return out;
@@ -367,7 +369,8 @@ public class MarketplacesController {
     public record TestConnectionResult(boolean ok, String message, Integer skillCount) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
-    public record MarketSkillBrief(String name, String description, String version) {}
+    public record MarketSkillBrief(
+            String name, String description, String version, List<Integer> versions) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record MarketSkillDetail(

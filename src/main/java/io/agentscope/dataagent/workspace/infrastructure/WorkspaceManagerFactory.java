@@ -89,9 +89,21 @@ public final class WorkspaceManagerFactory {
     }
 
     public AbstractFilesystem userDataFs(String ownerId, String agentId, String workspacePath) {
+        return userDataFs(ownerId, agentId, workspacePath, agentId);
+    }
+
+    /**
+     * Returns the durable user-data filesystem using the namespace of the running harness agent.
+     * Browser workspace calls and audit writes must use this same value; otherwise an agent with a
+     * display name different from its id creates a second, empty sandbox slot and overwrites the
+     * shared local mirror.
+     */
+    public AbstractFilesystem userDataFs(
+            String ownerId, String agentId, String workspacePath, String sandboxStateNamespace) {
         validateSegment("ownerId", ownerId);
         validateSegment("agentId", agentId);
-        return filesystem(ownerId, agentId, agentId);
+        validateSegment("sandboxStateNamespace", sandboxStateNamespace);
+        return filesystem(ownerId, sandboxStateNamespace, agentId);
     }
 
     public String userDataPathPrefix(String ownerId, String agentId, String workspacePath) {
@@ -106,6 +118,23 @@ public final class WorkspaceManagerFactory {
         return localMirrorRoot == null
                 ? null
                 : localMirrorRoot.resolve(ownerId).resolve(agentId).toAbsolutePath().toString();
+    }
+
+    /**
+     * Returns the durable definition workspace for a private agent. Agent ids are only unique
+     * within a user, so using the configured path directly would make two users' `personal-agent`
+     * definitions share skills and subagent files.
+     */
+    public Path userWorkspacePath(String ownerId, String agentId) {
+        validateSegment("ownerId", ownerId);
+        validateSegment("agentId", agentId);
+        Path cwd = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        return cwd.resolve(".agentscope")
+                .resolve("users")
+                .resolve(ownerId)
+                .resolve("agents")
+                .resolve(agentId)
+                .normalize();
     }
 
     public Path resolveAgentDataPath(String workspacePath, String fallbackAgentId) {

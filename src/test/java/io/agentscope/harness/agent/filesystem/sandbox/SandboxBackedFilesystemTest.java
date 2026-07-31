@@ -13,6 +13,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
 import org.junit.jupiter.api.Test;
 
 class SandboxBackedFilesystemTest {
@@ -53,6 +54,27 @@ class SandboxBackedFilesystemTest {
         assertThat(sandbox.commands)
                 .anyMatch(command -> command.startsWith("mkdir -p 'reports'"))
                 .noneMatch(command -> command.contains("$("));
+    }
+
+    @Test
+    void sessionTreeMirrorCanUseRecentlyReleasedSandbox() throws Exception {
+        RecordingSandbox sandbox = new RecordingSandbox();
+        SandboxBackedFilesystem filesystem = new SandboxBackedFilesystem();
+        filesystem.setSandbox(sandbox);
+        filesystem.setSandbox(null);
+
+        var executor = Executors.newSingleThreadExecutor(
+                runnable -> new Thread(runnable, "session-tree-mirror"));
+        try {
+            List<FileUploadResponse> responses = executor.submit(() -> filesystem.uploadFiles(
+                    RuntimeContext.empty(),
+                    List.of(Map.entry("agents/data-agent/sessions/session.log.jsonl", new byte[] {1})))).get();
+
+            assertThat(responses).singleElement().matches(FileUploadResponse::isSuccess);
+            assertThat(sandbox.commands).isNotEmpty();
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     private static final class RecordingSandbox implements Sandbox {

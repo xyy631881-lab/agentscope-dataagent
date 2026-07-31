@@ -23,8 +23,19 @@ import io.agentscope.harness.agent.filesystem.model.FileInfo;
 import io.agentscope.harness.agent.filesystem.model.LsResult;
 import io.agentscope.harness.agent.filesystem.model.ReadResult;
 import io.agentscope.harness.agent.workspace.WorkspaceManager;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.Comparator;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
@@ -280,6 +291,258 @@ public class SkillFileService {
             String body = e.getValue() != null ? e.getValue() : "";
             wsm.writeUtf8WorkspaceRelative(
                     context, "skills/" + targetName + "/" + safe, body);
+        }
+    }
+
+    /**
+     * Installs a complete skill bundle into the durable host workspace.
+     *
+     * <p>The bundle is fully materialised in a sibling staging directory before the target is
+     * replaced. Control-plane installs therefore do not depend on a live Docker container and a
+     * failed resource write cannot leave a half-created skill visible to the next agent rebuild.
+     */
+    public static AgentSkillsController.WorkspaceSkillInfo installDurable(
+            Path workspaceRoot,
+            String targetName,
+            String markdown,
+            Map<String, String> resources,
+            AgentSkillsController.SkillMarketplaceMeta meta,
+            boolean overwrite) {
+        validateSkillName(targetName);
+        if (markdown == null || markdown.isBlank()) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY, "Skill bundle contains an empty SKILL.md");
+        }
+
+        Path root = workspaceRoot.toAbsolutePath().normalize();
+        Path skillsRoot = root.resolve("skills").normalize();
+        Path target = skillsRoot.resolve(targetName).normalize();
+        if (!target.startsWith(skillsRoot)) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "Skill target escapes workspace: " + targetName);
+        }
+
+        Path staging = null;
+        try {
+            Files.createDirectories(skillsRoot);
+            if (Files.exists(target) && !overwrite) {
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT, "Workspace skill already exists: " + targetName);
+            }
+
+            staging =
+                    Files.createDirectory(
+                            skillsRoot.resolve(
+                                    ".install-" + targetName + "-" + UUID.randomUUID()));
+            Files.writeString(
+                    staging.resolve("SKILL.md"), markdown, StandardCharsets.UTF_8);
+            writeDurableResources(staging, resources);
+            if (meta != null) {
+                Files.writeString(
+                        staging.resolve(INSTALL_META_FILE),
+                        MAPPER.writerWithDefaultPrettyPrinter().writeValueAsString(meta),
+                        StandardCharsets.UTF_8);
+            }
+
+            if (Files.exists(target)) {
+                deleteTree(target);
+            }
+            moveDirectory(staging, target);
+            staging = null;
+            return readDurable(root, targetName);
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Failed to install skill '" + targetName + "': " + e.getMessage(),
+                    e);
+        } finally {
+            if (staging != null) {
+                try {
+                    deleteTree(staging);
+                } catch (IOException cleanupFailure) {
+                    log.warn(
+                            "Failed to clean skill staging directory {}: {}",
+                            staging,
+                            cleanupFailure.getMessage());
+                }
+            }
+        }
+    }
+
+    /** Reads skill metadata directly from the durable workspace. */
+    public static AgentSkillsController.WorkspaceSkillInfo readDurable(
+            Path workspaceRoot, String targetName) {
+        validateSkillName(targetName);
+        Path root = workspaceRoot.toAbsolutePath().normalize();
+        Path skillDir = root.resolve("skills").resolve(targetName).normalize();
+        if (!skillDir.startsWith(root) || !Files.isDirectory(skillDir)) return null;
+        try {
+            Path skillFile = skillDir.resolve("SKILL.md");
+            if (!Files.isRegularFile(skillFile)) return null;
+            String markdown = Files.readString(skillFile, StandardCharsets.UTF_8);
+            String description = parseFrontMatterField(markdown, DESCRIPTION_LINE);
+            String name = parseFrontMatterField(markdown, NAME_LINE);
+            if (name == null || name.isBlank()) name = targetName;
+
+            long totalBytes = 0L;
+            int resourceCount = 0;
+            try (var files = Files.walk(skillDir)) {
+                for (Path file : files.filter(Files::isRegularFile).toList()) {
+                    String relative = skillDir.relativize(file).toString().replace('\\', '/');
+                    if (INSTALL_META_FILE.equals(relative)) continue;
+                    totalBytes += Files.size(file);
+                    if (!"SKILL.md".equals(relative)) resourceCount++;
+                }
+            }
+
+            AgentSkillsController.SkillMarketplaceMeta meta = null;
+            Path metaFile = skillDir.resolve(INSTALL_META_FILE);
+            if (Files.isRegularFile(metaFile)) {
+                meta = MAPPER.readValue(metaFile.toFile(), AgentSkillsController.SkillMarketplaceMeta.class);
+            }
+            return new AgentSkillsController.WorkspaceSkillInfo(
+                    targetName,
+                    name,
+                    description,
+                    totalBytes,
+                    resourceCount,
+                    Files.isDirectory(skillDir.resolve("references")),
+                    Files.isDirectory(skillDir.resolve("scripts")),
+                    meta != null ? ORIGIN_MARKETPLACE : ORIGIN_CUSTOM,
+                    meta);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** Lists all skill bundles from the durable workspace without acquiring a sandbox lease. */
+    public static List<AgentSkillsController.WorkspaceSkillInfo> listDurable(Path workspaceRoot) {
+        Path root = workspaceRoot.toAbsolutePath().normalize();
+        Path skillsRoot = root.resolve("skills").normalize();
+        if (!Files.isDirectory(skillsRoot)) return List.of();
+        List<AgentSkillsController.WorkspaceSkillInfo> result = new ArrayList<>();
+        try (var children = Files.list(skillsRoot)) {
+            for (Path child : children.filter(Files::isDirectory).toList()) {
+                String name = child.getFileName().toString();
+                if (name.startsWith(".install-")) continue;
+                AgentSkillsController.WorkspaceSkillInfo skill = readDurable(root, name);
+                if (skill != null) result.add(skill);
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        result.sort(Comparator.comparing(AgentSkillsController.WorkspaceSkillInfo::name));
+        return result;
+    }
+
+    /** Reads SKILL.md and bundle resources directly from the durable workspace. */
+    public static AgentSkillsController.WorkspaceSkillDetail readDurableDetail(
+            Path workspaceRoot, String targetName) {
+        validateSkillName(targetName);
+        Path root = workspaceRoot.toAbsolutePath().normalize();
+        Path skillDir = root.resolve("skills").resolve(targetName).normalize();
+        Path skillFile = skillDir.resolve("SKILL.md");
+        if (!skillDir.startsWith(root) || !Files.isRegularFile(skillFile)) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "SKILL.md missing for: " + targetName);
+        }
+        try {
+            String markdown = Files.readString(skillFile, StandardCharsets.UTF_8);
+            Map<String, String> resources = new LinkedHashMap<>();
+            try (var files = Files.walk(skillDir)) {
+                for (Path file : files.filter(Files::isRegularFile).toList()) {
+                    String relative = skillDir.relativize(file).toString().replace('\\', '/');
+                    if ("SKILL.md".equals(relative) || INSTALL_META_FILE.equals(relative)) continue;
+                    resources.put(relative, Files.readString(file, StandardCharsets.UTF_8));
+                }
+            }
+            return new AgentSkillsController.WorkspaceSkillDetail(
+                    targetName,
+                    parseFrontMatterField(markdown, DESCRIPTION_LINE),
+                    markdown,
+                    resources);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** Replaces a user-edited durable skill bundle while preserving its marketplace metadata. */
+    public static AgentSkillsController.WorkspaceSkillInfo upsertDurable(
+            Path workspaceRoot,
+            String targetName,
+            String markdown,
+            Map<String, String> resources) {
+        AgentSkillsController.WorkspaceSkillInfo existing = readDurable(workspaceRoot, targetName);
+        AgentSkillsController.SkillMarketplaceMeta meta =
+                existing != null ? existing.marketplace() : null;
+        return installDurable(
+                workspaceRoot, targetName, markdown, resources, meta, true);
+    }
+
+    /** Deletes a durable skill bundle. */
+    public static void deleteDurable(Path workspaceRoot, String targetName) {
+        validateSkillName(targetName);
+        Path root = workspaceRoot.toAbsolutePath().normalize();
+        Path target = root.resolve("skills").resolve(targetName).normalize();
+        if (!target.startsWith(root) || !Files.isDirectory(target)) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "Skill not found: " + targetName);
+        }
+        try {
+            deleteTree(target);
+        } catch (IOException e) {
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Failed to delete skill '" + targetName + "': " + e.getMessage(),
+                    e);
+        }
+    }
+
+    private static void writeDurableResources(Path skillDir, Map<String, String> resources)
+            throws IOException {
+        if (resources == null) return;
+        for (Map.Entry<String, String> resource : resources.entrySet()) {
+            if (resource.getKey() == null || resource.getKey().isBlank()) continue;
+            String safe = sanitiseRelativePath(resource.getKey());
+            Path target = skillDir.resolve(safe).normalize();
+            if (!target.startsWith(skillDir)) {
+                throw new ResponseStatusException(
+                        HttpStatus.BAD_REQUEST, "Resource escapes skill directory: " + safe);
+            }
+            Files.createDirectories(target.getParent());
+            Files.writeString(
+                    target,
+                    resource.getValue() != null ? resource.getValue() : "",
+                    StandardCharsets.UTF_8);
+        }
+    }
+
+    private static void moveDirectory(Path source, Path target) throws IOException {
+        try {
+            Files.move(source, target, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(source, target);
+        }
+    }
+
+    private static void deleteTree(Path root) throws IOException {
+        if (!Files.exists(root)) return;
+        try (var paths = Files.walk(root)) {
+            try {
+                paths.sorted(Comparator.reverseOrder()).forEach(SkillFileService::deleteUnchecked);
+            } catch (UncheckedIOException e) {
+                throw e.getCause();
+            }
+        }
+    }
+
+    private static void deleteUnchecked(Path path) {
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
         }
     }
 

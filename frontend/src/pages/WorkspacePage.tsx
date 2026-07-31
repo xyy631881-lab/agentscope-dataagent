@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useOutletContext, useSearchParams } from 'react-router-dom';
-import { summary as fetchSummary, WorkspaceSummary } from '../api/workspace';
+import { FileNode, summary as fetchSummary, WorkspaceSummary } from '../api/workspace';
 import BackToChatHeader from '../components/BackToChatHeader';
 import WorkspaceFileTree from '../components/WorkspaceFileTree';
 import WorkspaceEditor from '../components/WorkspaceEditor';
@@ -46,6 +46,7 @@ export default function WorkspacePage() {
   const [searchParams] = useSearchParams();
   const sessionKey = searchParams.get('session') ?? undefined;
   const [selected, setSelected] = useState<string | null>(null);
+  const [selectedType, setSelectedType] = useState<FileNode['type'] | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [summary, setSummary] = useState<WorkspaceSummary | null>(null);
 
@@ -59,6 +60,7 @@ export default function WorkspacePage() {
 
   useEffect(() => {
     setSelected(searchParams.get('path'));
+    setSelectedType(searchParams.get('path') ? 'file' : null);
   }, [searchParams]);
 
   async function copyPath(value?: string | null) {
@@ -94,7 +96,7 @@ export default function WorkspacePage() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <BackToChatHeader title="工作区" subtitle="浏览 agent 的工作目录" />
+      <BackToChatHeader title="工作区" subtitle="浏览和维护 agent 的工作目录" />
       {pathRow('运行时工作区', summary?.runtimeWorkspacePath ?? '/workspace')}
       {pathRow('Agent 定义目录', summary?.definitionWorkspacePath ?? summary?.workspacePath)}
       {pathRow('本地镜像', summary?.localMirrorPath)}
@@ -116,13 +118,17 @@ export default function WorkspacePage() {
         </div>
       )}
       <div style={hint}>
-        Docker 容器可能被冷启动回收；长期可见文件以工作区和本地镜像为准。
+        页面中的保存、删除、移动和上传会写入运行时工作区并同步快照；无需手工进入临时容器。
       </div>
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <WorkspaceFileTree
           agentId={agentId}
           selectedPath={selected}
-          onSelect={p => setSelected(p || null)}
+          selectedType={selectedType}
+          onSelect={(path, type) => {
+            setSelected(path);
+            setSelectedType(type ?? null);
+          }}
           refreshKey={refreshKey}
           onRefresh={() => setRefreshKey(k => k + 1)}
           sessionKey={sessionKey}
@@ -131,8 +137,14 @@ export default function WorkspacePage() {
         <WorkspaceEditor
           agentId={agentId}
           path={selected}
+          pathType={selectedType}
           refreshKey={refreshKey}
           sessionKey={sessionKey}
+          onChanged={nextPath => {
+            setSelected(nextPath);
+            setSelectedType(nextPath ? 'file' : null);
+            setRefreshKey(key => key + 1);
+          }}
         />
       </div>
     </div>

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { cancelStream, currentSession, stream } from '../api/chat';
+import { cancelStream, chatRunStatus, currentSession, stream } from '../api/chat';
 import type { ConfirmDecision, PendingToolCall } from '../api/chat';
 import { TurnEntry, turns as fetchTurns } from '../api/sessions';
 import { ExecutionTrace } from './ToolCallBlock';
@@ -24,7 +24,9 @@ interface Message {
 interface PendingConfirmation {
   replyId: string;
   messageId: string;
+  sessionKey: string;
   toolCalls: PendingToolCall[];
+  ready: boolean;
 }
 
 interface ActiveRequest {
@@ -167,6 +169,10 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
   const threadRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const activeRequestRef = useRef<ActiveRequest | null>(null);
+  const recoveredRequestIdRef = useRef<string | null>(null);
+  const hasLiveTurnRef = useRef(false);
+  const pendingConfirmSessionRef = useRef<string | null>(null);
+  const restoredRef = useRef<{ agentId: string; sessionKey: string | null } | null>(null);
   const urlSession = searchParams.get('session');
 
   const persistSession = useCallback((key: string | null) => {
@@ -176,11 +182,62 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
     } catch { /* local storage is optional */ }
   }, [agentId]);
 
+  const applyRunStatus = useCallback((key: string, status: Awaited<ReturnType<typeof chatRunStatus>>) => {
+    recoveredRequestIdRef.current = status.running ? status.requestId ?? null : null;
+    const pending = status.pendingConfirmation;
+    if (pending) {
+      // Rebuilding from /status: the original SSE confirm event was lost during navigation.
+      // Always restore the confirmation dialog — never trust pendingConfirmSessionRef for
+      // de-duplication because it may carry a stale session ref from before the disconnect.
+      const messageId = `pending-confirm:${pending.replyId}`;
+      pendingConfirmSessionRef.current = key;
+      setMessages(previous => previous.some(m => m.id === messageId)
+        ? previous
+        : [...previous, {
+          id: messageId,
+          role: 'assistant',
+          text: '',
+          tools: pending.toolCalls.map(call => ({
+            id: call.id,
+            name: call.name,
+            input: inputText(call.input),
+            status: 'awaiting_approval' as ToolCallStatus,
+          })),
+          pending: false,
+          timestampMs: Date.now(),
+        }]);
+      setPendingConfirm({
+        replyId: pending.replyId,
+        messageId,
+        sessionKey: key,
+        toolCalls: pending.toolCalls,
+        ready: true,
+      });
+      setBusy(false);
+      return;
+    }
+    if (!status.running) setBusy(false);
+    else if (!activeRequestRef.current) setBusy(true);
+  }, []);
+
   useEffect(() => {
+    if (
+      urlSession
+      && restoredRef.current?.agentId === agentId
+      && restoredRef.current.sessionKey === urlSession
+    ) {
+      // Updating the URL after creating a conversation is bookkeeping, not a session switch.
+      // Do not clear a just-received human approval request during that update.
+      return;
+    }
     let cancelled = false;
+    hasLiveTurnRef.current = false;
     setMessages([]);
     setInput('');
-    setPendingConfirm(null);
+    if (pendingConfirmSessionRef.current !== urlSession) {
+      pendingConfirmSessionRef.current = null;
+      setPendingConfirm(null);
+    }
     setRestoring(true);
     const stored = (() => { try { return localStorage.getItem(storageKey(agentId)); } catch { return null; } })();
 
@@ -196,6 +253,7 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
       }
       if (cancelled) return;
       setSessionKey(key);
+      restoredRef.current = { agentId, sessionKey: key };
       if (key) {
         let restoredMessages: Message[] = [];
         try {
@@ -207,8 +265,14 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
         if (restoredMessages.length === 0) {
           restoredMessages = loadCachedMessages(agentId, key);
         }
-        if (!cancelled && restoredMessages.length > 0) {
+        if (!cancelled && restoredMessages.length > 0 && !hasLiveTurnRef.current) {
           setMessages(restoredMessages);
+        }
+        try {
+          const status = await chatRunStatus(agentId, key);
+          if (!cancelled) applyRunStatus(key, status);
+        } catch {
+          // The normal transcript remains usable if the transient runtime status is unavailable.
         }
       }
       if (cancelled) return;
@@ -223,6 +287,48 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId, urlSession]);
+
+  const recoveringRef = useRef(false);
+
+  useEffect(() => {
+    // The initial restore above always reads status once. Poll only for a detached active turn;
+    // idle conversations and a visible live SSE already have no recovery work to do.
+    if (restoring || !sessionKey || !busy || pendingConfirm || activeRequestRef.current) return;
+    let cancelled = false;
+    const refresh = async () => {
+      const wasDetachedRun = recoveredRequestIdRef.current !== null && !activeRequestRef.current;
+      try {
+        const status = await chatRunStatus(agentId, sessionKey);
+        if (cancelled) return;
+        applyRunStatus(sessionKey, status);
+        // Re-attach: the original SSE stream was dropped during navigation, but the agent is
+        // still running.  Send an empty-message stream request so the backend subscribes this
+        // client to the active event pipeline.
+        if (wasDetachedRun && status.running && !recoveringRef.current) {
+          recoveringRef.current = true;
+          const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+          void runStream(
+            { message: '', sessionKey },
+            { attachReplyId: lastMsg?.role === 'assistant' ? lastMsg.id : undefined },
+          );
+          return;
+        }
+        if (wasDetachedRun && !status.running && !hasLiveTurnRef.current) {
+          const entries = await fetchTurns(agentId, sessionKey);
+          if (!cancelled && entries.length > 0) setMessages(turnsToMessages(entries));
+        }
+      } catch {
+        // Polling is a recovery path. Keep the current transcript when a refresh fails.
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      recoveringRef.current = false;
+    };
+  }, [agentId, applyRunStatus, restoring, sessionKey]);
 
   useEffect(() => {
     if (restoring || !sessionKey || messages.length === 0) return;
@@ -266,24 +372,51 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
 
   async function runStream(
     req: { message: string; sessionKey?: string; confirmResults?: ConfirmDecision[]; requestId?: string },
-    options?: { systemNote?: string; skipUserMessage?: boolean },
+    options?: { systemNote?: string; skipUserMessage?: boolean; attachReplyId?: string },
   ) {
-    setBusy(true);
+    const isAttach = !!options?.attachReplyId && !req.message && !req.confirmResults;
+    hasLiveTurnRef.current = true;
+    if (!isAttach) setBusy(true);
     const now = Date.now();
     const additions: Message[] = [];
-    if (!options?.skipUserMessage && req.message) additions.push({ id: nextId(), role: 'user', text: req.message, tools: [], timestampMs: now });
-    if (options?.systemNote) additions.push({ id: nextId(), role: 'system', text: options.systemNote, tools: [], timestampMs: now });
-    const reply: Message = { id: nextId(), role: 'assistant', text: '', tools: [], pending: true, timestampMs: now };
-    additions.push(reply);
-    setMessages(previous => [...previous, ...additions]);
+
+    if (isAttach) {
+      // Re-attach: no new user/reply messages.  Reuse the last assistant message (the one
+      // that was showing "thinking" before the SSE connection dropped) as the reply target
+      // so that incoming tool_call / token events update the existing thread entry.
+    } else {
+      if (!options?.skipUserMessage && req.message) additions.push({ id: nextId(), role: 'user', text: req.message, tools: [], timestampMs: now });
+      if (options?.systemNote) additions.push({ id: nextId(), role: 'system', text: options.systemNote, tools: [], timestampMs: now });
+    }
+    const reply: Message = isAttach
+      ? { id: options!.attachReplyId!, role: 'assistant', text: '', tools: [], pending: true, timestampMs: now }
+      : { id: nextId(), role: 'assistant', text: '', tools: [], pending: true, timestampMs: now };
+    if (!isAttach) additions.push(reply);
+    setMessages(previous => {
+      if (isAttach) return previous.map(message => message.id === reply.id ? { ...message, pending: true } : message);
+      return [...previous, ...additions];
+    });
     let streamDone = false;
+    let resolvedSessionKey = req.sessionKey ?? sessionKey ?? undefined;
     const requestId = nextId();
     const controller = new AbortController();
     activeRequestRef.current = { requestId, controller, replyId: reply.id };
 
     try {
       for await (const event of stream(agentId, { ...req, requestId }, controller.signal)) {
-        if (event.type === 'token') {
+        if (event.type === 'session') {
+          if (event.sessionKey) {
+            resolvedSessionKey = event.sessionKey;
+            restoredRef.current = { agentId, sessionKey: event.sessionKey };
+            setSessionKey(event.sessionKey);
+            persistSession(event.sessionKey);
+            const next = new URLSearchParams(searchParams);
+            if (next.get('session') !== event.sessionKey) {
+              next.set('session', event.sessionKey);
+              setSearchParams(next, { replace: true });
+            }
+          }
+        } else if (event.type === 'token') {
           const chunk = event.data ?? '';
           setMessages(previous => previous.map(message => message.id === reply.id ? { ...message, text: message.text + chunk } : message));
         } else if (event.type === 'tool_call') {
@@ -315,11 +448,21 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
             return { ...message, pending: false, tools: [...existing.values()] };
           }));
           setBusy(false);
-          setPendingConfirm({ replyId: event.replyId ?? '', messageId: reply.id, toolCalls: calls });
+          pendingConfirmSessionRef.current = resolvedSessionKey ?? null;
+          setPendingConfirm({
+            replyId: event.replyId ?? '',
+            messageId: reply.id,
+            sessionKey: resolvedSessionKey ?? '',
+            toolCalls: calls,
+            ready: true,
+          });
         } else if (event.type === 'done') {
           streamDone = true;
           setBusy(false);
+          setPendingConfirm(current => current ? { ...current, ready: true } : current);
           if (event.sessionKey) {
+            resolvedSessionKey = event.sessionKey;
+            restoredRef.current = { agentId, sessionKey: event.sessionKey };
             setSessionKey(event.sessionKey);
             persistSession(event.sessionKey);
             const next = new URLSearchParams(searchParams);
@@ -375,6 +518,7 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
     } finally {
       if (activeRequestRef.current?.requestId === requestId) {
         activeRequestRef.current = null;
+        hasLiveTurnRef.current = false;
       }
       setBusy(false);
       inputRef.current?.focus();
@@ -388,6 +532,7 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
     setSessionKey(null);
     persistSession(null);
     setMessages([]);
+    pendingConfirmSessionRef.current = null;
     setPendingConfirm(null);
     setSearchParams({}, { replace: true });
   }
@@ -404,13 +549,14 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
   }
 
   async function handleConfirm(approved: boolean) {
-    if (!pendingConfirm || !sessionKey) return;
+    if (!pendingConfirm || !pendingConfirm.ready || !sessionKey) return;
     const decisions: ConfirmDecision[] = pendingConfirm.toolCalls.map(call => ({ toolCallId: call.id, approved }));
     const nextStatus: ToolCallStatus = approved ? 'running' : 'rejected';
     setMessages(previous => previous.map(message => message.id === pendingConfirm.messageId
       ? { ...message, tools: message.tools.map(tool => decisions.some(decision => decision.toolCallId === tool.id) ? { ...tool, status: nextStatus } : tool) }
       : message));
     setPendingConfirm(null);
+    pendingConfirmSessionRef.current = null;
     runStream(
       { message: '', sessionKey, confirmResults: decisions },
       { systemNote: approved ? '已批准，继续执行。' : '已拒绝该操作。', skipUserMessage: true },
@@ -419,7 +565,14 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
 
   function handleStop() {
     const active = activeRequestRef.current;
-    if (!active) return;
+    if (!active) {
+      const recoveredRequestId = recoveredRequestIdRef.current;
+      if (!recoveredRequestId) return;
+      recoveredRequestIdRef.current = null;
+      setBusy(false);
+      void cancelStream(agentId, recoveredRequestId).catch(() => undefined);
+      return;
+    }
     active.controller.abort();
     setBusy(false);
     void cancelStream(agentId, active.requestId).catch(() => undefined);
@@ -439,9 +592,14 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
         {!restoring && messages.length === 0 && (
           <div style={S.empty}>开始新对话。输入 <code style={{ background: '#e2e8f0', padding: '1px 5px', borderRadius: 3 }}>/reset</code> 可清空当前会话。</div>
         )}
-        {messages.map(message => {
+        {messages.map((message, index) => {
           const orphaned = message.role === 'assistant' && !message.pending && isOrphanedConfirmText(message.text);
-          const confirmation = pendingConfirm?.messageId === message.id ? pendingConfirm : null;
+          const confirmation = pendingConfirm && (
+            pendingConfirm.messageId === message.id
+            || (!messages.some(item => item.id === pendingConfirm.messageId)
+              && message.role === 'assistant'
+              && !messages.slice(index + 1).some(item => item.role === 'assistant'))
+          ) ? pendingConfirm : null;
           const charts = message.tools
             .map(tool => ({ id: tool.id, artifact: extractVegaLiteSpec(tool.input) }))
             .filter((item): item is { id: string; artifact: NonNullable<typeof item.artifact> } => item.artifact !== null);
@@ -462,9 +620,9 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
                   <section style={S.approval} aria-label="人工确认">
                     <div style={S.approvalHeader}>
                       <span aria-hidden="true">!</span>
-                      <div>
-                        <div style={S.approvalTitle}>需要人工确认</div>
-                        <div style={S.approvalHint}>批准后将继续当前执行流程。</div>
+                        <div>
+                          <div style={S.approvalTitle}>需要人工确认</div>
+                          <div style={S.approvalHint}>请核对工具参数后决定是否继续。</div>
                       </div>
                     </div>
                     <div style={S.approvalList}>
@@ -476,8 +634,18 @@ export default function ChatPanel({ agentId, onSessionUpdate }: ChatPanelProps) 
                       ))}
                     </div>
                     <div style={S.approvalActions}>
-                      <button type="button" style={S.denyBtn} onClick={() => handleConfirm(false)}>拒绝</button>
-                      <button type="button" style={S.allowBtn} onClick={() => handleConfirm(true)}>批准并继续</button>
+                      <button
+                        type="button"
+                        style={{ ...S.denyBtn, ...(!confirmation.ready ? { opacity: 0.5, cursor: 'default' } : {}) }}
+                        onClick={() => handleConfirm(false)}
+                        disabled={!confirmation.ready}
+                      >拒绝</button>
+                      <button
+                        type="button"
+                        style={{ ...S.allowBtn, ...(!confirmation.ready ? { opacity: 0.5, cursor: 'default' } : {}) }}
+                        onClick={() => handleConfirm(true)}
+                        disabled={!confirmation.ready}
+                      >批准并继续</button>
                     </div>
                   </section>
                 )}

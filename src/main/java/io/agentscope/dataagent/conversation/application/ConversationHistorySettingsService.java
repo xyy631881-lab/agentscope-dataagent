@@ -5,6 +5,7 @@ import io.agentscope.dataagent.conversation.infrastructure.ConversationHistoryPr
 import io.agentscope.dataagent.conversation.infrastructure.ConversationHistoryPreferenceRepository;
 import io.agentscope.dataagent.conversation.infrastructure.SessionEntity;
 import io.agentscope.dataagent.conversation.infrastructure.SessionEntityRepository;
+import io.agentscope.dataagent.conversation.domain.SessionKind;
 import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -59,7 +60,8 @@ public class ConversationHistorySettingsService {
 
     private void enforceRetention(String userId, String agentId, int maxSessions) {
         List<SessionEntity> sessions =
-                sessionRepository.findByUserIdAndAgentIdOrderByLastActivityMsDesc(userId, agentId);
+                sessionRepository.findByUserIdAndAgentIdAndKindOrderByLastActivityMsDesc(
+                        userId, agentId, SessionKind.MAIN.getValue());
         if (sessions.size() <= maxSessions) {
             return;
         }

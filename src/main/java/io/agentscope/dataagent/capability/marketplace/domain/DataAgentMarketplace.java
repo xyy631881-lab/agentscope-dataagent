@@ -52,6 +52,25 @@ public interface DataAgentMarketplace extends AutoCloseable {
      */
     MarketSkillContent fetch(String name);
 
+    /**
+     * 获取指定名称 Skill 的某个历史版本内容。仅支持版本归档型 marketplace
+     * （如 {@code LocalApprovalMarketplace} 从 {@code .versions/v<n>/} 读取）；
+     * 其他实现默认返回 {@code null} 表示不支持版本化 fetch，调用方应回退到
+     * {@link #fetch(String)} 安装最新版本。
+     *
+     * @param name    skill 名称
+     * @param version 大于等于 1 的版本号（对应审批时分配的 {@code ContributionEntity.version}）
+     * @return 版本快照内容；若 marketplace 不支持版本化或该版本不存在，则返回 {@code null}
+     */
+    default MarketSkillContent fetchVersion(String name, int version) {
+        return null;
+    }
+
+    /** Lists installable archived versions for a skill, newest first. */
+    default List<Integer> listVersions(String name) {
+        return List.of();
+    }
+
     /** 释放上游资源（关闭 git、停止 nacos 客户端）。可安全重复调用。 */
     @Override
     void close();

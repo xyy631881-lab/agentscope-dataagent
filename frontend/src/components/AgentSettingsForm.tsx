@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { confirmAction } from './InteractionHost';
 import { AgentDefinition, updateAgent, deleteAgent } from '../api/agents';
 import { useNavigate } from 'react-router-dom';
 
@@ -58,7 +59,7 @@ const S: Record<string, React.CSSProperties> = {
 export default function AgentSettingsForm({ agent }: { agent: AgentDefinition }) {
   const navigate = useNavigate();
   const isGlobal = agent.scope === 'global';
-  const readOnly = isGlobal;
+  const canEdit = agent.tierForCurrentUser === 'EDIT';
 
   const [name, setName] = useState(agent.name);
   const [description, setDescription] = useState(agent.description ?? '');
@@ -96,7 +97,7 @@ export default function AgentSettingsForm({ agent }: { agent: AgentDefinition })
   }
 
   async function handleDelete() {
-    if (!confirm(`删除 agent "${agent.name}"？将同时移除其工作区和会话。`)) return;
+    if (!(await confirmAction(`删除 Agent“${agent.name}”？将同时移除其工作区和会话。`))) return;
     try {
       await deleteAgent(agent.id);
       navigate('/agents', { replace: true });
@@ -109,8 +110,8 @@ export default function AgentSettingsForm({ agent }: { agent: AgentDefinition })
     <div style={S.page}>
       {isGlobal && (
         <div style={S.banner}>
-          内置（全局）agent 在 UI 中为只读。Fork 该 agent 可创建可编辑的自定义副本，
-          或编辑服务器上的 <code>.agentscope/agentscope.json</code> 进行修改。
+          当前编辑的是全局 Agent。管理员保存后，会写入全局覆盖配置并在后续请求中对所有用户生效；
+          下方的“学习偏好”仍只属于当前登录用户，不会改变全局行为。
         </div>
       )}
 
@@ -128,7 +129,7 @@ export default function AgentSettingsForm({ agent }: { agent: AgentDefinition })
             style={S.input}
             value={name}
             onChange={e => setName(e.target.value)}
-            disabled={readOnly}
+            disabled={!canEdit}
           />
         </div>
 
@@ -138,7 +139,7 @@ export default function AgentSettingsForm({ agent }: { agent: AgentDefinition })
             style={S.input}
             value={description}
             onChange={e => setDescription(e.target.value)}
-            disabled={readOnly}
+            disabled={!canEdit}
             placeholder="显示在卡片和标签页上的简短摘要"
           />
         </div>
@@ -153,7 +154,7 @@ export default function AgentSettingsForm({ agent }: { agent: AgentDefinition })
             style={S.textarea}
             value={sysPrompt}
             onChange={e => setSysPrompt(e.target.value)}
-            disabled={readOnly}
+            disabled={!canEdit}
             placeholder="高级指令。运行时工作区 AGENTS.md 仍然优先。"
           />
         </div>
@@ -167,17 +168,17 @@ export default function AgentSettingsForm({ agent }: { agent: AgentDefinition })
             max={64}
             value={maxIters}
             onChange={e => setMaxIters(e.target.value)}
-            disabled={readOnly}
+            disabled={!canEdit}
           />
         </div>
       </div>
 
-      {!isGlobal && (
+      {canEdit && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <button style={S.saveBtn} onClick={handleSave} disabled={saving}>
             {saving ? '保存中…' : '保存更改'}
           </button>
-          <button style={S.dangerBtn} onClick={handleDelete}>删除 agent</button>
+          {!isGlobal && <button style={S.dangerBtn} onClick={handleDelete}>删除 agent</button>}
         </div>
       )}
       {ok && <p style={S.success}>已保存。</p>}

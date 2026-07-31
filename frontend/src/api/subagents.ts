@@ -37,9 +37,26 @@ function base(agentId: string): string {
 }
 
 export async function listSubagents(agentId: string): Promise<SubagentInfo[]> {
-  const res = await fetch(base(agentId), { headers: authHeaders() });
-  if (!res.ok) throw new Error('Failed to list subagents');
-  return res.json();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12_000);
+  try {
+    const res = await fetch(base(agentId), {
+      headers: authHeaders(),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => '')).trim();
+      throw new Error(`加载子 Agent 失败 (${res.status})${detail ? `：${detail}` : ''}`);
+    }
+    return res.json();
+  } catch (error: unknown) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('加载子 Agent 超时（12 秒）。请检查后端、Docker 和运行时日志。');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function upsertSubagent(

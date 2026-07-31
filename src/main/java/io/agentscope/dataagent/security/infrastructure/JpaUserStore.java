@@ -56,7 +56,7 @@ public class JpaUserStore implements UserStore {
     @PostConstruct
     void seedDefaultAdmin() {
         // existsById, not count() > 0, so the admin row is created even if other seed scripts
-        // (e.g. the H2-only data-h2.sql that adds bob / alice for local dev) populated the table
+        // (e.g. a local MySQL seed script that adds bob / alice) populated the table
         // before this @PostConstruct fired. Re-running on an already-seeded admin is a no-op.
         if (repository.existsById("admin")) {
             return;

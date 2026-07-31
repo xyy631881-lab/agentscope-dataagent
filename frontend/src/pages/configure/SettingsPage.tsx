@@ -2,6 +2,7 @@ import React from 'react';
 import { useOutletContext } from 'react-router-dom';
 import AgentSettingsForm from '../../components/AgentSettingsForm';
 import BackToChatHeader from '../../components/BackToChatHeader';
+import AgentPreferencesPanel from '../../components/AgentPreferencesPanel';
 import { ShellOutletContext } from '../../components/EditTierGate';
 
 export default function SettingsPage() {
@@ -11,7 +12,10 @@ export default function SettingsPage() {
       <BackToChatHeader title="设置" subtitle="Agent 配置和元数据" />
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
         {ctx.agent
-          ? <AgentSettingsForm agent={ctx.agent} />
+          ? <>
+              <AgentSettingsForm agent={ctx.agent} />
+              <AgentPreferencesPanel agentId={ctx.activeAgentId} agentScope={ctx.agent.scope} />
+            </>
           : <div style={{ padding: '24px 28px', color: '#64748b' }}>加载中…</div>
         }
       </div>

@@ -31,6 +31,7 @@ import io.agentscope.dataagent.runtime.config.AgentConfigEntry;
 import io.agentscope.dataagent.runtime.config.SkillRepositorySupport;
 import io.agentscope.dataagent.integration.outbound.domain.OutboundTool;
 import io.agentscope.dataagent.runtime.AgentRuntimeConfigurer;
+import io.agentscope.dataagent.tools.data.DataAgentToolkit;
 import io.agentscope.harness.agent.HarnessAgent;
 import io.agentscope.harness.agent.gateway.HarnessGateway;
 import java.nio.file.Path;
@@ -78,6 +79,8 @@ public class AgentLifecycleService {
     private final TenantModelService tenantModels;
     private final AgentRuntimeConfigurer runtimeConfigurer;
     private final io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory workspaceManagerFactory;
+    private final io.agentscope.dataagent.capability.preference.application.UserPreferenceService userPreferenceService;
+    private final DataAgentToolkit dataAgentToolkit;
 
     /**
      * In-flight cache of dynamically-registered gateway agent IDs. Key: {@code {userId}/{agentId}},
@@ -93,7 +96,9 @@ public class AgentLifecycleService {
             ApiModelProperties modelProperties,
             TenantModelService tenantModels,
             AgentRuntimeConfigurer runtimeConfigurer,
-            io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory workspaceManagerFactory) {
+            io.agentscope.dataagent.workspace.infrastructure.WorkspaceManagerFactory workspaceManagerFactory,
+            io.agentscope.dataagent.capability.preference.application.UserPreferenceService userPreferenceService,
+            DataAgentToolkit dataAgentToolkit) {
         this.builderBootstrap = builderBootstrap;
         this.store = store;
         this.overrideStore = overrideStore;
@@ -102,6 +107,8 @@ public class AgentLifecycleService {
         this.tenantModels = tenantModels;
         this.runtimeConfigurer = runtimeConfigurer;
         this.workspaceManagerFactory = workspaceManagerFactory;
+        this.userPreferenceService = userPreferenceService;
+        this.dataAgentToolkit = dataAgentToolkit;
     }
 
     // -----------------------------------------------------------------
@@ -322,7 +329,10 @@ public class AgentLifecycleService {
             b.description(entry.description());
         }
         if (entry.sysPrompt() != null) {
-            b.sysPrompt(entry.sysPrompt());
+            // 偏好学习：在用户自定义系统提示词后追加 per-user 偏好片段（常用 SQL 模式 + 图表偏好）。
+            // invalidateUca 重建时会重新读取，让 agent 随用户习惯持续进化。
+            String preferenceFragment = userPreferenceService.buildPromptFragment(userId, entry.id());
+            b.sysPrompt(preferenceFragment.isEmpty() ? entry.sysPrompt() : entry.sysPrompt() + preferenceFragment);
         }
         if (entry.maxIters() != null) {
             b.maxIters(entry.maxIters());
@@ -356,11 +366,11 @@ public class AgentLifecycleService {
             }
         }
 
-        // Pre-populate this user-custom agent's toolkit with the outbound-send tool so the agent
-        // can proactively push messages into any registered IM channel (subject to per-agent
-        // tier ACL enforced at OutboundController + channel-routing check in OutboundService).
+        // Private data agents use the same MySQL-backed analysis primitives as the global agent;
+        // otherwise a versioned SQL skill can be loaded but has no describe/query tool to execute.
         Toolkit ucaToolkit = new Toolkit();
         ucaToolkit.registerTool(new OutboundTool(builderBootstrap.channelManager()));
+        ucaToolkit.registerTool(dataAgentToolkit);
         b.toolkit(ucaToolkit);
 
         // Apply unified runtime config (Plan Mode, Compaction, Memory, Subagents, Permissions, Sandbox, etc.)
@@ -380,7 +390,7 @@ public class AgentLifecycleService {
     }
 
     private Path userWorkspacePath(String userId, UserAgentDefinitionStore.StoredEntry entry) {
-        return workspaceManagerFactory.resolveAgentDataPath(entry.workspacePath(), entry.id());
+        return workspaceManagerFactory.userWorkspacePath(userId, entry.id());
     }
 
     private static String ucaCacheKey(String userId, String agentId) {

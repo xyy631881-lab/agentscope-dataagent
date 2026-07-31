@@ -43,16 +43,25 @@ public class MarketplaceConfig {
     @Bean
     public DataAgentMarketplaceFactoryRegistration localMarketplaceFactory(
             DataAgentBootstrap bootstrap) {
-        Path sharedSkills =
-                bootstrap
-                        .cwd()
-                        .resolve("shared")
-                        .resolve("agents")
-                        .resolve("data-agent")
-                        .resolve("skills");
         return new DataAgentMarketplaceFactoryRegistration(
                 LocalApprovalMarketplace.TYPE,
-                (userId, id, props, wsf) -> new LocalApprovalMarketplace(id, sharedSkills));
+                (userId, id, props, wsf) -> {
+                    String targetAgentId = stringProp(props, "targetAgentId");
+                    if (targetAgentId == null || targetAgentId.isBlank()) {
+                        targetAgentId = "data-agent";
+                    }
+                    if (!targetAgentId.matches("[A-Za-z0-9._-]+")) {
+                        throw new IllegalArgumentException("invalid targetAgentId: " + targetAgentId);
+                    }
+                    Path sharedSkills =
+                            bootstrap
+                                    .cwd()
+                                    .resolve("shared")
+                                    .resolve("agents")
+                                    .resolve(targetAgentId)
+                                    .resolve("skills");
+                    return new LocalApprovalMarketplace(id, sharedSkills);
+                });
     }
 
     @Bean

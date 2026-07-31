@@ -8,7 +8,12 @@ import java.util.Collection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Best-effort exporter: tracing must not make an agent request fail when the index is unavailable. */
+/**
+ * 核心职责: 实现 OpenTelemetry 的 SpanExporter 接口，将 Span 写入数据库
+ *
+ * 最佳努力导出：即使数据库不可用也不影响 Agent 请求
+ * 捕获异常仅记录警告，返回失败状态
+ * */
 public class JpaTraceSpanExporter implements SpanExporter {
     private static final Logger log = LoggerFactory.getLogger(JpaTraceSpanExporter.class);
     private final TraceRunService traceRuns;

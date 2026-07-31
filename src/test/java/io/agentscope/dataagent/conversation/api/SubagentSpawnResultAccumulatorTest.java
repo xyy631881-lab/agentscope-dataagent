@@ -6,12 +6,52 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.event.ToolResultEndEvent;
 import io.agentscope.core.event.ToolResultStartEvent;
 import io.agentscope.core.event.ToolResultTextDeltaEvent;
+import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.message.ToolResultState;
+import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class SubagentSpawnResultAccumulatorTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Test
+    void treatsConfirmationResumeAsDistinctFromReattachRequest() {
+        ChatController.ChatRequest resume =
+                new ChatController.ChatRequest(
+                        "",
+                        "session-1",
+                        List.of(new ChatController.ConfirmDecision("call-1", true)),
+                        "request-1");
+        ChatController.ChatRequest reattach =
+                new ChatController.ChatRequest("", "session-1", List.of(), "request-2");
+
+        assertThat(ChatController.isReattachRequest(resume)).isFalse();
+        assertThat(ChatController.isReattachRequest(reattach)).isTrue();
+    }
+
+    @Test
+    void restoresOnlyApprovedHitlToolInputForResultProcessing() {
+        ToolUseBlock approved = new ToolUseBlock(
+                "sql-1",
+                "run_sql_preview",
+                Map.of("source_id", "analytics_db", "sql", "SELECT status FROM orders"));
+        ToolUseBlock rejected = new ToolUseBlock(
+                "sql-2", "run_sql_preview", Map.of("sql", "SELECT * FROM users"));
+
+        Map<String, ChatController.ResumedToolCall> restored = ChatController.approvedToolCalls(
+                List.of(
+                        new ChatController.ConfirmDecision("sql-1", true),
+                        new ChatController.ConfirmDecision("sql-2", false)),
+                List.of(approved, rejected));
+
+        assertThat(restored).containsOnlyKeys("sql-1");
+        assertThat(restored.get("sql-1").toolName()).isEqualTo("run_sql_preview");
+        assertThat(restored.get("sql-1").toolInput())
+                .contains("\"sql\":\"SELECT status FROM orders\"")
+                .contains("\"source_id\":\"analytics_db\"");
+    }
 
     @Test
     void extractsSpawnHeaderFromJsonEncodedToolResult() throws Exception {

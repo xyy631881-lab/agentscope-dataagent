@@ -5,7 +5,7 @@
 -- 特点:
 --   1. 幂等: DROP TABLE IF EXISTS 保证重复执行无副作用
 --   2. 标准 MySQL 8 语法: ENGINE=InnoDB, CHARSET=utf8mb4
---   3. 与 data-analytics.sql (H2 版) 数据完全一致
+--   3. 作为电商分析演示库的唯一 MySQL 初始化脚本
 -- ============================================================
 
 -- 先删后建，保证幂等（启动时重复执行无副作用）
@@ -227,7 +227,7 @@ INSERT INTO orders VALUES (119,17, 3,  2, 798.00,  'completed',  'web',         
 INSERT INTO orders VALUES (120,19, 9,  1, 188.00,  'completed',  'app',         '2024-12-24 11:15:00');
 
 -- 每日销售汇总 (从订单数据聚合预计算)
--- MySQL 用 DATE() 函数提取日期部分，比 H2 的 CAST(... AS DATE) 更标准
+-- 使用 MySQL DATE() 函数提取日期部分
 INSERT INTO daily_sales
 SELECT
     DATE(created_at)            AS sale_date,

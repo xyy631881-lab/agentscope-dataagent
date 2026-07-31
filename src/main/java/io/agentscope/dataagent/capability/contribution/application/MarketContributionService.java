@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.capability.contribution.application;
+import io.agentscope.dataagent.agent.application.AgentCatalogService;
 import io.agentscope.dataagent.capability.contribution.domain.FileEntry;
 import io.agentscope.dataagent.capability.contribution.infrastructure.ContributionEntity;
 import io.agentscope.dataagent.capability.contribution.infrastructure.ContributionRepository;
@@ -22,6 +23,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
+import io.agentscope.dataagent.workspace.application.SandboxStateInvalidator;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
@@ -70,14 +72,22 @@ public class MarketContributionService {
     private final ContributionRepository repository;
     private final ObjectMapper objectMapper;
     private final Path sharedRoot;
+    private final SandboxStateInvalidator sandboxStateInvalidator;
+    private final AgentCatalogService agentCatalogService;
 
     public MarketContributionService(
             ContributionRepository repository,
             DataAgentBootstrap bootstrap,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            SandboxStateInvalidator sandboxStateInvalidator,
+            AgentCatalogService agentCatalogService) {
         this.repository = Objects.requireNonNull(repository, "repository");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
         this.sharedRoot = bootstrap.cwd().resolve("shared");
+        this.sandboxStateInvalidator =
+                Objects.requireNonNull(sandboxStateInvalidator, "sandboxStateInvalidator");
+        this.agentCatalogService =
+                Objects.requireNonNull(agentCatalogService, "agentCatalogService");
     }
 
     /**
@@ -98,6 +108,10 @@ public class MarketContributionService {
         String resolvedTargetAgentId =
                 (targetAgentId == null || targetAgentId.isBlank()) ? sourceAgentId : targetAgentId;
         validate(sourceUserId, resolvedTargetAgentId, targetType, targetPath, payload);
+        if (!agentCatalogService.isGlobal(resolvedTargetAgentId)) {
+            throw new IllegalArgumentException(
+                    "contribution target must be a global team agent: " + resolvedTargetAgentId);
+        }
         // Probe target resolution at submit time so obviously-invalid paths fail fast instead of
         // sitting in PENDING until an admin tries to approve them.
         resolveTargetFiles(resolvedTargetAgentId, targetType, targetPath, payload);
@@ -172,6 +186,7 @@ public class MarketContributionService {
             throw new IllegalStateException(
                     "contribution " + id + " is not pending (status=" + entity.getStatus() + ")");
         }
+        requireIndependentReviewer(entity, reviewerUserId);
 
         List<FileEntry> toWrite =
                 approvedPayload != null ? approvedPayload : deserializePayload(entity.getPayload());
@@ -193,15 +208,26 @@ public class MarketContributionService {
             throw new UncheckedIOException(e);
         }
 
+        // 分配下一个单调递增版本号，并把刚物化的文件快照归档到 .versions/v<n>/ 下，
+        // 供版本感知安装和回滚读取。
+        int newVersion =
+                nextVersion(
+                        entity.getTargetAgentId(),
+                        entity.getTargetType(),
+                        entity.getTargetPath());
+        archiveVersion(entity.getTargetAgentId(), targets, newVersion);
+
         log.info(
-                "Approved contribution id={} ({} -> agent={} files={}) by reviewer={}",
+                "Approved contribution id={} ({} -> agent={} files={} version={}) by reviewer={}",
                 id,
                 entity.getTargetType(),
                 entity.getTargetAgentId(),
                 targets.size(),
+                newVersion,
                 reviewerUserId);
 
         entity.setStatus(ContributionEntity.STATUS_APPROVED);
+        entity.setVersion(newVersion);
         entity.setReviewerUserId(reviewerUserId);
         entity.setReviewerNote(reviewerNote);
         if (approvedPayload != null) {
@@ -209,6 +235,9 @@ public class MarketContributionService {
         }
         entity.setUpdatedAt(System.currentTimeMillis());
         ContributionEntity saved = repository.save(entity);
+
+        // 审批通过后失效沙箱状态，让 harness 下次执行时重建沙箱以加载新批准的 shared/ 内容。
+        sandboxStateInvalidator.invalidateAll();
 
         return saved;
     }
@@ -227,11 +256,132 @@ public class MarketContributionService {
             throw new IllegalStateException(
                     "contribution " + id + " is not pending (status=" + entity.getStatus() + ")");
         }
+        requireIndependentReviewer(entity, reviewerUserId);
         entity.setStatus(ContributionEntity.STATUS_REJECTED);
         entity.setReviewerUserId(reviewerUserId);
         entity.setReviewerNote(reason);
         entity.setUpdatedAt(System.currentTimeMillis());
         return repository.save(entity);
+    }
+
+    /**
+     * Returns the next version number for the given asset key. Queries the highest approved
+     * version and adds 1; returns 1 if no approved version exists yet.
+     */
+    private int nextVersion(String targetAgentId, String targetType, String targetPath) {
+        Integer max =
+                repository.findMaxVersion(
+                        targetAgentId, targetType, targetPath, ContributionEntity.STATUS_APPROVED);
+        return max == null ? 1 : max + 1;
+    }
+
+    /** Keeps the contributor and reviewer as separate principals for an auditable approval flow. */
+    private static void requireIndependentReviewer(ContributionEntity entity, String reviewerUserId) {
+        if (reviewerUserId == null || reviewerUserId.isBlank()) {
+            throw new IllegalArgumentException("reviewerUserId is required");
+        }
+        if (reviewerUserId.equals(entity.getSourceUserId())) {
+            throw new IllegalStateException(
+                    "contributors cannot approve, reject, or roll back their own contribution");
+        }
+    }
+
+    /**
+     * Archives a snapshot of the just-materialised files under
+     * {@code shared/agents/<agentId>/.versions/v<n>/<type>/<path>/<file>}. The archive mirrors
+     * the live layout so rollback can simply copy the files back.
+     */
+    private void archiveVersion(String targetAgentId, List<TargetFile> targets, int version) {
+        Path agentRoot = sharedRoot.resolve("agents").resolve(targetAgentId).normalize();
+        if (!agentRoot.startsWith(sharedRoot.normalize())) {
+            throw new IllegalArgumentException("targetAgentId escapes shared/: " + targetAgentId);
+        }
+        Path versionRoot = agentRoot.resolve(".versions").resolve("v" + version).normalize();
+        if (!versionRoot.startsWith(agentRoot)) {
+            throw new IllegalStateException("version archive path escapes agent root");
+        }
+        try {
+            for (TargetFile tf : targets) {
+                String rel = agentRoot.relativize(tf.path()).toString().replace('\\', '/');
+                Path archivePath = versionRoot.resolve(rel).normalize();
+                if (!archivePath.startsWith(versionRoot)) {
+                    throw new IllegalArgumentException("archive path escapes version root: " + rel);
+                }
+                Files.createDirectories(archivePath.getParent());
+                Files.writeString(archivePath, tf.content(), StandardCharsets.UTF_8);
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * Lists all approved versions of the given asset, newest version first. Used by the
+     * version-list API to let users browse installable history.
+     */
+    @Transactional(readOnly = true)
+    public List<ContributionEntity> listVersions(
+            String targetAgentId, String targetType, String targetPath) {
+        return repository
+                .findAllByTargetAgentIdAndTargetTypeAndTargetPathAndStatusOrderByVersionDesc(
+                        targetAgentId, targetType, targetPath, ContributionEntity.STATUS_APPROVED);
+    }
+
+    /**
+     * Rolls back the live (latest) version of an asset to a previously approved version.
+     *
+     * <p>Re-materialises the approved payload of contribution {@code id} over the live path
+     * (same as a fresh approve would), but does NOT create a new version row — the version
+     * number of the rolled-back contribution is preserved. The live files are overwritten so
+     * the next sandbox rebuild picks up the rolled-back content. Sandbox state is invalidated
+     * the same way as {@link #approve}.
+     *
+     * @param id contribution id whose approved payload should become the live version
+     * @param reviewerUserId admin performing the rollback
+     * @return the contribution entity (unchanged status/version, just re-materialised)
+     */
+    @Transactional
+    public ContributionEntity rollback(long id, String reviewerUserId) {
+        ContributionEntity entity =
+                repository
+                        .findById(id)
+                        .orElseThrow(
+                                () ->
+                                        new IllegalArgumentException(
+                                                "contribution not found: " + id));
+        if (!ContributionEntity.STATUS_APPROVED.equals(entity.getStatus())) {
+            throw new IllegalStateException(
+                    "contribution " + id + " is not approved (status=" + entity.getStatus() + ")");
+        }
+        requireIndependentReviewer(entity, reviewerUserId);
+        List<FileEntry> toWrite = readPayload(entity);
+        if (toWrite.isEmpty()) {
+            throw new IllegalArgumentException("contribution payload is empty");
+        }
+        List<TargetFile> targets =
+                resolveTargetFiles(
+                        entity.getTargetAgentId(),
+                        entity.getTargetType(),
+                        entity.getTargetPath(),
+                        toWrite);
+        try {
+            for (TargetFile tf : targets) {
+                Files.createDirectories(tf.path().getParent());
+                Files.writeString(tf.path(), tf.content(), StandardCharsets.UTF_8);
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+        log.info(
+                "Rolled back contribution id={} (agent={} type={} path={} version={}) by reviewer={}",
+                id,
+                entity.getTargetAgentId(),
+                entity.getTargetType(),
+                entity.getTargetPath(),
+                entity.getVersion(),
+                reviewerUserId);
+        sandboxStateInvalidator.invalidateAll();
+        return entity;
     }
 
     /**

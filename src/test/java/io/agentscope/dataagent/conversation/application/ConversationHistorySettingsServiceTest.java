@@ -5,6 +5,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import io.agentscope.dataagent.config.properties.ConversationHistoryProperties;
+import io.agentscope.dataagent.conversation.domain.SessionKind;
 import io.agentscope.dataagent.conversation.infrastructure.ConversationHistoryPreferenceRepository;
 import io.agentscope.dataagent.conversation.infrastructure.SessionEntity;
 import io.agentscope.dataagent.conversation.infrastructure.SessionEntityRepository;
@@ -27,7 +28,8 @@ class ConversationHistorySettingsServiceTest {
         SessionEntity oldest = new SessionEntity();
         when(preferenceRepository.findByUserIdAndAgentId("user-1", "data-agent"))
                 .thenReturn(Optional.empty());
-        when(sessionRepository.findByUserIdAndAgentIdOrderByLastActivityMsDesc("user-1", "data-agent"))
+        when(sessionRepository.findByUserIdAndAgentIdAndKindOrderByLastActivityMsDesc(
+                        "user-1", "data-agent", SessionKind.MAIN.getValue()))
                 .thenReturn(List.of(newest, middle, oldest));
 
         service.updateMaxSessions("user-1", "data-agent", 2);

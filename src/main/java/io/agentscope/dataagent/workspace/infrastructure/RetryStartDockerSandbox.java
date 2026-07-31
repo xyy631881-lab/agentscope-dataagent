@@ -21,7 +21,12 @@ import io.agentscope.harness.agent.sandbox.impl.docker.DockerSandboxState;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,11 +65,29 @@ public class RetryStartDockerSandbox extends DockerSandbox {
     private static final String CONTAINER_WORKSPACE = "/workspace";
 
     /** 最大重试次数。 */
-    private static final int MAX_RETRIES = 8;
+    private static final int MAX_RETRIES = 2;
     /** 重试间隔。 */
-    private static final long RETRY_DELAY_MS = 4000;
+    private static final long RETRY_DELAY_MS = 500;
+    private static final int MAX_PERSIST_RETRIES = 3;
+    private static final long PERSIST_RETRY_DELAY_MS = 250;
+    /**
+     * The framework mirrors the session tree asynchronously immediately after a turn. Keep the
+     * just-released container alive briefly so that write can finish before cleanup removes it.
+     */
+    private static final long SESSION_MIRROR_GRACE_MILLIS = TimeUnit.MINUTES.toMillis(5);
+    private static final ScheduledExecutorService CLEANUP_EXECUTOR =
+            Executors.newSingleThreadScheduledExecutor(
+                    runnable -> {
+                        Thread thread = new Thread(runnable, "sandbox-cleanup");
+                        thread.setDaemon(true);
+                        return thread;
+                    });
+    /** Bumps whenever a container is reused or released, invalidating older delayed cleanup jobs. */
+    private static final ConcurrentMap<String, AtomicLong> CLEANUP_GENERATIONS =
+            new ConcurrentHashMap<>();
+    private static final int CLEANUP_TIMEOUT_SECONDS = 10;
     /** 连续多少次"容器已创建但立刻退出"后放弃。 */
-    private static final int MAX_CONSECUTIVE_EXIT = 3;
+    private static final int MAX_CONSECUTIVE_EXIT = 2;
 
     public RetryStartDockerSandbox(DockerSandboxState state) {
         super(state);
@@ -72,6 +95,9 @@ public class RetryStartDockerSandbox extends DockerSandbox {
 
     @Override
     public void start() throws Exception {
+        DockerSandboxState state = (DockerSandboxState) getState();
+        discardStaleContainerReference(state);
+        cancelPendingCleanup(state.getContainerId());
         Exception last = null;
         int consecutiveExit = 0;
         for (int i = 0; i < MAX_RETRIES; i++) {
@@ -85,6 +111,11 @@ public class RetryStartDockerSandbox extends DockerSandbox {
                 // 首次成功时（i=0）上面的 ensureWorkspaceDirExists() 因 containerId=null 被跳过，
                 // 这里补创建正确的 /workspace（绕过框架内部的 Windows Path 转换 bug）。
                 ensureWorkspaceDirExists();
+                if (inspectContainerStatus() != ContainerStatus.RUNNING) {
+                    throw new SandboxException.WorkspaceStartException(
+                            java.nio.file.Path.of(stateWorkspaceRoot()),
+                            new IllegalStateException("Container disappeared immediately after start"));
+                }
                 if (i > 0) {
                     log.info("[sandbox-retry] start() succeeded after {} retries", i);
                 }
@@ -151,6 +182,129 @@ public class RetryStartDockerSandbox extends DockerSandbox {
             }
         }
         throw last;
+    }
+
+    @Override
+    public void stop() throws Exception {
+        DockerSandboxState state = (DockerSandboxState) getState();
+        if (state.getContainerId() == null || state.getContainerId().isBlank()) {
+            // A browser-side read can acquire a state record after its prior lease has already
+            // been serialized without a live container id. There is no workspace to archive.
+            return;
+        }
+        // DockerSandbox's archive step uses this value directly in `docker exec ... tar -C`.
+        // On Windows, framework-created browser filesystem states may leave it null because the
+        // custom start path does not need it. Normalize it before the framework persists a turn.
+        state.setWorkspaceRoot(CONTAINER_WORKSPACE);
+        for (int attempt = 1; ; attempt++) {
+            try {
+                super.stop();
+                return;
+            } catch (SandboxException.SandboxRuntimeException exception) {
+                if (!isConcurrentArchiveMutation(exception) || attempt >= MAX_PERSIST_RETRIES) {
+                    throw exception;
+                }
+                log.warn(
+                        "[sandbox-persist] Workspace changed during Docker archive; retrying ({}/{}).",
+                        attempt,
+                        MAX_PERSIST_RETRIES);
+                Thread.sleep(PERSIST_RETRY_DELAY_MS);
+            }
+        }
+    }
+
+    private static boolean isConcurrentArchiveMutation(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            String message = current.getMessage();
+            if (message != null && message.contains("file changed as we read it")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The framework calls {@code stop()} first to persist the workspace snapshot and then calls
+     * {@code shutdown()} to remove the owned container. Its Docker implementation uses
+     * {@code docker stop --time=30}; the sandbox's idle process does not handle SIGTERM, so every
+     * release waits the full 30 seconds before Docker sends SIGKILL. The session-tree mirror runs
+     * asynchronously after a turn and still needs the live sandbox, so force removal is deferred
+     * by a small grace period instead of happening synchronously here.
+     */
+    @Override
+    public void shutdown() throws Exception {
+        DockerSandboxState state = (DockerSandboxState) getState();
+        String containerId = state.getContainerId();
+        if (containerId == null || containerId.isBlank() || !state.isContainerOwned()) {
+            return;
+        }
+
+        AtomicLong generation =
+                CLEANUP_GENERATIONS.computeIfAbsent(containerId, ignored -> new AtomicLong());
+        long scheduledGeneration = generation.incrementAndGet();
+        CLEANUP_EXECUTOR.schedule(
+                () -> {
+                    if (generation.get() != scheduledGeneration
+                            || !CLEANUP_GENERATIONS.remove(containerId, generation)) {
+                        return;
+                    }
+                    removeContainerAfterMirror(state, containerId);
+                },
+                SESSION_MIRROR_GRACE_MILLIS,
+                TimeUnit.MILLISECONDS);
+    }
+
+    private static void cancelPendingCleanup(String containerId) {
+        if (containerId == null || containerId.isBlank()) {
+            return;
+        }
+        CLEANUP_GENERATIONS
+                .computeIfAbsent(containerId, ignored -> new AtomicLong())
+                .incrementAndGet();
+    }
+
+    /** Avoid an unnecessary failed docker exec when a persisted state refers to a reclaimed id. */
+    private static void discardStaleContainerReference(DockerSandboxState state) {
+        String containerId = state.getContainerId();
+        if (containerId == null || containerId.isBlank()) {
+            return;
+        }
+        if (inspectContainerStatus(state) == ContainerStatus.NOT_FOUND) {
+            state.setContainerId(null);
+            state.setContainerName(null);
+            state.setWorkspaceRootReady(false);
+            log.info("[sandbox-state] Cleared reclaimed container reference {} before start", containerId);
+        }
+    }
+
+    private static void removeContainerAfterMirror(DockerSandboxState state, String containerId) {
+        try {
+            Process process = new ProcessBuilder("docker", "rm", "--force", containerId).start();
+            if (!process.waitFor(CLEANUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+                log.warn("[sandbox-cleanup] Timed out removing ephemeral container {}", containerId);
+                return;
+            }
+
+            String stderr =
+                    new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+            if (process.exitValue() != 0 && !stderr.contains("No such container")) {
+                log.warn("[sandbox-cleanup] Failed to remove {}: {}", containerId, stderr);
+                return;
+            }
+
+            if (containerId.equals(state.getContainerId())) {
+                state.setContainerId(null);
+                state.setContainerName(null);
+                state.setWorkspaceRootReady(false);
+            }
+            log.debug("[sandbox-cleanup] Removed ephemeral container {} after mirror grace", containerId);
+        } catch (IOException e) {
+            log.warn("[sandbox-cleanup] Could not remove {}: {}", containerId, e.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("[sandbox-cleanup] Interrupted while removing {}", containerId);
+        }
     }
 
     /**
@@ -257,7 +411,7 @@ public class RetryStartDockerSandbox extends DockerSandbox {
     //  容器状态探测
     // -----------------------------------------------------------------
 
-    private enum ContainerStatus {
+    enum ContainerStatus {
         RUNNING,
         STOPPED,
         NOT_FOUND,
@@ -266,6 +420,10 @@ public class RetryStartDockerSandbox extends DockerSandbox {
 
     private ContainerStatus inspectContainerStatus() {
         DockerSandboxState state = (DockerSandboxState) getState();
+        return inspectContainerStatus(state);
+    }
+
+    static ContainerStatus inspectContainerStatus(DockerSandboxState state) {
         String containerId = state.getContainerId();
         if (containerId == null || containerId.isBlank()) {
             return ContainerStatus.NOT_FOUND;
@@ -299,5 +457,9 @@ public class RetryStartDockerSandbox extends DockerSandbox {
                     e.getMessage());
             return ContainerStatus.UNKNOWN;
         }
+    }
+
+    private String stateWorkspaceRoot() {
+        return ((DockerSandboxState) getState()).getWorkspaceRoot();
     }
 }

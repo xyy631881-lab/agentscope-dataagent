@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { confirmAction } from './InteractionHost';
 import { TurnEntry, turns, resetSession, deleteSession, markRead } from '../api/sessions';
 import { useNavigate } from 'react-router-dom';
 import ToolCallBlock from './ToolCallBlock';
@@ -53,12 +54,12 @@ export default function SessionTranscript({ agentId, sessionKey }: { agentId: st
   }, [agentId, sessionKey]);
 
   async function handleReset() {
-    if (!confirm('重置此会话？历史记录将被清除。')) return;
+    if (!(await confirmAction('重置此会话？历史记录将被清除。'))) return;
     await resetSession(agentId, sessionKey).catch(e => setErr(String(e)));
     reload();
   }
   async function handleDelete() {
-    if (!confirm('完全删除此会话？')) return;
+    if (!(await confirmAction('完全删除此会话？'))) return;
     try {
       await deleteSession(agentId, sessionKey);
       navigate(`/agents/${encodeURIComponent(agentId)}/sessions`, { replace: true });

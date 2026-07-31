@@ -4,6 +4,12 @@ server:
 spring:
   application:
     name: agentscope-dataagent
+  servlet:
+    multipart:
+      # Workspace supports file and folder uploads. Keep the limits explicit: Spring's 1 MB
+      # defaults rejected normal source folders before the workspace controller could respond.
+      max-file-size: ${DATAAGENT_WORKSPACE_MAX_FILE_SIZE:100MB}
+      max-request-size: ${DATAAGENT_WORKSPACE_MAX_REQUEST_SIZE:500MB}
   profiles:
     default: mysql,redis    # 默认启用 mysql + redis profile：MySQL 数据源 + Redis 分布式 AgentStateStore
   jpa:
@@ -22,6 +28,9 @@ logging:
   level:
     root: INFO
     io.agentscope: INFO
+    # Ollama intentionally drops reasoning-only blocks created by other providers. The formatter
+    # logs one warning per historical block even though the visible conversation remains valid.
+    io.agentscope.extensions.model.ollama.formatter.OllamaChatFormatter: ERROR
     org.springframework.security: WARN
     org.springframework.web: WARN
   pattern:

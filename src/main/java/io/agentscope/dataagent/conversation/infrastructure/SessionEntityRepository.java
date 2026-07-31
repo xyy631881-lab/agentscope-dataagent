@@ -42,6 +42,9 @@ public interface SessionEntityRepository extends JpaRepository<SessionEntity, Lo
     List<SessionEntity> findByUserIdAndAgentIdOrderByLastActivityMsDesc(
             String userId, String agentId);
 
+    List<SessionEntity> findByUserIdAndAgentIdAndKindOrderByLastActivityMsDesc(
+            String userId, String agentId, String kind);
+
     List<SessionEntity> findByKind(String kind);
 
     List<SessionEntity> findBySpawnedByOrderByCreatedAtMsAsc(String spawnedBy);

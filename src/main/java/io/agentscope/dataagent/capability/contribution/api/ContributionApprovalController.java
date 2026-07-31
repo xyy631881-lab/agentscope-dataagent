@@ -42,6 +42,10 @@ import org.springframework.web.server.ResponseStatusException;
  *   <li>{@code POST /api/admin/contributions/{id}/approve} — approve + materialize payload (with
  *       optional admin edits via {@code approvedPayload})
  *   <li>{@code POST /api/admin/contributions/{id}/reject} — reject with reason
+ *   <li>{@code GET  /api/admin/contributions/versions?targetAgentId=&targetType=&targetPath=}
+ *       — list all approved versions of an asset, newest version first
+ *   <li>{@code POST /api/admin/contributions/{id}/rollback} — re-materialise a previously
+ *       approved version onto the live path and invalidate sandboxes
  * </ul>
  *
  * <p>All endpoints require the {@code ADMIN} role; non-admin callers receive {@code 403}.
@@ -67,6 +71,20 @@ public class ContributionApprovalController {
                         .stream()
                         .map(ContributionView::from)
                         .toList();
+    }
+
+    @GetMapping("/versions")
+    public List<ContributionView> listVersions(
+            @RequestParam("targetAgentId") String targetAgentId,
+            @RequestParam("targetType") String targetType,
+            @RequestParam("targetPath") String targetPath,
+            Authentication auth) {
+        requireAdmin(auth);
+        return service
+                .listVersions(targetAgentId, targetType, targetPath)
+                .stream()
+                .map(ContributionView::from)
+                .toList();
     }
 
     @GetMapping("/{id}")
@@ -113,6 +131,20 @@ public class ContributionApprovalController {
                     } catch (IllegalStateException e) {
                 throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
                     }
+    }
+
+    @PostMapping("/{id}/rollback")
+    public ContributionView rollback(
+            @PathVariable("id") long id, Authentication auth) {
+        requireAdmin(auth);
+        String reviewer = (String) auth.getPrincipal();
+        try {
+            return ContributionView.from(service.rollback(id, reviewer));
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, e.getMessage());
+        } catch (IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, e.getMessage());
+        }
     }
 
     private static void requireAdmin(Authentication auth) {

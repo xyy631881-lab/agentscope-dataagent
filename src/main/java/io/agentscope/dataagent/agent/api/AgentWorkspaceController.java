@@ -155,6 +155,22 @@ public class AgentWorkspaceController {
         return fileService.upload(ctx, agentId, userId, path, file);
     }
 
+    /**
+     * Uploads a file selection in one sandbox lease. Folder uploads use this endpoint so a
+     * browser does not need to wait for one Docker acquire/persist cycle per file.
+     */
+    @PostMapping("/uploads")
+    public UploadBatchResponse uploadBatch(
+            @PathVariable String agentId,
+            @RequestPart("files") List<org.springframework.web.multipart.MultipartFile> files,
+            @RequestParam("paths") List<String> paths,
+            Authentication auth) {
+        String userId = (String) auth.getPrincipal();
+        guard.require(userId, agentId, Tier.EDIT);
+        var ctx = resolutionService.resolve(userId, agentId);
+        return fileService.uploadBatch(ctx, agentId, userId, files, paths);
+    }
+
     @GetMapping("/subagents")
     public List<SubagentInfo> listSubagents(
             @PathVariable String agentId, Authentication auth) {
@@ -205,6 +221,12 @@ public class AgentWorkspaceController {
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record MoveRequest(String from, String to) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record UploadBatchResponse(List<FileNode> uploaded, List<UploadFailure> failed) {}
+
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record UploadFailure(String path, String message) {}
 
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record WorkspaceSummary(

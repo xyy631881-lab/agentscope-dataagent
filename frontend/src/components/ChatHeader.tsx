@@ -14,6 +14,8 @@ const CONFIG_BUTTONS: { key: string; label: string; icon: string }[] = [
   { key: 'settings', label: '设置', icon: '⚙' },
 ];
 
+const READ_ONLY_BUTTONS = new Set(['skills', 'subagents', 'tools']);
+
 export interface ChatHeaderProps {
   agentId: string;
   agent: AgentDefinition | null;
@@ -64,6 +66,7 @@ export default function ChatHeader({ agentId, agent, onAgentChange }: ChatHeader
   const canEdit = agent?.tierForCurrentUser === 'EDIT';
   const name = agent?.name ?? 'data-agent';
   const emoji = agent?.identityEmoji ?? '📊';
+  const scopeLabel = agent?.scope === 'global' ? '团队模板' : '私有 Agent';
   const workspaceHref = hrefForAgent('/workspace', agentId, sessionKey);
 
   return (
@@ -73,6 +76,7 @@ export default function ChatHeader({ agentId, agent, onAgentChange }: ChatHeader
         <div style={S.identity}>
           <span style={S.name}>{name}</span>
           {agent?.description && <span style={S.desc}>{agent.description}</span>}
+          {agent && <span style={agent.scope === 'global' ? S.globalScope : S.userScope}>{scopeLabel}</span>}
         </div>
         {sessionKey && (
           <span style={S.sessionTag} title={sessionKey}>
@@ -92,7 +96,9 @@ export default function ChatHeader({ agentId, agent, onAgentChange }: ChatHeader
               style={S.agentSelect}
             >
               {agentOptions.map(option => (
-                <option key={option.id} value={option.id}>{option.name} ({option.id})</option>
+                <option key={option.id} value={option.id}>
+                  {option.name} ({option.scope === 'global' ? '团队' : '私有'} · {option.id})
+                </option>
               ))}
             </select>
           </div>
@@ -117,19 +123,41 @@ export default function ChatHeader({ agentId, agent, onAgentChange }: ChatHeader
             {modelError && <span style={S.modelError} title={modelError}>!</span>}
           </div>
         )}
-        {canEdit && CONFIG_BUTTONS.map(b => (
+        {!canEdit && agent && (
+          <span style={S.readOnlyTag} title="当前账号可使用此团队模板，但不能修改其配置">
+            只读
+          </span>
+        )}
+        {CONFIG_BUTTONS.filter(button => canEdit || READ_ONLY_BUTTONS.has(button.key)).map(b => {
+          const readOnly = !canEdit;
+          return (
           <button
             type="button"
             key={b.key}
-            onClick={() => navigate(hrefForAgent(`/configure/${b.key}`, agentId, sessionKey))}
-            style={S.btn}
-            onMouseEnter={e => { e.currentTarget.style.background = '#eef2ff'; e.currentTarget.style.color = '#3730a3'; }}
-            onMouseLeave={e => { e.currentTarget.style.background = '#ffffff'; e.currentTarget.style.color = '#475569'; }}
-            title={`配置${b.label}`}
+            onClick={() => {
+              if (readOnly) return;
+              navigate(hrefForAgent(`/configure/${b.key}`, agentId, sessionKey));
+            }}
+            style={{ ...S.btn, ...(readOnly ? S.btnDisabled : {}) }}
+            onMouseEnter={e => {
+              if (!readOnly) {
+                e.currentTarget.style.background = '#eef2ff';
+                e.currentTarget.style.color = '#3730a3';
+              }
+            }}
+            onMouseLeave={e => {
+              if (!readOnly) {
+                e.currentTarget.style.background = '#ffffff';
+                e.currentTarget.style.color = '#475569';
+              }
+            }}
+            title={readOnly ? `团队模板的${b.label}由管理员维护` : `配置${b.label}`}
+            aria-disabled={readOnly}
           >
             <span>{b.icon}</span> {b.label}
           </button>
-        ))}
+          );
+        })}
         <button
           type="button"
           onClick={() => navigate(workspaceHref)}
@@ -165,6 +193,14 @@ const S: Record<string, React.CSSProperties> = {
     fontSize: '0.78rem', color: '#64748b',
     maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
   },
+  globalScope: {
+    width: 'fit-content', marginTop: 3, padding: '1px 5px', borderRadius: 4,
+    background: '#dbeafe', color: '#1d4ed8', fontSize: '0.68rem', fontWeight: 600,
+  },
+  userScope: {
+    width: 'fit-content', marginTop: 3, padding: '1px 5px', borderRadius: 4,
+    background: '#dcfce7', color: '#15803d', fontSize: '0.68rem', fontWeight: 600,
+  },
   sessionTag: {
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '0.74rem',
     background: '#f1f5f9', color: '#475569', padding: '3px 8px', borderRadius: 6,
@@ -177,6 +213,13 @@ const S: Record<string, React.CSSProperties> = {
     padding: '7px 12px', borderRadius: 8, cursor: 'pointer',
     fontSize: '0.84rem', fontWeight: 500,
     transition: 'background 0.12s ease, color 0.12s ease',
+  },
+  btnDisabled: {
+    background: '#f8fafc', borderColor: '#e2e8f0', color: '#94a3b8', cursor: 'not-allowed',
+  },
+  readOnlyTag: {
+    padding: '3px 7px', borderRadius: 5, background: '#f1f5f9', color: '#64748b',
+    fontSize: '0.7rem', fontWeight: 600, whiteSpace: 'nowrap',
   },
   modelWrap: {
     display: 'flex', alignItems: 'center', gap: 6,

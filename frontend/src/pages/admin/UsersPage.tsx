@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { confirmAction } from '../../components/InteractionHost';
 import AdminPageLayout from '../../components/admin/AdminPageLayout';
 import {
   UserView,
@@ -76,10 +77,24 @@ export default function UsersPage() {
   useEffect(() => { load(); }, []);
 
   async function handleCreate() {
+    const username = newUsername.trim();
+    if (!username) {
+      setFormError('请输入用户名。');
+      return;
+    }
+    if (newPassword.length < 6) {
+      setFormError('密码至少需要 6 个字符。');
+      return;
+    }
+
     setAdding(true); setFormError(null);
     try {
-      await createUser({ username: newUsername, password: newPassword, roles: newIsAdmin ? ['user', 'admin'] : ['user'] });
-      setInfo(`User "${newUsername}" created.`);
+      const result = await createUser({
+        username,
+        initialPassword: newPassword,
+        roles: newIsAdmin ? ['user', 'admin'] : ['user'],
+      });
+      setInfo(`用户“${result.user.username}”已创建。`);
       setNewUsername(''); setNewPassword(''); setNewIsAdmin(false);
       setTab('list');
       await load();
@@ -104,7 +119,7 @@ export default function UsersPage() {
   }
 
   async function handleDelete(u: UserView) {
-    if (!confirm(`Delete user "${u.username}"? This cannot be undone.`)) return;
+    if (!(await confirmAction(`删除用户“${u.username}”？此操作无法撤销。`))) return;
     try { await deleteUser(u.userId); await load(); }
     catch (e: unknown) { setError(e instanceof Error ? e.message : 'Delete failed'); }
   }
@@ -169,7 +184,7 @@ export default function UsersPage() {
                 <input type="checkbox" id="isAdmin" checked={newIsAdmin} onChange={e => setNewIsAdmin(e.target.checked)} />
                 <label htmlFor="isAdmin" style={{ ...S.label, marginBottom: 0 }}>管理员角色</label>
               </div>
-              <button style={S.saveBtn} onClick={handleCreate} disabled={adding || !newUsername || !newPassword}>
+              <button style={S.saveBtn} onClick={handleCreate} disabled={adding || !newUsername.trim() || newPassword.length < 6}>
                 {adding ? '创建中…' : '创建用户'}
               </button>
               <button style={S.cancelBtn} onClick={() => setTab('list')}>取消</button>

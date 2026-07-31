@@ -141,8 +141,36 @@ export interface AgentDetailView {
   users: string[];
 }
 
-export const getAgentDetail = (id: string) =>
-  apiFetch<AgentDetailView>(`/api/admin/agents/${encodeURIComponent(id)}/detail`);
+export async function getAgentDetail(id: string): Promise<AgentDetailView> {
+  const encodedId = encodeURIComponent(id);
+  const [rawDefinition, instances, sessions] = await Promise.all([
+    apiFetch<Omit<AgentDefinitionFull, 'liveInGateway' | 'workspaceExists'>>(
+      `/api/agents/${encodedId}`,
+    ),
+    listInstances(),
+    listAdminSessions(),
+  ]);
+
+  let workspace: WorkspaceSummary | null = null;
+  try {
+    workspace = await apiFetch<WorkspaceSummary>(`/api/agents/${encodedId}/workspace`);
+  } catch {
+    // Agent configuration remains readable even before its workspace is initialized.
+  }
+
+  const agentSessions = sessions.filter(session => session.agentId === id);
+  return {
+    definition: {
+      ...rawDefinition,
+      liveInGateway: instances.some(instance => instance.agentId === id),
+      workspacePath: workspace?.workspacePath ?? rawDefinition.workspacePath,
+      workspaceExists: workspace?.exists ?? false,
+    },
+    channels: [],
+    sessions: agentSessions,
+    users: Array.from(new Set(agentSessions.flatMap(session => session.userId ? [session.userId] : []))),
+  };
+}
 
 /** 可选模型：id 即 Agent 的 model 字段取值，label 用于展示，local 标记是否本地模型。 */
 export interface ModelOption {
@@ -378,7 +406,7 @@ export interface WorkspaceSessionEntry {
   idleMs: number;
 }
 
-const wsBase = (id: string) => `/api/admin/agents/${encodeURIComponent(id)}/workspace`;
+const wsBase = (id: string) => `/api/agents/${encodeURIComponent(id)}/workspace`;
 
 export const getWorkspaceSummary = (id: string) =>
   apiFetch<WorkspaceSummary>(wsBase(id));

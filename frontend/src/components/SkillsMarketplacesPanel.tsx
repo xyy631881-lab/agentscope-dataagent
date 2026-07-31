@@ -13,6 +13,7 @@ import {
 } from '../api/marketplaces';
 import { installFromMarketplace } from '../api/skills';
 import MarketplaceEditorDialog from './MarketplaceEditorDialog';
+import { confirmAction, showNotice } from './InteractionHost';
 
 interface Props {
   agentId: string;
@@ -45,6 +46,7 @@ const cardHeaderStyle = (open: boolean): React.CSSProperties => ({
 });
 const typeBadge = (type: string): React.CSSProperties => {
   const colors: Record<string, { bg: string; fg: string; border: string }> = {
+    local: { bg: '#e0f2fe', fg: '#0369a1', border: '#bae6fd' },
     git: { bg: '#fef3c7', fg: '#b45309', border: '#fde68a' },
     nacos: { bg: '#dcfce7', fg: '#15803d', border: '#bbf7d0' },
   };
@@ -128,6 +130,12 @@ function describeLocation(mp: MarketplaceSummary): string {
     const ns = typeof props.namespaceId === 'string' && props.namespaceId ? props.namespaceId : 'public';
     return addr ? `${addr} / ${ns}` : '(no server)';
   }
+  if (mp.type === 'local') {
+    const targetAgentId = typeof props.targetAgentId === 'string' && props.targetAgentId
+      ? props.targetAgentId
+      : 'data-agent';
+    return `团队共享库 / ${targetAgentId}`;
+  }
   return '';
 }
 
@@ -138,6 +146,7 @@ export default function SkillsMarketplacesPanel({ agentId, onInstalled }: Props)
   const [mpState, setMpState] = useState<Record<string, MarketplaceState>>({});
   const [previewing, setPreviewing] = useState<MarketSkillDetail | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
+  const [selectedVersions, setSelectedVersions] = useState<Record<string, number>>({});
   const [editorMode, setEditorMode] = useState<'create' | 'edit' | null>(null);
   const [editorInitial, setEditorInitial] = useState<MarketplaceSummary | undefined>(undefined);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -195,26 +204,27 @@ export default function SkillsMarketplacesPanel({ agentId, onInstalled }: Props)
     }
   }, [openId, ensureLoaded]);
 
-  const handleInstall = async (marketplaceId: string, skillName: string) => {
+  const handleInstall = async (marketplaceId: string, skillName: string, version?: number) => {
     setInstalling(`${marketplaceId}/${skillName}`);
     try {
-      const result = await installFromMarketplace(agentId, { marketplaceId, skillName });
+      const result = await installFromMarketplace(agentId, { marketplaceId, skillName, version });
       if (result.status === 'conflict') {
-        const overwrite = window.confirm(
-          `A workspace skill named "${result.conflictName}" already exists. Overwrite?`,
+        const overwrite = await confirmAction(
+          `工作区中已存在技能“${result.conflictName}”，是否覆盖现有版本？`,
         );
         if (!overwrite) return;
         const r2 = await installFromMarketplace(agentId, {
           marketplaceId,
           skillName,
           overwrite: true,
+          version,
         });
         if (r2.status === 'installed') onInstalled();
         return;
       }
       onInstalled();
     } catch (e) {
-      window.alert(`Install failed: ${(e as Error).message}`);
+      showNotice(`安装失败：${(e as Error).message}`);
     } finally {
       setInstalling(null);
     }
@@ -225,7 +235,7 @@ export default function SkillsMarketplacesPanel({ agentId, onInstalled }: Props)
       const detail = await getMarketplaceSkill(marketplaceId, skillName);
       setPreviewing(detail);
     } catch (e) {
-      window.alert(`Preview failed: ${(e as Error).message}`);
+      showNotice(`预览失败：${(e as Error).message}`);
     }
   };
 
@@ -248,7 +258,7 @@ export default function SkillsMarketplacesPanel({ agentId, onInstalled }: Props)
   };
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm(`Delete marketplace "${id}"? Installed skills are not affected.`)) {
+    if (!(await confirmAction(`删除 Marketplace“${id}”？已安装的技能不会受到影响。`))) {
       return;
     }
     try {
@@ -261,7 +271,7 @@ export default function SkillsMarketplacesPanel({ agentId, onInstalled }: Props)
       });
       setRefreshTick(t => t + 1);
     } catch (e) {
-      window.alert(`Delete failed: ${(e as Error).message}`);
+      showNotice(`删除失败：${(e as Error).message}`);
     }
   };
 
@@ -405,6 +415,8 @@ export default function SkillsMarketplacesPanel({ agentId, onInstalled }: Props)
                 )}
                 {state?.skills.map(s => {
                   const key = `${mp.id}/${s.name}`;
+                  const versions = s.versions ?? [];
+                  const selectedVersion = selectedVersions[key] ?? versions[0];
                   return (
                     <div key={s.name} style={skillRowStyle}>
                       <div style={{ minWidth: 0, flex: 1 }}>
@@ -442,8 +454,29 @@ export default function SkillsMarketplacesPanel({ agentId, onInstalled }: Props)
                       >
                         预览
                       </button>
+                      {versions.length > 0 && (
+                        <select
+                          aria-label={`${s.name} 版本`}
+                          value={selectedVersion}
+                          onChange={e => setSelectedVersions(prev => ({
+                            ...prev,
+                            [key]: Number(e.target.value),
+                          }))}
+                          style={{
+                            border: '1px solid #cbd5e1',
+                            borderRadius: 6,
+                            padding: '6px 8px',
+                            background: '#fff',
+                            color: '#334155',
+                          }}
+                        >
+                          {versions.map(version => (
+                            <option key={version} value={version}>v{version}</option>
+                          ))}
+                        </select>
+                      )}
                       <button
-                        onClick={() => handleInstall(mp.id, s.name)}
+                        onClick={() => handleInstall(mp.id, s.name, selectedVersion)}
                         disabled={installing === key}
                         style={{
                           ...installButtonStyle,

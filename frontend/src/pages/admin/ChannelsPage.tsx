@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { confirmAction } from '../../components/InteractionHost';
 import { Link } from 'react-router-dom';
 import AdminPageLayout from '../../components/admin/AdminPageLayout';
 import { getToken } from '../../api/auth';
@@ -277,7 +278,7 @@ function ChannelCard({ ch, onChanged }: { ch: ChannelView; onChanged: () => void
   useEffect(() => { if (expanded) loadEditable(); }, [expanded]);
 
   async function onDel(b: EditableBinding) {
-    if (!confirm(`Delete binding #${b.index} (→ ${b.agentId})? Restart required.`)) return;
+    if (!(await confirmAction(`删除绑定 #${b.index}（→ ${b.agentId}）？该变更需要重启。`))) return;
     try {
       await deleteBinding(ch.channelId, b.index);
       setWarn(`Binding #${b.index} removed. Restart required.`);

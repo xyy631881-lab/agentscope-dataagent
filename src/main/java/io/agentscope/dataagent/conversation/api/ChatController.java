@@ -33,6 +33,7 @@ import io.agentscope.core.event.ToolResultTextDeltaEvent;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.UserMessage;
 import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.message.ToolResultState;
 import io.agentscope.core.model.ChatUsage;
 import io.agentscope.dataagent.conversation.application.ConversationService;
 import io.agentscope.dataagent.conversation.domain.SessionEntry;
@@ -40,7 +41,9 @@ import io.agentscope.dataagent.agent.application.AgentCatalogService;
 import io.agentscope.dataagent.agent.domain.AgentDefinition;
 import io.agentscope.dataagent.agent.application.AgentLifecycleService;
 import io.agentscope.dataagent.conversation.application.RunSessionActivityRecorder;
+import io.agentscope.dataagent.conversation.application.WorkspaceEvolutionService;
 import io.agentscope.dataagent.workspace.application.LocalWorkspaceMirrorService;
+import io.agentscope.dataagent.capability.preference.application.PreferenceRecorder;
 import io.agentscope.dataagent.workspace.application.WorkspaceArtifactService;
 import io.agentscope.dataagent.runtime.DataAgentBootstrap;
 import io.agentscope.dataagent.security.infrastructure.IdentityLinkStore;
@@ -87,6 +90,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
+import reactor.core.publisher.ConnectableFlux;
 import reactor.core.publisher.SignalType;
 import reactor.core.publisher.Flux;
 
@@ -107,7 +111,13 @@ public class ChatController {
 
     private static final Logger log = LoggerFactory.getLogger(ChatController.class);
 
-    private static final long SSE_TIMEOUT = 300_000L; // 5 分钟
+    /**
+     * An SSE client is only an observer of an agent turn.  It must not impose a five-minute
+     * execution limit: long model calls and synchronous subagent work can legitimately run past
+     * that point.  A client navigation/disconnect is handled below without disposing the runtime
+     * subscription; explicit {@code /cancel} remains the only user cancellation path.
+     */
+    private static final long SSE_TIMEOUT = 0L;
 
     private final ChatUiChannel chatUiChannel;
     private final ConversationService conversationService;
@@ -122,7 +132,9 @@ public class ChatController {
     private final RunSessionActivityRecorder runSessionActivity;
     private final LocalWorkspaceMirrorService workspaceMirrorService;
     private final WorkspaceArtifactService workspaceArtifactService;
+    private final WorkspaceEvolutionService workspaceEvolutionService;
     private final DataAgentBootstrap bootstrap;
+    private final PreferenceRecorder preferenceRecorder;
 
     private final Set<String> startedSessions = ConcurrentHashMap.newKeySet();
     private final Map<String, PendingConfirm> pendingConfirms = new ConcurrentHashMap<>();
@@ -142,7 +154,9 @@ public class ChatController {
             AgentLifecycleService lifecycleService,
             LocalWorkspaceMirrorService workspaceMirrorService,
             WorkspaceArtifactService workspaceArtifactService,
-            DataAgentBootstrap bootstrap) {
+            WorkspaceEvolutionService workspaceEvolutionService,
+            DataAgentBootstrap bootstrap,
+            PreferenceRecorder preferenceRecorder) {
         this.chatUiChannel = chatUiChannel;
         this.conversationService = conversationService;
         this.catalogService = catalogService;
@@ -156,7 +170,9 @@ public class ChatController {
         this.runSessionActivity = runSessionActivity;
         this.workspaceMirrorService = workspaceMirrorService;
         this.workspaceArtifactService = workspaceArtifactService;
+        this.workspaceEvolutionService = workspaceEvolutionService;
         this.bootstrap = bootstrap;
+        this.preferenceRecorder = preferenceRecorder;
     }
 
     public record ChatRequest(
@@ -171,11 +187,33 @@ public class ChatController {
     /** Pending human-in-the-loop confirmation, keyed by conversation id. */
     private record PendingConfirm(String replyId, List<ToolUseBlock> toolCalls) {}
 
-    private record ActiveStream(String userId, String agentId, Disposable subscription, SseEmitter emitter) {}
+    private record ActiveStream(
+            String userId,
+            String agentId,
+            String conversationId,
+            Disposable subscription,
+            SseEmitter emitter,
+            Flux<AgentEvent> hotFlux,
+            Disposable sourceDisposable) {}
 
     public record ChatResponse(String reply, String sessionKey) {}
 
     public record CurrentSessionResponse(String sessionKey, boolean exists) {}
+
+    /** A pending confirmation as exposed to a newly attached chat view. */
+    public record PendingConfirmationResponse(String replyId, List<PendingToolCall> toolCalls) {}
+
+    public record PendingToolCall(String id, String name, Object input) {}
+
+    /**
+     * Runtime state that is intentionally independent from an individual SSE connection.  The UI
+     * uses it after route changes to restore a pending approval card or wait for a detached turn.
+     */
+    public record ChatStatusResponse(
+            String sessionKey,
+            boolean running,
+            String requestId,
+            PendingConfirmationResponse pendingConfirmation) {}
 
     @PostMapping("/session")
     public CurrentSessionResponse createSession(
@@ -211,6 +249,8 @@ public class ChatController {
         }
         final String resolvedConversationId = conversationId;
         String gateKey = resolveGateKey(userId, agentId, resolvedConversationId);
+        boolean resumingConfirmation =
+                req.confirmResults() != null && !req.confirmResults().isEmpty();
         boolean running = gateKey != null && bootstrap.gateway().isSessionRunning(gateKey);
         log.info(
                 "[stream-debug] accepted requestId={}, userId={}, agentId={}, conversationId={}, gateKey={}, running={}, messageChars={}",
@@ -221,10 +261,38 @@ public class ChatController {
                 gateKey,
                 running,
                 req.message() != null ? req.message().length() : 0);
-        if (running) {
+        // A paused HITL turn remains owned by the gateway until its ConfirmResult is delivered.
+        // The resume request is the one request that must be allowed through that gate.
+        // An empty message signals a re-attach: the client was navigated away and returned
+        // while the agent was still running. Subscribe the new emitter to the existing event stream.
+        boolean isAttach = isReattachRequest(req);
+        // Declared early so the re-attach path can pass them to attachToRunningStream.
+        final Map<String, ToolBuffer> buffers = new ConcurrentHashMap<>();
+        final List<WorkspaceArtifactService.ChartArtifactRequest> chartArtifacts =
+                java.util.Collections.synchronizedList(new ArrayList<>());
+        if (resumingConfirmation) {
+            PendingConfirm pending = pendingConfirms.get(resolvedConversationId);
+            if (pending != null) {
+                approvedToolCalls(req.confirmResults(), pending.toolCalls()).forEach(
+                        (toolCallId, tool) ->
+                                buffers.put(toolCallId, new ToolBuffer(tool.toolName(), tool.toolInput())));
+            }
+        }
+        String activeAgentRequestId = activeRequestId(userId, agentId, null);
+        if (activeAgentRequestId != null && !resumingConfirmation && !isAttach) {
+            return immediateStreamError(
+                    emitter,
+                    "当前 Agent 仍有请求正在执行或收尾。请等待完成后再发送，或先点击 Stop。");
+        }
+        if (running && !resumingConfirmation && !isAttach) {
             return immediateStreamError(
                     emitter,
                     "当前会话仍有执行中的请求。请先点击 Stop，或等待当前请求结束后再发送。");
+        }
+        if (isAttach && (running || activeRequestId(userId, agentId, resolvedConversationId) != null)) {
+            return attachToRunningStream(
+                    emitter, userId, agentId, resolvedConversationId,
+                    buffers, chartArtifacts, requestStartedAt);
         }
         boolean recordRunActivity =
                 recordRunSession(
@@ -261,9 +329,6 @@ public class ChatController {
         }
 
         // 订阅 Agent 事件流，推送到 SseEmitter
-        final Map<String, ToolBuffer> buffers = new ConcurrentHashMap<>();
-        final List<WorkspaceArtifactService.ChartArtifactRequest> chartArtifacts =
-                java.util.Collections.synchronizedList(new ArrayList<>());
         String logicalModelId = logicalModelId(def);
         String effectiveModelId = tenantModels.effectiveModelLabel(userId, logicalModelId);
         TraceRunService.TraceScope traceScope = startTrace(
@@ -274,8 +339,44 @@ public class ChatController {
                 resolvedConversationId,
                 effectiveModelId);
         AtomicBoolean firstSseFrame = new AtomicBoolean(true);
+        AtomicBoolean clientAttached = new AtomicBoolean(true);
+        AtomicBoolean runtimeFinished = new AtomicBoolean(false);
+        AtomicBoolean runtimeFinalized = new AtomicBoolean(false);
+        AtomicBoolean terminalFailed = new AtomicBoolean(false);
+        Runnable finalizeRuntime = () -> {
+            runtimeFinished.set(true);
+            if (runtimeFinalized.compareAndSet(false, true)) {
+                activeStreams.remove(requestId);
+                recordRunActivity(recordRunActivity, def, agentId, userId, gateKey);
+            }
+        };
 
-        Disposable subscription = executeChatStream(
+        // Publish the generated conversation id immediately.  This makes a just-started turn
+        // recoverable when the user navigates away before the first model token arrives.
+        try {
+            emitter.send(
+                    SseEmitter.event()
+                            .name("session")
+                            .data(
+                                    ChatSupport.toJson(
+                                            "session",
+                                            Map.of(
+                                                    "type", "session",
+                                                    "sessionKey", resolvedConversationId))));
+        } catch (IOException exception) {
+            clientAttached.set(false);
+            log.info(
+                    "[stream-debug] client detached before stream start requestId={}, conversationId={}, error={}",
+                    requestId,
+                    resolvedConversationId,
+                    exception.getMessage());
+        }
+
+        // Build the shared-source pipeline: operators that should run once regardless of how
+        // many SSE emitters subscribe (original + re-attach).  Using ConnectableFlux so that
+        // new emitters can subscribe while the agent is still running — critical for recovering
+        // after the user navigates away from the chat page and returns.
+        Flux<AgentEvent> sourcePipeline = executeChatStream(
                         userId,
                         agentId,
                         req,
@@ -287,9 +388,28 @@ public class ChatController {
                         "[stream-debug] subscribed requestId={}, conversationId={}; waiting for gateway events",
                         requestId,
                         resolvedConversationId))
+                .doFinally(
+                        signal -> {
+                            if (signal == SignalType.CANCEL) {
+                                finalizeRuntime.run();
+                            }
+                        });
+
+        ConnectableFlux<AgentEvent> hotFlux = sourcePipeline.publish();
+
+        // SSE-specific operators (per-emitter) subscribed to the shared hot flux.
+        // onErrorResume lives here (not in the source pipeline) because it converts
+        // AgentEvent-level errors into SseFrame error frames.
+        Disposable subscription = hotFlux
                 .mapNotNull(event -> {
                     try {
-                        return convertToSseFrame(event, buffers, chartArtifacts, resolvedConversationId);
+                        return convertToSseFrame(
+                                event,
+                                buffers,
+                                chartArtifacts,
+                                resolvedConversationId,
+                                userId,
+                                agentId);
                     } catch (Exception ex) {
                         // 单个事件转换失败不杀死整个流（如沙箱过期等清理阶段异常）
                         log.debug(
@@ -318,6 +438,7 @@ public class ChatController {
                                 userId, agentId, msg);
                         return Flux.empty(); // 静默完成，不发 error 帧
                     }
+                    terminalFailed.set(true);
                     // 对 WorkspaceStartException 打印完整 cause 链，方便定位
                     if (ex instanceof io.agentscope.harness.agent.sandbox.SandboxException.WorkspaceStartException wse) {
                         log.error(
@@ -331,23 +452,25 @@ public class ChatController {
                     return Flux.just(sseFrame("error",
                             Map.of("type", "error", "error", msg)));
                 })
-                .doFinally(
-                        signal ->
-                                recordRunActivity(
-                                        recordRunActivity, def, agentId, userId, gateKey))
                 .subscribe(
                         frame -> {
+                            if (!clientAttached.get()) return;
                             try {
                                 emitter.send(SseEmitter.event()
                                         .name(frame.event())
                                         .data(frame.data()));
                             } catch (IOException e) {
-                                log.info(
-                                        "[stream-debug] client-disconnected requestId={}, conversationId={}, error={}",
-                                        requestId,
-                                        resolvedConversationId,
-                                        e.getMessage());
-                                emitter.completeWithError(e);
+                                if (clientAttached.compareAndSet(true, false)) {
+                                    log.info(
+                                            "[stream-debug] client-disconnected requestId={}, conversationId={}, error={}",
+                                            requestId,
+                                            resolvedConversationId,
+                                            e.getMessage());
+                                    // The servlet async request may already have completed. Calling
+                                    // completeWithError from this Reactor worker races Tomcat's
+                                    // AsyncListener and produces an onErrorDropped stack trace.
+                                    emitter.complete();
+                                }
                             }
                         },
                         error -> {
@@ -356,47 +479,209 @@ public class ChatController {
                                     requestId,
                                     resolvedConversationId,
                                     error.getMessage());
-                            emitter.completeWithError(error);
+                            if (clientAttached.compareAndSet(true, false)) {
+                                emitter.completeWithError(error);
+                            }
                         },
                         () -> {
-                            workspaceArtifactService.persistCharts(userId, agentId, chartArtifacts);
-                            workspaceMirrorService.synchronize(userId, agentId);
-                            log.info(
-                                    "[stream-debug] completed requestId={}, conversationId={}, durationMs={}",
-                                    requestId,
-                                    resolvedConversationId,
-                                    System.currentTimeMillis() - requestStartedAt);
-                            emitter.complete();
+                            try {
+                                workspaceArtifactService.persistCharts(userId, agentId, chartArtifacts);
+                                workspaceMirrorService.synchronize(userId, agentId);
+                            } catch (RuntimeException exception) {
+                                log.warn(
+                                        "[stream-debug] post-run workspace sync failed requestId={}, conversationId={}, error={}",
+                                        requestId,
+                                        resolvedConversationId,
+                                        exception.getMessage());
+                            } finally {
+                                // Keep the request active until every post-run operation is complete.
+                                // The browser may send the next turn immediately after receiving done;
+                                // releasing the marker first prevents it from racing the previous
+                                // Redis sandbox lease during persistence/mirroring cleanup.
+                                finalizeRuntime.run();
+                                log.info(
+                                        "[stream-debug] completed requestId={}, conversationId={}, durationMs={}",
+                                        requestId,
+                                        resolvedConversationId,
+                                        System.currentTimeMillis() - requestStartedAt);
+                                if (clientAttached.compareAndSet(true, false)) {
+                                    if (!terminalFailed.get()) {
+                                        sendDone(emitter, resolvedConversationId);
+                                    }
+                                    emitter.complete();
+                                }
+                            }
                         });
 
-        activeStreams.put(requestId, new ActiveStream(userId, agentId, subscription, emitter));
+        // Start the source pipeline.  sourceDisposable is the handle used to cancel the
+        // entire agent execution (vs. subscription which only detaches a single SSE observer).
+        Disposable sourceDisposable = hotFlux.connect();
+
+        if (!runtimeFinished.get() && !sourceDisposable.isDisposed()) {
+            activeStreams.put(
+                    requestId,
+                    new ActiveStream(userId, agentId, resolvedConversationId, subscription, emitter, hotFlux, sourceDisposable));
+        }
         emitter.onCompletion(() -> {
-            activeStreams.remove(requestId);
-            subscription.dispose();
             log.info(
-                    "[stream-debug] emitter-complete requestId={}, conversationId={}, durationMs={}",
+                    "[stream-debug] emitter-complete requestId={}, conversationId={}, durationMs={} (runtime retained until terminal signal)",
                     requestId,
                     resolvedConversationId,
                     System.currentTimeMillis() - requestStartedAt);
         });
         emitter.onTimeout(() -> {
-            activeStreams.remove(requestId);
-            subscription.dispose();
+            clientAttached.set(false);
             log.warn(
-                    "[stream-debug] emitter-timeout requestId={}, conversationId={}, durationMs={}",
+                    "[stream-debug] emitter-timeout requestId={}, conversationId={}, durationMs={} (runtime retained)",
                     requestId,
                     resolvedConversationId,
                     System.currentTimeMillis() - requestStartedAt);
             emitter.complete();
         });
         emitter.onError(error -> {
-            activeStreams.remove(requestId);
-            subscription.dispose();
+            clientAttached.set(false);
             log.info(
-                    "[stream-debug] emitter-error requestId={}, conversationId={}, error={}",
+                    "[stream-debug] emitter-error requestId={}, conversationId={}, error={} (runtime retained)",
                     requestId,
                     resolvedConversationId,
                     error.getMessage());
+        });
+
+        return emitter;
+    }
+
+    /**
+     * Re-attaches a new SSE emitter to an already-running agent execution.
+     *
+     * <p>Triggered when the client sends an empty message after navigating away from the chat
+     * page and returning while the agent is still running.  The new emitter subscribes to the
+     * same hot flux that powers the original SSE stream, picking up events from the current
+     * point in time (past events are not replayed — the client uses /status and /turns for
+     * recovery of intermediate state).
+     */
+    private SseEmitter attachToRunningStream(
+            SseEmitter emitter,
+            String userId,
+            String agentId,
+            String conversationId,
+            Map<String, ToolBuffer> buffers,
+            List<WorkspaceArtifactService.ChartArtifactRequest> chartArtifacts,
+            long requestStartedAt) {
+        ActiveStream existing = activeStreams.values().stream()
+                .filter(s -> conversationId.equals(s.conversationId())
+                        && s.hotFlux() != null
+                        && !s.sourceDisposable().isDisposed())
+                .findFirst()
+                .orElse(null);
+        if (existing == null) {
+            return immediateStreamError(emitter, "执行已完成，无法重新连接。");
+        }
+        String attachId = UUID.randomUUID().toString();
+        log.info(
+                "[stream-debug] re-attach requestId={}, conversationId={}",
+                attachId,
+                conversationId);
+        AtomicBoolean attachClientAttached = new AtomicBoolean(true);
+        AtomicBoolean attachFirstSseFrame = new AtomicBoolean(true);
+        AtomicBoolean attachTerminalFailed = new AtomicBoolean(false);
+
+        // Send session frame immediately so the client can recover sessionKey.
+        try {
+            emitter.send(
+                    SseEmitter.event()
+                            .name("session")
+                            .data(ChatSupport.toJson("session",
+                                    Map.of("type", "session", "sessionKey", conversationId))));
+        } catch (IOException e) {
+            emitter.completeWithError(e);
+            return emitter;
+        }
+
+        existing.hotFlux()
+                .<SseFrame>mapNotNull(event -> {
+                    try {
+                        return convertToSseFrame(
+                                event, buffers, chartArtifacts, conversationId, userId, agentId);
+                    } catch (Exception ex) {
+                        log.debug(
+                                "Re-attach skipping frame conversion: event={}, error={}",
+                                event.getClass().getSimpleName(), ex.getMessage());
+                        return null;
+                    }
+                })
+                .filter(Objects::nonNull)
+                .doOnNext(frame -> {
+                    if (attachFirstSseFrame.compareAndSet(true, false)) {
+                        log.info(
+                                "[stream-debug] re-attach first-sse-frame requestId={}, conversationId={}, event={}",
+                                attachId,
+                                conversationId,
+                                frame.event());
+                    }
+                })
+                .onErrorResume(ex -> {
+                    String msg = ex.getMessage() != null ? ex.getMessage() : "";
+                    if (isCleanupNoise(msg)) {
+                        log.debug("Suppressed re-attach cleanup noise: {}", msg);
+                        return Flux.empty();
+                    }
+                    attachTerminalFailed.set(true);
+                    log.warn("Re-attach stream error: {}", msg);
+                    return Flux.just(sseFrame("error",
+                            Map.of("type", "error", "error", msg)));
+                })
+                .subscribe(
+                        frame -> {
+                            if (!attachClientAttached.get()) return;
+                            try {
+                                emitter.send(SseEmitter.event()
+                                        .name(frame.event())
+                                        .data(frame.data()));
+                            } catch (IOException e) {
+                                if (attachClientAttached.compareAndSet(true, false)) {
+                                    log.info(
+                                            "[stream-debug] re-attach client-disconnected requestId={}, conversationId={}",
+                                            attachId,
+                                            conversationId);
+                                    emitter.complete();
+                                }
+                            }
+                        },
+                        error -> {
+                            log.warn(
+                                    "[stream-debug] re-attach sse-subscription-error requestId={}, error={}",
+                                    attachId,
+                                    error.getMessage());
+                            if (attachClientAttached.compareAndSet(true, false)) {
+                                emitter.completeWithError(error);
+                            }
+                        },
+                        () -> {
+                            log.info(
+                                    "[stream-debug] re-attach completed requestId={}, conversationId={}, durationMs={}",
+                                    attachId,
+                                    conversationId,
+                                    System.currentTimeMillis() - requestStartedAt);
+                            if (attachClientAttached.compareAndSet(true, false)) {
+                                if (!attachTerminalFailed.get()) {
+                                    sendDone(emitter, conversationId);
+                                }
+                                emitter.complete();
+                            }
+                        });
+
+        emitter.onCompletion(() -> log.info(
+                "[stream-debug] re-attach emitter-complete requestId={}, conversationId={}",
+                attachId, conversationId));
+        emitter.onTimeout(() -> {
+            attachClientAttached.set(false);
+            log.warn("[stream-debug] re-attach emitter-timeout requestId={}", attachId);
+            emitter.complete();
+        });
+        emitter.onError(error -> {
+            attachClientAttached.set(false);
+            log.info("[stream-debug] re-attach emitter-error requestId={}, error={}",
+                    attachId, error.getMessage());
         });
 
         return emitter;
@@ -424,11 +709,67 @@ public class ChatController {
         log.info(
                 "[stream-debug] cancel requestId={}, userId={}, agentId={}",
                 request.requestId(), userId, agentId);
-        active.subscription().dispose();
+        active.sourceDisposable().dispose();
         active.emitter().complete();
     }
 
     public record CancelRequest(String requestId) {}
+
+    private String activeRequestId(String userId, String agentId, String conversationId) {
+        return activeStreams.entrySet().stream()
+                .filter(
+                        entry -> {
+                            ActiveStream stream = entry.getValue();
+                            return userId.equals(stream.userId())
+                                    && agentId.equals(stream.agentId())
+                                    && (conversationId == null
+                                            || conversationId.equals(stream.conversationId()))
+                                    && !stream.sourceDisposable().isDisposed();
+                        })
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private static PendingConfirmationResponse pendingResponse(PendingConfirm pending) {
+        List<PendingToolCall> calls =
+                pending.toolCalls().stream()
+                        .map(
+                                call ->
+                                        new PendingToolCall(
+                                                call.getId(), call.getName(), call.getInput()))
+                        .toList();
+        return new PendingConfirmationResponse(pending.replyId(), calls);
+    }
+
+    @GetMapping("/status")
+    public ChatStatusResponse status(
+            @PathVariable String agentId,
+            @RequestParam String sessionKey,
+            Authentication auth) {
+        String userId = (String) auth.getPrincipal();
+        guard.require(userId, agentId, Tier.RUN);
+        String conversationId = ChatSupport.normalizedConversationId(sessionKey);
+        if (conversationId == null) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, "sessionKey is required");
+        }
+        // This endpoint is polled after a route change.  It must remain a pure read: resolving a
+        // gateway id can lazily build a user agent, which acquires a Docker sandbox and turns a
+        // harmless status refresh into a container restart loop.
+        SessionEntry session = requireOwnedSession(agentId, conversationId, userId);
+        String requestId = activeRequestId(userId, agentId, conversationId);
+        PendingConfirm pending = pendingConfirms.get(conversationId);
+        // The active subscription is the source of truth for an in-process turn. Do not call
+        // gateway.isSessionRunning here: that path restores framework session state and may
+        // acquire a sandbox merely to answer a browser status poll.
+        boolean running = requestId != null || pending != null;
+        return new ChatStatusResponse(
+                conversationId,
+                running,
+                requestId,
+                pending != null ? pendingResponse(pending) : null);
+    }
 
     @GetMapping("/session")
     public CurrentSessionResponse currentSession(
@@ -441,8 +782,9 @@ public class ChatController {
         if (conversationId == null) {
             return new CurrentSessionResponse(null, false);
         }
-        String gateKey = resolveGateKey(userId, agentId, conversationId);
-        boolean exists = gateKey != null && findSessionKeyByGate(userId, gateKey) != null;
+        boolean exists = conversationService.findByKey(conversationId)
+                .filter(entry -> agentId.equals(entry.agentId()) && userId.equals(entry.userId()))
+                .isPresent();
         return new CurrentSessionResponse(conversationId, exists);
     }
 
@@ -562,6 +904,16 @@ public class ChatController {
                 .orElse(null);
     }
 
+    private SessionEntry requireOwnedSession(String agentId, String conversationId, String userId) {
+        return conversationService.findByKey(conversationId)
+                .filter(entry -> agentId.equals(entry.agentId()) && userId.equals(entry.userId()))
+                .orElseThrow(
+                        () ->
+                                new org.springframework.web.server.ResponseStatusException(
+                                        org.springframework.http.HttpStatus.NOT_FOUND,
+                                        "Conversation not found"));
+    }
+
     private CommandResult handleSlashCommand(
             String userId, String agentId, String message, String conversationId) {
         if (message == null) return null;
@@ -637,6 +989,37 @@ public class ChatController {
 
     private record CommandResult(String message, String newSessionKey) {}
 
+    /** A confirmation resume also carries an empty message, but must never attach to the old SSE. */
+    static boolean isReattachRequest(ChatRequest request) {
+        return (request.message() == null || request.message().isEmpty())
+                && (request.confirmResults() == null || request.confirmResults().isEmpty());
+    }
+
+    /** Restores approved tool metadata because a HITL resume only replays result events. */
+    static Map<String, ResumedToolCall> approvedToolCalls(
+            List<ConfirmDecision> decisions, List<ToolUseBlock> toolCalls) {
+        if (decisions == null || toolCalls == null || decisions.isEmpty() || toolCalls.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, ToolUseBlock> callsById = new HashMap<>();
+        for (ToolUseBlock toolCall : toolCalls) {
+            callsById.put(toolCall.getId(), toolCall);
+        }
+        Map<String, ResumedToolCall> restored = new HashMap<>();
+        for (ConfirmDecision decision : decisions) {
+            if (!decision.approved()) continue;
+            ToolUseBlock toolCall = callsById.get(decision.toolCallId());
+            if (toolCall == null) continue;
+            restored.put(
+                    toolCall.getId(),
+                    new ResumedToolCall(
+                            toolCall.getName(), ChatSupport.toJson("tool_input", toolCall.getInput())));
+        }
+        return Map.copyOf(restored);
+    }
+
+    record ResumedToolCall(String toolName, String toolInput) {}
+
     private static final class ToolBuffer {
         final String toolName;
         final StringBuilder input = new StringBuilder();
@@ -644,6 +1027,11 @@ public class ChatController {
 
         ToolBuffer(String toolName) {
             this.toolName = toolName;
+        }
+
+        ToolBuffer(String toolName, String toolInput) {
+            this(toolName);
+            appendInput(toolInput);
         }
 
         void appendInput(String delta) {
@@ -759,6 +1147,14 @@ public class ChatController {
                         ? "(default)"
                         : lifecycleService.resolveGatewayAgentId(userId, agentId),
                 conversationId);
+        //把 OTel Context 塞进 Reactor 的 "背包" 里
+        //    ↓
+        //不管切换到哪个线程，都能从背包里取出 Context
+        //    ↓
+        //任何子 Span 创建时，自动找到父 Span（span-001）
+        //    ↓
+        //子 Span 的 parentSpanId 自动填上 "span-001"
+        // 就是让 OpenTelemetry 的"当前请求身份"在响应式流的多线程切换中不丢失，这样父子 Span 才能自动关联。
         return ContextPropagationOperator.runWithContext(events, traceScope.otelContext())
                 // An idle event stream means the model/gateway stopped making progress. Terminate
                 // it instead of leaving the browser permanently on "正在思考".
@@ -905,6 +1301,7 @@ public class ChatController {
                 .setAttribute("dataagent.session.key", conversationId)
                 .setAttribute("gen_ai.request.model", effectiveModelId)
                 .startSpan();
+        // TraceRunService.start() 写入 MySQL
         return traceRuns.start(rootSpan, userId, agentId, conversationId, effectiveModelId);
     }
 
@@ -969,10 +1366,11 @@ public class ChatController {
      */
     private List<ConfirmResult> buildConfirmResults(
             List<ConfirmDecision> decisions, String conversationId) {
-        PendingConfirm pending = pendingConfirms.remove(conversationId);
+        PendingConfirm pending = pendingConfirms.get(conversationId);
         if (pending == null) {
             log.warn("No pending confirmation for conversation {}; cannot resume HITL", conversationId);
-            return List.of();
+            throw new IllegalStateException(
+                    "人工确认已失效。请重新发起原操作后再批准。");
         }
         Map<String, ToolUseBlock> byId = new HashMap<>();
         for (ToolUseBlock tc : pending.toolCalls()) {
@@ -982,11 +1380,14 @@ public class ChatController {
         for (ConfirmDecision d : decisions) {
             ToolUseBlock tc = byId.get(d.toolCallId());
             if (tc == null) {
-                log.warn("ConfirmDecision references unknown toolCallId={}", d.toolCallId());
-                continue;
+                throw new IllegalArgumentException("人工确认与待批准工具不匹配，请重新发起操作。");
             }
             results.add(new ConfirmResult(d.approved(), tc));
         }
+        if (results.isEmpty()) {
+            throw new IllegalArgumentException("未收到有效的人工确认结果。");
+        }
+        pendingConfirms.remove(conversationId, pending);
         return results;
     }
 
@@ -997,12 +1398,16 @@ public class ChatController {
             AgentEvent event,
             Map<String, ToolBuffer> buffers,
             List<WorkspaceArtifactService.ChartArtifactRequest> chartArtifacts,
-            String conversationId) {
+            String conversationId,
+            String userId,
+            String agentId) {
         if (event instanceof TextBlockDeltaEvent delta) {
             return sseFrame("token", Map.of("type", "token", "data", delta.getDelta()));
         }
         if (event instanceof ToolCallStartEvent tc) {
-            buffers.put(tc.getToolCallId(), new ToolBuffer(tc.getToolCallName()));
+            // A resumed HITL call was pre-seeded from RequireUserConfirmEvent. Do not discard
+            // its complete input when the runtime happens to replay a call-start event too.
+            buffers.computeIfAbsent(tc.getToolCallId(), key -> new ToolBuffer(tc.getToolCallName()));
             return null;
         }
         if (event instanceof ToolCallDeltaEvent delta) {
@@ -1039,6 +1444,23 @@ public class ChatController {
                         new WorkspaceArtifactService.ChartArtifactRequest(
                                 end.getToolCallId(), buf.input.toString()));
             }
+            // 偏好学习：记录 SQL 执行和图表渲染事件（异步、best-effort）
+            if (buf != null && end.getState() == ToolResultState.SUCCESS) {
+                String toolInput = buf.input.toString();
+                workspaceEvolutionService.recordToolMutation(
+                        userId,
+                        agentId,
+                        conversationId,
+                        end.getToolCallId(),
+                        buf.toolName,
+                        toolInput);
+                if ("run_sql_preview".equals(buf.toolName)) {
+                    preferenceRecorder.recordSqlExecution(userId, agentId, toolInput, toolResult);
+                } else if ("render_chart".equals(buf.toolName)
+                        && !toolResult.trim().toLowerCase().startsWith("error")) {
+                    preferenceRecorder.recordChartRender(userId, agentId, toolInput);
+                }
+            }
             return sseFrame("tool_result", Map.of(
                     "type", "tool_result",
                     "toolCallId", end.getToolCallId(),
@@ -1064,11 +1486,30 @@ public class ChatController {
                     "toolCalls", calls));
         }
         if (event instanceof AgentEndEvent) {
-            return sseFrame("done", Map.of(
-                    "type", "done",
-                    "sessionKey", conversationId));
+            // AgentEndEvent precedes gateway persistence, sandbox release, and workspace mirroring.
+            // Sending done here re-enables the composer too early and lets the next request collide
+            // with the previous Redis sandbox lease. The terminal frame is emitted only from the
+            // shared Flux completion callback after all cleanup has finished.
+            return null;
         }
         return null;
+    }
+
+    private static void sendDone(SseEmitter emitter, String conversationId) {
+        try {
+            Map<String, Object> frame = Map.of(
+                    "type", "done",
+                    "sessionKey", conversationId);
+            emitter.send(
+                    SseEmitter.event()
+                            .name("done")
+                            .data(ChatSupport.toJson("done", frame)));
+        } catch (IOException exception) {
+            log.info(
+                    "[stream-debug] terminal frame client-disconnected conversationId={}, error={}",
+                    conversationId,
+                    exception.getMessage());
+        }
     }
 
     /** SSE 帧DTO：事件名 + JSON 数据。 */

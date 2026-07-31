@@ -8,7 +8,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 
-/** Query index for one user-visible agent execution. The detailed children are exported OTel spans. */
+/** 一次完整的 Agent 执行（对应一次用户请求） */
 @Entity
 @Table(
         name = "trace_run",

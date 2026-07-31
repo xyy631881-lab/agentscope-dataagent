@@ -52,7 +52,7 @@ import java.util.List;
  *   <li>Scalar metadata (name, description, model, runAs, ...) lives in dedicated columns.
  *   <li>List-shaped settings (tools allow/deny, skills allow/deny, group-chat mention patterns)
  *       are persisted as JSON strings in a single column each. This keeps the schema portable
- *       across MySQL / PostgreSQL / H2 without introducing per-list join tables for what are
+ *       on MySQL without introducing per-list join tables for what are
  *       effectively bounded configuration lists, and matches the wire format used by the
  *       JSON-file backend so migration in either direction is straightforward.
  *   <li>{@link AgentShareEntity} is mapped as a one-to-many relationship with

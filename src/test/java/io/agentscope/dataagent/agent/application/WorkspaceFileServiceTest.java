@@ -47,4 +47,24 @@ class WorkspaceFileServiceTest {
                 .isEqualTo("# Shared Handoff Test\n\n报告共享落盘验证成功。\n");
         verifyNoInteractions(manager);
     }
+
+    @Test
+    void omitsThePlatformActivityLedgerFromWorkspaceTree() throws Exception {
+        Files.writeString(tempDir.resolve("activity.jsonl"), "internal event\n", StandardCharsets.UTF_8);
+        Files.writeString(tempDir.resolve("activity-1722266000000.jsonl"), "older event\n", StandardCharsets.UTF_8);
+        Files.writeString(tempDir.resolve("notes.md"), "visible", StandardCharsets.UTF_8);
+
+        WorkspaceManager manager = mock(WorkspaceManager.class);
+        WorkspaceResolutionService.ResolvedWorkspace workspace =
+                new WorkspaceResolutionService.ResolvedWorkspace(
+                        manager, "admin", tempDir.toString());
+        WorkspaceFileService service = new WorkspaceFileService(mock(AgentActivityStore.class));
+
+        List<AgentWorkspaceController.FileNode> tree = service.tree(workspace, true);
+
+        assertThat(tree)
+                .extracting(AgentWorkspaceController.FileNode::name)
+                .containsExactly("notes.md");
+        verifyNoInteractions(manager);
+    }
 }

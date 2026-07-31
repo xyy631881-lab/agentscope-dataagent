@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 package io.agentscope.dataagent.agent.application;
+import io.agentscope.dataagent.agent.application.command.AgentCreateRequest;
 import io.agentscope.dataagent.agent.domain.AgentDefinition;
 import io.agentscope.dataagent.agent.domain.AgentShareGrant;
 import io.agentscope.dataagent.agent.domain.UserAgentDefinitionStore;
@@ -57,24 +58,28 @@ import org.springframework.stereotype.Service;
 public class AgentCatalogService {
 
     private static final Logger log = LoggerFactory.getLogger(AgentCatalogService.class);
+    public static final String PERSONAL_AGENT_ID = "personal-agent";
 
     private final DataAgentBootstrap builderBootstrap;
     private final UserAgentDefinitionStore store;
     private final AgentLifecycleService lifecycleService;
     private final UserStore userStore;
     private final AgentAclService aclService;
+    private final AgentMutationService mutationService;
 
     public AgentCatalogService(
             DataAgentBootstrap builderBootstrap,
             UserAgentDefinitionStore store,
             AgentLifecycleService lifecycleService,
             UserStore userStore,
-            AgentAclService aclService) {
+            AgentAclService aclService,
+            AgentMutationService mutationService) {
         this.builderBootstrap = builderBootstrap;
         this.store = store;
         this.lifecycleService = lifecycleService;
         this.userStore = userStore;
         this.aclService = aclService;
+        this.mutationService = mutationService;
     }
 
     // -----------------------------------------------------------------
@@ -165,6 +170,57 @@ public class AgentCatalogService {
     // -----------------------------------------------------------------
 
     private List<AgentDefinition> userDefinitions(String userId) {
-        return store.list(userId).stream().map(e -> e.toDefinition(userId)).toList();
+        ensurePersonalAgent(userId);
+        List<UserAgentDefinitionStore.StoredEntry> entries = store.list(userId);
+        for (UserAgentDefinitionStore.StoredEntry entry : entries) {
+            mutationService.ensurePublicDataSkills(userId, entry.id());
+        }
+        return entries.stream().map(e -> e.toDefinition(userId)).toList();
+    }
+
+    /**
+     * Every normal user receives one private Agent on first access. Team templates remain shared
+     * baselines; skills, subagents, tools, preferences, and workspace files belong to this
+     * private Agent so one user's customization never changes another user's experience.
+     */
+    private void ensurePersonalAgent(String userId) {
+        if (userId == null || userId.isBlank() || !store.list(userId).isEmpty()) {
+            return;
+        }
+        UserRecord user = userStore.findById(userId).orElse(null);
+        if (user == null || user.hasRole("admin")) {
+            return;
+        }
+        try {
+            mutationService.createUserAgent(
+                    userId,
+                    new AgentCreateRequest(
+                            PERSONAL_AGENT_ID,
+                            user.username() + " 的数据助手",
+                            "Private data analysis agent for " + user.username(),
+                            "You are a personal data analysis assistant. Adapt to the user's workflow and preferences.",
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null,
+                            null));
+            log.info("Provisioned private default agent for userId={}", userId);
+        } catch (org.springframework.web.server.ResponseStatusException exception) {
+            // Another request may have completed the first-access provisioning concurrently.
+            if (store.findById(userId, PERSONAL_AGENT_ID).isEmpty()) {
+                log.warn("Failed to provision private default agent for userId={}: {}", userId, exception.getReason());
+            }
+        }
     }
 }

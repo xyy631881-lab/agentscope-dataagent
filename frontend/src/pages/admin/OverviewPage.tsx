@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import AdminPageLayout from '../../components/admin/AdminPageLayout';
 import {
   getOverview, listInstances,
   OverviewView, InstanceView,
@@ -141,8 +140,7 @@ export default function OverviewPage() {
   const recentActivity = data?.recentActivity.slice(0, 5) ?? [];
 
   return (
-    <>
-      <AdminPageLayout>
+    <div style={{ padding: '28px' }}>
         {/* Toolbar */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 28 }}>
           <h2 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 700, color: '#0f172a', letterSpacing: '-0.02em' }}>
@@ -195,7 +193,7 @@ export default function OverviewPage() {
             <KpiCard
               icon="📈" label="用量" value="查看指标"
               sub="轮次、用户、Agents"
-              onClick={() => navigate('/admin/usage')}
+              onClick={() => navigate('/usage')}
             />
           </div>
         )}
@@ -274,10 +272,11 @@ export default function OverviewPage() {
         }}>
           <span style={{ fontSize: '0.85rem', color: '#475569', fontWeight: 600 }}>Quick actions:</span>
           {[
-            { label: 'Agents',      path: '/agents'   },
-            { label: 'Users',       path: '/users'    },
-            { label: 'View Config', path: '/config'   },
-            { label: 'Debug Logs',  path: '/debug'    },
+            { label: '审批贡献',     path: '/admin/approvals' },
+            { label: 'Agents',      path: '/admin/agents'    },
+            { label: 'Users',       path: '/admin/users'     },
+            { label: 'View Config', path: '/admin/config'    },
+            { label: 'Debug Logs',  path: '/admin/debug'     },
           ].map(l => (
             <button key={l.path} onClick={() => navigate(l.path)} style={{
               background: '#eef2ff', border: '1px solid #c7d2fe', color: '#4338ca',
@@ -288,7 +287,6 @@ export default function OverviewPage() {
             </button>
           ))}
         </div>
-      </AdminPageLayout>
-    </>
+    </div>
   );
 }

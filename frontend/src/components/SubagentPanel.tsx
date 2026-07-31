@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { confirmAction } from './InteractionHost';
 import {
   SubagentInfo,
   SubagentUpsertRequest,
@@ -233,7 +234,7 @@ export default function SubagentPanel({ agentId, onChanged }: Props) {
   }
 
   async function handleDelete() {
-    if (!form.name || !window.confirm(`Delete subagent "${form.name}"?`)) return;
+    if (!form.name || !(await confirmAction(`删除子 Agent“${form.name}”？`))) return;
     try {
       await deleteSubagent(agentId, form.name);
       setView('list');

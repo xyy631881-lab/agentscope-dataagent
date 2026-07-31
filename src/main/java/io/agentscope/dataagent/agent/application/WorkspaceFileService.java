@@ -25,6 +25,7 @@ import io.agentscope.harness.agent.filesystem.model.LsResult;
 import io.agentscope.harness.agent.filesystem.model.ReadResult;
 import io.agentscope.harness.agent.filesystem.model.WriteResult;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -79,6 +80,9 @@ public class WorkspaceFileService {
      */
     public List<AgentWorkspaceController.FileNode> tree(
             WorkspaceResolutionService.ResolvedWorkspace ctx, boolean recursive) {
+        if (ctx.directLocalWrites()) {
+            return WorkspaceFileSupport.collectChildrenHost(ctx.workspace(), recursive ? 6 : 1);
+        }
         Path mirror = localMirrorRoot(ctx);
         if (mirror != null) {
             return WorkspaceFileSupport.collectChildrenHost(mirror, recursive ? 6 : 1);
@@ -97,6 +101,14 @@ public class WorkspaceFileService {
      */
     public String readFile(WorkspaceResolutionService.ResolvedWorkspace ctx, String path) {
         String rel = WorkspaceFileSupport.validateRelPath(path);
+        if (ctx.directLocalWrites()) {
+            Path file = localPath(ctx, rel);
+            try {
+                if (Files.isRegularFile(file)) return truncate(Files.readString(file, StandardCharsets.UTF_8));
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Read workspace file failed: " + e.getMessage());
+            }
+        }
         Path mirrorFile = localMirrorFile(ctx, rel);
         if (mirrorFile != null && Files.isRegularFile(mirrorFile)) {
             try {
@@ -142,6 +154,18 @@ public class WorkspaceFileService {
             String path,
             String content) {
         String rel = WorkspaceFileSupport.validateRelPath(path);
+        if (ctx.directLocalWrites()) {
+            Path file = localPath(ctx, rel);
+            try {
+                Files.createDirectories(file.getParent());
+                Files.writeString(file, content != null ? content : "", StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Write workspace file failed: " + e.getMessage());
+            }
+            return WorkspaceFileSupport.fileNode(rel, false,
+                    (long) (content != null ? content : "").getBytes(StandardCharsets.UTF_8).length);
+        }
         AbstractFilesystem fs = ctx.manager().getFilesystem();
         RuntimeContext rc = userContext(ctx);
         if (WorkspaceFileSupport.isDirectoryEntry(fs, rc, rel)) {
@@ -185,6 +209,25 @@ public class WorkspaceFileService {
             String path,
             String type) {
         String rel = WorkspaceFileSupport.validateRelPath(path);
+        if (ctx.directLocalWrites()) {
+            Path target = localPath(ctx, rel);
+            try {
+                if (Files.exists(target)) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT, "Already exists: " + path);
+                }
+                if ("dir".equalsIgnoreCase(type)) {
+                    Files.createDirectories(target);
+                    return WorkspaceFileSupport.fileNode(rel, true, null);
+                }
+                Files.createDirectories(target.getParent());
+                Files.createFile(target);
+                return WorkspaceFileSupport.fileNode(rel, false, 0L);
+            } catch (ResponseStatusException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Create workspace item failed: " + e.getMessage());
+            }
+        }
         AbstractFilesystem fs = ctx.manager().getFilesystem();
         RuntimeContext rc = userContext(ctx);
         boolean isDir = "dir".equalsIgnoreCase(type);
@@ -224,6 +267,25 @@ public class WorkspaceFileService {
             String to) {
         String fromRel = WorkspaceFileSupport.validateRelPath(from);
         String toRel = WorkspaceFileSupport.validateRelPath(to);
+        if (ctx.directLocalWrites()) {
+            Path source = localPath(ctx, fromRel);
+            Path target = localPath(ctx, toRel);
+            try {
+                if (!Files.exists(source)) {
+                    throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Source not found: " + from);
+                }
+                if (Files.exists(target)) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT, "Target already exists: " + to);
+                }
+                Files.createDirectories(target.getParent());
+                Files.move(source, target);
+                return WorkspaceFileSupport.fileNode(toRel, Files.isDirectory(target), null);
+            } catch (ResponseStatusException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Move workspace item failed: " + e.getMessage());
+            }
+        }
         AbstractFilesystem fs = ctx.manager().getFilesystem();
         RuntimeContext rc = userContext(ctx);
         if (!fs.exists(rc, fromRel)) {
@@ -265,6 +327,20 @@ public class WorkspaceFileService {
             String userId,
             String path) {
         String rel = WorkspaceFileSupport.validateRelPath(path);
+        if (ctx.directLocalWrites()) {
+            Path target = localPath(ctx, rel);
+            if (!Files.exists(target)) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Not found: " + path);
+            }
+            try (var files = Files.walk(target)) {
+                for (Path item : files.sorted(Comparator.reverseOrder()).toList()) {
+                    Files.deleteIfExists(item);
+                }
+                return;
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Delete workspace item failed: " + e.getMessage());
+            }
+        }
         AbstractFilesystem fs = ctx.manager().getFilesystem();
         RuntimeContext rc = userContext(ctx);
         if (!fs.exists(rc, rel)) {
@@ -313,6 +389,16 @@ public class WorkspaceFileService {
                     HttpStatus.INTERNAL_SERVER_ERROR,
                     "Failed to read uploaded file: " + e.getMessage());
         }
+        if (ctx.directLocalWrites()) {
+            Path target = localPath(ctx, targetRel);
+            try {
+                Files.createDirectories(target.getParent());
+                Files.write(target, bytes, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+                return WorkspaceFileSupport.fileNode(targetRel, false, (long) bytes.length);
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Upload failed: " + e.getMessage());
+            }
+        }
         AbstractFilesystem fs = ctx.manager().getFilesystem();
         List<FileUploadResponse> resp =
                 fs.uploadFiles(
@@ -333,6 +419,98 @@ public class WorkspaceFileService {
                     null);
         }
         return WorkspaceFileSupport.fileNode(targetRel, false, (long) bytes.length);
+    }
+
+    /**
+     * Writes a browser file selection in one filesystem call. The sandbox-backed implementation
+     * holds one lease and mirrors once, which avoids a folder upload paying the Docker lifecycle
+     * cost for every individual file.
+     */
+    public AgentWorkspaceController.UploadBatchResponse uploadBatch(
+            WorkspaceResolutionService.ResolvedWorkspace ctx,
+            String agentId,
+            String userId,
+            List<org.springframework.web.multipart.MultipartFile> files,
+            List<String> paths) {
+        if (files == null || files.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No files supplied");
+        }
+        if (paths == null || paths.size() != files.size()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Each uploaded file needs one path");
+        }
+
+        List<Map.Entry<String, byte[]>> payload = new ArrayList<>(files.size());
+        List<AgentWorkspaceController.UploadFailure> failed = new ArrayList<>();
+        List<String> acceptedPaths = new ArrayList<>(files.size());
+        List<Long> acceptedSizes = new ArrayList<>(files.size());
+        for (int index = 0; index < files.size(); index++) {
+            String target;
+            try {
+                target = WorkspaceFileSupport.validateRelPath(paths.get(index));
+                byte[] bytes = files.get(index).getBytes();
+                payload.add(Map.entry(target, bytes));
+                acceptedPaths.add(target);
+                acceptedSizes.add((long) bytes.length);
+            } catch (ResponseStatusException e) {
+                failed.add(new AgentWorkspaceController.UploadFailure(paths.get(index), e.getReason()));
+            } catch (Exception e) {
+                failed.add(
+                        new AgentWorkspaceController.UploadFailure(
+                                paths.get(index), "Failed to read uploaded file: " + e.getMessage()));
+            }
+        }
+
+        List<AgentWorkspaceController.FileNode> uploaded = new ArrayList<>();
+        if (!payload.isEmpty()) {
+            if (ctx.directLocalWrites()) {
+                for (int index = 0; index < payload.size(); index++) {
+                    String target = acceptedPaths.get(index);
+                    try {
+                        Path file = localPath(ctx, target);
+                        Files.createDirectories(file.getParent());
+                        Files.write(
+                                file,
+                                payload.get(index).getValue(),
+                                StandardOpenOption.CREATE,
+                                StandardOpenOption.TRUNCATE_EXISTING);
+                        uploaded.add(
+                                WorkspaceFileSupport.fileNode(
+                                        target, false, acceptedSizes.get(index)));
+                    } catch (Exception e) {
+                        failed.add(
+                                new AgentWorkspaceController.UploadFailure(
+                                        target, "Upload failed: " + e.getMessage()));
+                    }
+                }
+                return new AgentWorkspaceController.UploadBatchResponse(uploaded, failed);
+            }
+            AbstractFilesystem fs = ctx.manager().getFilesystem();
+            List<FileUploadResponse> responses =
+                    fs.uploadFiles(RuntimeContext.builder().userId(ctx.ownerId()).build(), payload);
+            for (int index = 0; index < payload.size(); index++) {
+                FileUploadResponse response = index < responses.size() ? responses.get(index) : null;
+                String target = acceptedPaths.get(index);
+                if (response != null && response.error() == null) {
+                    uploaded.add(
+                            WorkspaceFileSupport.fileNode(target, false, acceptedSizes.get(index)));
+                    if (ctx.ownerId() != null) {
+                        activity.record(
+                                ctx.ownerId(),
+                                agentId,
+                                activity.actor(userId),
+                                ActivityEvent.Action.UPLOAD_FILE,
+                                target,
+                                null);
+                    }
+                } else {
+                    String message = response != null && response.error() != null
+                            ? response.error()
+                            : "Sandbox did not return an upload result";
+                    failed.add(new AgentWorkspaceController.UploadFailure(target, message));
+                }
+            }
+        }
+        return new AgentWorkspaceController.UploadBatchResponse(uploaded, failed);
     }
 
     private static String truncate(String content) {
@@ -358,6 +536,17 @@ public class WorkspaceFileService {
         }
         Path candidate = root.resolve(relativePath).normalize();
         return candidate.startsWith(root) ? candidate : null;
+    }
+
+    /** Resolves a user-owned workspace path while preventing traversal outside its root. */
+    private static Path localPath(WorkspaceResolutionService.ResolvedWorkspace ctx, String rel) {
+        Path root = ctx.workspace().toAbsolutePath().normalize();
+        Path target = root.resolve(rel).normalize();
+        if (!target.startsWith(root)) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "Invalid workspace path: " + rel);
+        }
+        return target;
     }
 
     // -----------------------------------------------------------------

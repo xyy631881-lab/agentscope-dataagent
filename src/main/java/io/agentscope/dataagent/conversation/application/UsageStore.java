@@ -92,13 +92,14 @@ public class UsageStore {
     }
 
     private static UsageSummary summary(Object[] totals, long todayTurns) {
-        long totalTurns = number(totals, 0);
-        long inputTokens = number(totals, 1);
-        long outputTokens = number(totals, 2);
-        long cachedPromptTokens = number(totals, 3);
-        long costMicrousd = number(totals, 4);
-        long avgDurationMs = number(totals, 5);
-        long uniqueUsers = number(totals, 6);
+        Object[] values = unwrapAggregateRow(totals);
+        long totalTurns = number(values, 0);
+        long inputTokens = number(values, 1);
+        long outputTokens = number(values, 2);
+        long cachedPromptTokens = number(values, 3);
+        long costMicrousd = number(values, 4);
+        long avgDurationMs = number(values, 5);
+        long uniqueUsers = number(values, 6);
         return new UsageSummary(
                 totalTurns,
                 todayTurns,
@@ -204,6 +205,14 @@ public class UsageStore {
         return values == null || index >= values.length || values[index] == null
                 ? 0L
                 : ((Number) values[index]).longValue();
+    }
+
+    /** Hibernate may wrap a multi-column aggregate row in one outer array. */
+    private static Object[] unwrapAggregateRow(Object[] values) {
+        if (values != null && values.length == 1 && values[0] instanceof Object[] row) {
+            return row;
+        }
+        return values;
     }
 
     private static int clamp(int value, int min, int max) { return Math.max(min, Math.min(value, max)); }

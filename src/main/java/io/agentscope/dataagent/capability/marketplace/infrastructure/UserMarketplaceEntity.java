@@ -60,7 +60,7 @@ public class UserMarketplaceEntity {
 
     /**
      * Provider properties serialised as JSON. We store the raw JSON to keep schema neutral across
-     * MySQL/PostgreSQL/H2 — Hibernate's JSON column types vary between dialects.
+     * MySQL while avoiding Hibernate JSON-column dialect coupling.
      */
     @Lob
     @Column(name = "properties_json")

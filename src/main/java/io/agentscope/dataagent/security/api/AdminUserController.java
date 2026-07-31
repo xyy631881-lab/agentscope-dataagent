@@ -29,9 +29,11 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -94,9 +96,13 @@ public class AdminUserController {
                     req.roles() == null || req.roles().isEmpty()
                             ? List.of("user")
                             : List.copyOf(req.roles());
-                    boolean generated =
-                    req.initialPassword() == null || req.initialPassword().isBlank();
-                    String password = generated ? generateTempPassword() : req.initialPassword();
+        boolean generated =
+                req.initialPassword() == null || req.initialPassword().isBlank();
+        String password = generated ? generateTempPassword() : req.initialPassword();
+        if (password.length() < 6) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "initialPassword 至少需要 6 个字符");
+        }
                     String userId = makeUserId(username);
                     try {
                 UserRecord created =
@@ -119,10 +125,14 @@ public class AdminUserController {
             Authentication auth) {
         requireAdmin(auth);
 
-                    if (req == null || req.newPassword() == null || req.newPassword().isBlank()) {
-                throw new ResponseStatusException(
-                        HttpStatus.BAD_REQUEST, "newPassword 是必填项");
-                    }
+        if (req == null || req.newPassword() == null || req.newPassword().isBlank()) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "newPassword 是必填项");
+        }
+        if (req.newPassword().length() < 6) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST, "newPassword 至少需要 6 个字符");
+        }
                     return userStore
                     .updatePassword(userId, req.newPassword())
                     .map(AdminUserController::toView)
@@ -178,6 +188,15 @@ public class AdminUserController {
                     // 级联撤销每个拥有者存储中每个 Agent 上的每个 (USER, userId) 授权。
                     // 不接触 workspace 文件——保留审计轨迹；管理员可以在之后手动清理。
                     revokeAllGrantsFor(userId);
+    }
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<ApiError> handleResponseStatus(ResponseStatusException exception) {
+        String message = exception.getReason();
+        if (message == null || message.isBlank()) {
+            message = "请求处理失败";
+        }
+        return ResponseEntity.status(exception.getStatusCode()).body(new ApiError(message));
     }
 
     // -----------------------------------------------------------------
@@ -286,4 +305,6 @@ public class AdminUserController {
     public record PasswordResetRequest(String newPassword) {}
 
     public record RolesRequest(List<String> roles) {}
+
+    public record ApiError(String message) {}
 }

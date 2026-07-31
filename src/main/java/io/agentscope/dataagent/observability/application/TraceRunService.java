@@ -20,22 +20,32 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** Bridges OpenTelemetry's spans to a compact, tenant-safe runtime-records read model. */
+/** B它是 OpenTelemetry Span 到 MySQL 业务记录的桥梁层。
+ * AgentScope 框架通过 OtelTracingMiddleware 生成原始 Span，
+ * TraceRunService 负责把这些 Span 转成用户可查询的结构化记录.
+ *
+ * AgentScope 中间件  →  OpenTelemetry SDK  →  JpaTraceSpanExporter  →  TraceRunService  →  MySQL
+ *   (OtelTracing)        (Span生成)              (批量异步导出)            (过滤+持久化)      (trace_run + trace_span)
+ *
+ *   -- trace_run: 按用户+时间查询最近运行记录
+ *   -- trace_span: 按 trace 查询所有 Span，按 span_id 去重
+ * */
 @Service
 public class TraceRunService {
 
     private static final Set<String> EXPORTED_ATTRIBUTES = Set.of(
-            "gen_ai.operation.name",
-            "gen_ai.request.model",
-            "gen_ai.request.messages.count",
-            "gen_ai.request.tools.count",
-            "gen_ai.usage.input_tokens",
-            "gen_ai.usage.output_tokens",
-            "gen_ai.tool.name",
-            "gen_ai.tool.call.count",
-            "gen_ai.tool.call.id",
-            "agentscope.agent.reply_id",
-            "error.type");
+            "gen_ai.operation.name",       // 操作类型（chat/completion/embedding）
+            "gen_ai.request.model",        // 模型名称
+            "gen_ai.request.messages.count", // 请求消息数
+            "gen_ai.request.tools.count",    // 工具数量
+            "gen_ai.usage.input_tokens",     // 输入 Token → 成本分析
+            "gen_ai.usage.output_tokens",    // 输出 Token → 成本分析
+            "gen_ai.tool.name",             // 工具名称 → 异常定位
+            "gen_ai.tool.call.count",       // 工具调用次数
+            "gen_ai.tool.call.id",          // 工具调用 ID
+            "agentscope.agent.reply_id",    // Agent 回复 ID
+            "error.type"                    // 错误类型 → 异常定位
+    );
 
     private final TraceRunRepository runs;
     private final TraceSpanRepository spans;
@@ -48,6 +58,7 @@ public class TraceRunService {
         this.objectMapper = objectMapper;
     }
 
+    /** 开始一个 Agent 执行记录，记录用户 ID、Agent ID、会话键、模型 ID 等信息。 */
     @Transactional
     public TraceScope start(
             Span rootSpan, String userId, String agentId, String sessionKey, String modelId) {
@@ -67,8 +78,10 @@ public class TraceRunService {
 
     @Transactional
     public void complete(TraceScope scope, String outcome, Throwable error) {
+        // ① 更新 trace_run 状态：记录完成时间、错误信息（如果有）和耗时
         runs.findByTraceId(scope.traceId()).ifPresent(run ->
                 run.finish(outcome, conciseError(error), System.currentTimeMillis()));
+        // ② 设置 OTel Span 状态：根据 outcome 设置 SUCCESS 或 ERROR，CANCELLED 用于手动取消
         if ("SUCCESS".equals(outcome)) {
             scope.rootSpan().setStatus(StatusCode.OK);
         } else {
@@ -79,12 +92,16 @@ public class TraceRunService {
 
     @Transactional
     public void appendSpan(SpanData span) {
+        // ① 去重：span_id 已存在就跳过
         if (span.getSpanContext().getTraceId().isBlank() || spans.existsBySpanId(span.getSpanId())) return;
+        // ② 属性过滤：只保留 AI 相关的关键属性
         Map<String, Object> attributes = new LinkedHashMap<>();
         span.getAttributes().asMap().forEach((key, value) -> {
             if (EXPORTED_ATTRIBUTES.contains(key.getKey())) attributes.put(key.getKey(), value);
         });
+        // ③ 计算耗时
         long durationMs = Math.max(0L, (span.getEndEpochNanos() - span.getStartEpochNanos()) / 1_000_000L);
+        // ④ 写入 trace_span 表
         spans.save(
                 new TraceSpanEntity(
                         span.getTraceId(),
@@ -99,6 +116,7 @@ public class TraceRunService {
     }
 
     public List<RunView> recentForUser(String userId, int requestedLimit) {
+        // ① 查 trace_run（按时间倒序，最多 100 条）
         int limit = Math.max(1, Math.min(requestedLimit, 100));
         return runs.findByUserIdOrderByStartedAtMsDesc(userId, PageRequest.of(0, limit)).stream()
                 .map(this::view)
@@ -106,6 +124,7 @@ public class TraceRunService {
     }
 
     private RunView view(TraceRunEntity run) {
+        // ③ 查该 trace 的所有 Span（按时间升序）
         List<SpanView> details = spans.findByTraceIdOrderByStartedAtMsAsc(run.getTraceId()).stream()
                 .map(span -> new SpanView(
                         span.getSpanId(),
@@ -117,6 +136,7 @@ public class TraceRunService {
                         span.getDurationMs(),
                         map(span.getAttributesJson())))
                 .toList();
+        // ④ 计算总耗时
         long end = run.getEndedAtMs() == null ? System.currentTimeMillis() : run.getEndedAtMs();
         return new RunView(
                 run.getTraceId(),

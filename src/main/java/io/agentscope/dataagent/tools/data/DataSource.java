@@ -27,7 +27,7 @@ public record DataSource(
         String id,  // 唯一标识
         String label,  // 显示名
         String description,  // 详细描述
-        String kind,  // 类型："h2"、"mysql"、"postgresql"
+        String kind,  // 类型："mysql"
         String urlHint,  // URL 前缀提示
         List<String> tags,  // 标签
         Map<String, String> properties)  // 连接器特定配置

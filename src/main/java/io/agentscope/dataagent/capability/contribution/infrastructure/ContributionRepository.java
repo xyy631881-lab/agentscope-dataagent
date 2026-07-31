@@ -17,6 +17,7 @@ package io.agentscope.dataagent.capability.contribution.infrastructure;
 
 import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 /** JPA repository for {@link ContributionEntity}. */
@@ -26,4 +27,32 @@ public interface ContributionRepository extends JpaRepository<ContributionEntity
 
     List<ContributionEntity> findAllBySourceUserIdOrderByCreatedAtDesc(
             @Param("sourceUserId") String sourceUserId);
+
+    /**
+     * Returns the highest version number among approved contributions for the given asset key,
+     * or {@code null} if no approved version exists yet. Used by the approval flow to assign
+     * the next monotonic version.
+     */
+    @Query(
+            "SELECT MAX(c.version) FROM ContributionEntity c "
+                    + "WHERE c.targetAgentId = :targetAgentId "
+                    + "AND c.targetType = :targetType "
+                    + "AND c.targetPath = :targetPath "
+                    + "AND c.status = :status")
+    Integer findMaxVersion(
+            @Param("targetAgentId") String targetAgentId,
+            @Param("targetType") String targetType,
+            @Param("targetPath") String targetPath,
+            @Param("status") String status);
+
+    /**
+     * Lists all contributions for a given asset key and status, newest version first. Used by
+     * the version-list API and rollback lookup.
+     */
+    List<ContributionEntity>
+            findAllByTargetAgentIdAndTargetTypeAndTargetPathAndStatusOrderByVersionDesc(
+                    @Param("targetAgentId") String targetAgentId,
+                    @Param("targetType") String targetType,
+                    @Param("targetPath") String targetPath,
+                    @Param("status") String status);
 }

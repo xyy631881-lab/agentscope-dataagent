@@ -1,6 +1,6 @@
 import { getToken } from './auth';
 
-export type MarketplaceType = 'git' | 'nacos';
+export type MarketplaceType = 'git' | 'nacos' | 'local';
 
 export interface MarketplaceSummary {
   id: string;
@@ -24,6 +24,7 @@ export interface MarketSkillBrief {
   name: string;
   description?: string | null;
   version?: string | null;
+  versions?: number[];
 }
 
 export interface MarketSkillDetail {

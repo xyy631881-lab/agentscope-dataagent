@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { confirmAction } from './InteractionHost';
 import {
   ChannelInfo, AgentBinding, BindingTier, BindingCreateRequest,
   listChannels, listAgentBindings, addBinding, updateBinding, deleteBinding, setChannelDefault,
@@ -176,7 +177,7 @@ export default function ChannelBindingTable({ agentId }: Props) {
   }
 
   async function handleDelete(b: AgentBinding) {
-    if (!confirm(`Delete binding (${describe(b)})?`)) return;
+    if (!(await confirmAction(`删除绑定（${describe(b)}）？`))) return;
     try {
       await deleteBinding(agentId, b.channelId, b.index);
       setDirty(true);

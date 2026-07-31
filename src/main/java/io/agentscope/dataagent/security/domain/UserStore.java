@@ -26,10 +26,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
  *
  * <p>The only bundled implementation is
  * {@link io.agentscope.dataagent.security.infrastructure.JpaUserStore}, which persists via Spring Data
- * JPA. Out of the box the default DataSource is embedded H2 in file mode at
- * {@code ${user.home}/.agentscope-builder/db}; activate the {@code jdbc} Spring profile (or
- * set {@code BUILDER_DB_URL}) to switch to MySQL or PostgreSQL. The MySQL and PostgreSQL JDBC
- * drivers ship at runtime scope.
+ * JPA. The application uses the configured MySQL datasource in every runtime profile.
  *
  * <p>Implementations are expected to be thread-safe and seed a default {@code admin} user on
  * first start when the store is empty.

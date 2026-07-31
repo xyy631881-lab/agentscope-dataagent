@@ -24,6 +24,14 @@ interface FieldDef {
 }
 
 const TYPE_FIELDS: Record<MarketplaceType, FieldDef[]> = {
+  local: [
+    {
+      key: 'targetAgentId',
+      label: 'Target Agent ID',
+      placeholder: 'data-agent',
+      hint: '审批通过的团队 Skill 所属 Agent；留空时使用 data-agent。',
+    },
+  ],
   git: [
     {
       key: 'remoteUrl',
@@ -253,6 +261,7 @@ export default function MarketplaceEditorDialog({ mode, initial, onSave, onCance
                 color: isEdit ? '#64748b' : '#0f172a',
               }}
             >
+              <option value="local">local</option>
               <option value="git">git</option>
               <option value="nacos">nacos</option>
             </select>

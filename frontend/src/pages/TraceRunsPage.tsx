@@ -83,7 +83,7 @@ export default function TraceRunsPage() {
 
 const styles: Record<string, React.CSSProperties> = {
   root: { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 },
-  content: { padding: '22px 28px', overflow: 'auto', maxWidth: 1080, width: '100%', boxSizing: 'border-box' },
+  content: { flex: 1, minHeight: 0, padding: '22px 28px', overflow: 'auto', maxWidth: 1080, width: '100%', boxSizing: 'border-box' },
   toolbar: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, marginBottom: 18 },
   title: { margin: 0, color: '#0f172a', fontSize: '1.25rem', letterSpacing: 0 },
   subtitle: { margin: '6px 0 0', color: '#64748b', fontSize: '0.86rem', lineHeight: 1.5 },
